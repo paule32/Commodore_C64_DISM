@@ -2,260 +2,6 @@
 # (c) 2026 by Jens Kallup - paule32
 # Alle Rechte vorbehalten.
 # ---------------------------------------------------------------------------
-# Funktionen:
-#  * verschiebbare Toolbar
-#  * verschiebbare und skalierbare Dock-Fenster
-#  * Dateisystembaum mit wählbarem Arbeitsverzeichnis
-#  * Pfadeingabe mit Navigation per Eingabetaste
-#  * Icon-Liste mit D64/RAM/ASM/PRG/TXT-Filtern
-#  * integrierte Anzeige des C64-Verzeichnisses einer D64-Datei
-#  * zentraler Texteditor mit Dokument- und Unterregisterkarten
-#  * bytegenauer Hex-Editor mit 16-Bit-Offset, 4+4-Darstellung und C64-Pro-Schrift
-#  * PETSCII-Zeichenauswahl fuer das aktuelle Byte im Hex-Editor
-#  * Character-Editor fuer 255 frei editierbare 8x8-Zeichen
-#  * Paletten-Editor fuer die 16 C64-Farben mit Quellcodeexport
-#  * Text-Bildschirm-Editor fuer 40x25 Zeichen und Farben
-#  * Pixel-Bildschirm-Editor fuer 320x200 Pixel, 16 Farben und Formwerkzeuge
-#  * Neu/Oeffnen/Speichern/Speichern unter mit sicherer Schliessabfrage
-#  * Syntax-Hervorhebung fuer 6502/6510-Assembler und Kommentare
-#  * integrierte 6510-/680x0-Assembler mit C64-PRG-/Amiga-Hunk-Ausgabe
-#  * Amiga-CPU-Profile mk68000..mk68060 und optionale 68881/68882-FPU
-#  * integrierter IA-32-/PE32-Assembler mit Microsoft-COFF32-Objekten
-#  * interner Windows RC/RES-Compiler mit Microsoft-COFF32/COFF64-Resource-Objekten und Resourcen-Editor
-#  * Stage ASM 156: Mathematik -> Fakten -> Zahlen -> Primzahlen mit Prime-Constellation-Filtern und Log-Rotation.
-#  * Stage ASM 160: Prime-Solver um 8192 Bit und 16284 Bit erweitert.
-#  * Stage ASM 185: Prime-Solver mit frei wählbarer Startzahl und Laufzeit-Timer.
-#  * Stage 151: Resourcen-Editor als Vollflaechen-Dock, Hauptmenue-Kontext, Dark-Mode, Mini-Map und RC-Highlighting
-#  * integrierter COFF32-.a-Archivierer und PE32-Linker samt DLL-Imports/-Exports
-#  * Windows-Grafikziel fuer 320x200 ueber Direct2D oder Direct3D
-#  * C64-BASIC-Compiler sowie Compiler fuer Pascal, C, LISP, PROLOG, LOGO und dBase
-#  * nativer LOGO->Windows-PE32-Compiler mit Console-/320x200-GUI-Ausgabe
-#  * native LISP-/PROLOG->Windows-PE32/PE32+-Assemblergeneratoren mit internem Linker
-#  * PROLOG-Laufzeit mit Listen, Choice Points, Trail, Unifikation, assert/retract und REPL
-#  * PROLOG Wissen-Datenbank-Browser mit Projekt-Tree, Faktenbaum und Level-Entscheidungen
-#  * PROLOG Wissen-Browser Stage 61: Parent- öffnet pfadgebundene Alternativen in der ComboBox
-#    Legacy-Testmarker (Stage 61): self.alternative_combo.showPopup()
-#  * PROLOG Wissen-Browser Stage 62: ComboBox unter Parent, Level-Duplikatschutz und Faktenfilter
-#  * PROLOG Wissen-Browser Stage 63: bereits verwendete Pfadwerte aus Alternativen entfernen
-#  * PROLOG Wissen-Browser Stage 64: Parent-ComboBox mit eigenem Prüfen-Button
-#  * PROLOG Wissen-Browser Stage 74: Abfragen/Lanes/Alternativen pro Wissensdatenbank persistent speichern
-#  * Stage 75: Green-&-Beige-Titelbalken und passende Menüs nach Referenzbild
-#  * Stage 80: Localize-Dock im gesamten freien Bereich; C64-Disassembly mit Bytecode + Semantik,
-#    gelben 6510-Opcodes, weißen Operanden und eingeblendeter Befehlsbeschreibung
-#  * Stage 85: dBase-Tabellendesigner als Dock mit DBF-Strukturreader/-writer,
-#  * Stage 86: Tabellen-Workspace rechts neben Dateisystem + Dark/Light-Gridstil.
-#  * Stage 87: Desktop-Settings als Dock-Workspace mit Alias-/BDE-Verwaltung.
-#  * Stage 92: Formulardesigner-Brush mit 12 eingebetteten Patterns und recolorierbaren Buttons.
-#  * Stage 103: Pattern-Rueckkehr stabilisiert; Font-Farbbuttons und Dark-Mode-Farbbuttons.
-#  * Stage 100: Kontextmenü für Designer-Controls mit Hilfe/Kopieren/Einfügen/Ausschneiden/Entfernen.
-#  * Stage 101: Border-Root mit einzeln schaltbaren Seiten Left/Top/Right/Bottom.
-#  * Stage 102: Border-Seiten mit eigenen Style/Size/Color-Untereinträgen.
-#  * Stage 108: WFM/OOP-Formulare, gefuellter Hard-Shadow und Border-Farbdialoge.
-#  * Stage 110: Form-Fenster-Scene mit Titelbar, Designer-only Resize und Client-Limits.
-#  * Stage 136: Lernen->Mathematik mit Zahlenmauer-Dock und 2x5 QGraphicsScene-Aufgaben.
-#  * Stage 38: Lernen->Memory mit 42 Karten, 21 Rechenpaaren und ausgeblendeten Treffern.
-#  * Stage 263: Lernen->Keyboard mit Musik-Dock, 4 Notensystemen und 88-Tasten-Piano.
-#  * Stage 364: Grundwissen -> Algebra/Geometrie; Zinsrechnung als Formel-Kacheln
-#    IM bestehenden Mathematik-Dock (temporär volle Dock-Fläche).
-#  * Stage 360: Zwei getrennte Einheitskreis-Docks; statische QPainter-Winkeltafel in Hell/Dunkel.
-#  * Stage 362: Berechnungsfelder für alle 19 Flächen-/Volumenfiguren, validierter Rechner
-#    und dunkel/hell thematisierter 3px-Fehlerdialog.
-#  * Stage 361: Fakten/3D-Figuren, Formeln und teiltransparente Dark-Mode-3D-Materialien.
-#  * Stage 277: Einheitskreis-Animation auf volle 360 Grad erweitert; Graphen max. 25 % Fensterbreite.
-#  * Stage 287: Projekt-Einstellungen -> Compiler -> Prolog -> Optimierung mit optionalem
-#    "with descriptors"; strukturell gleiche Clause-Builder teilen Templates/Descriptoren.
-#  * Stage 288: "with descriptors" nutzt einen einzigen generischen Clause-Builder;
-#    Clause-Strukturen liegen als kompakte 16-Bit-Programme und Payload-Descriptoren vor.
-#  * Stage 276: Lernen->Mathe->Geometrie->Einheitskreis als animiertes Qt5-QPainter-Dock;
-#    Sinus/Kosinus-Graphen belegen zusammen maximal 1/4 der Zeichenflaeche.
-#  * Stage 264: Musik-Arbeitsbereich schließt alle Docks; Instrument-Dock rechts mit
-#    General-MIDI, Play/Loop/Freihand, Lautstärke und Musikprojekt Save/Load.
-#  * Stage 139: Sudoku mit Leicht/Mittel/Schwer/Experte im Mathematik-Lernbereich.
-#  * Stage 140: ISO-Metrik Mathe-Stadt mit Mausweg, Bauen, Budget und Lern-Banken.
-#  * Stage 141: Gorilla-Parabelspiel mit Wolkenkratzern, Wind, Gebäudeschäden und Mathe-Würfen.
-#  * Stage 142: Fakten-Tab mit Cantor-Diagonalargument und berechenbarer Paarungs-Matrix.
-#  * Stage 143: Pascal-Dreieck mit Tiefenlevel sowie Fibonacci-Spirale im Fakten-Bereich.
-#  * Stage 144: Pascal-Dreieck und Fibonacci-Spirale als eigene Fakten-Hauptknoten.
-#  * Stage 145: Fibonacci-QPainter-Grafik, Pascal-Diagonalsummen und Binet-Rechner 1..1000.
-#  * Stage 146: Fibonacci-Fokus nach QPainter-Umstellung auf index_spin korrigiert.
-#  * Stage 147: hellere Pascal-Diagonalfarben; Haupt-/Mathefenster max. 1000 px hoch.
-#  * Stage 148: Hauptfenster startet nach Geometry-Restore zwingend mit 800 px Höhe.
-#  * Stage 149: Beim Öffnen des Mathematik-Docks wird die Höhe aktiv auf max. 1000 px begrenzt.
-#  * Stage 150: Mathematik-Dock eigene Maximalhöhe 900 px; Hauptfenster bleibt max. 1000 px.
-#  * Stage 151: Floating-Mathe-Dock frei resizbar bis max. 900 px Höhe.
-#  * Stage 152: Pascal-Dreieck vereinfacht; schwarze Werte und korrekt zugeordnete blaue Diagonalsummen.
-#  * Stage 153: Pascal-Dreieck nicht mehr gestreckt; feste Zeichenproportionen und feinere Skalierung.
-#  * Stage 154: Fibonacci-QGraphicsScene mit Scrollbars, breiteres Pascal-Dreieck und transparenter Theme-Hintergrund.
-#  * Stage 155: Fibonacci-Graphics-Scene um 60 Prozent verkleinert (Darstellung 40 Prozent), ohne Geometrieverzerrung.
-#  * Stage 156: Pascal-Dreieck in der Fibonacci-Ansicht gezielt 20 Prozent größer.
-#  * Stage 157: Pascal-Dreieck in der Fibonacci-Ansicht nochmals um 20 Prozent größer.
-#  * Stage 158: Formdesigner Timer 42x42/OnTimer, Source-Outline, ASM-Tab, Datenbank-Komponenten und Delete-Codecleanup.
-#  * Stage 159: Unübersetzte-String-Kataloge und gettext-mo-Komponentenmarker für alle Qt-Komponenten.
-#  * Stage 160: getdefaultlocale-Aufrufe entfernt; Timer-Property-Absturz mit QTreeWidgetItem behoben.
-#  * Stage 161: interne WFM-Editor-Buildleisten vollständig entfernt; Source-Outline Dark-Mode angepasst.
-#  * Stage 162: CTRL+F-Suchen-Dialog für Quellcode-Editoren, trefferweise Suche und optionale Projektsuche.
-#  * Stage 232: Projektbaum-Mehrfachauswahl/Delete/F2, umlaufende F3-Suche,
-#    getrennte PE32/PE64-Modulausgaben und qmake-Dual-Target-Beispiele.
-#  * Stage 233: Ausgabe-Pfadhelfer ohne ungültige MainWindow-Klassenreferenz.
-#  * Stage 234: Private Unit-EXTERNAL-Routinen bleiben beim USES-Merge erhalten.
-#  * Stage 163: DBF-Tabellendesigner mit Daten-Tab, typisierten Zellen, Navigation, Kontextmenü und Auto-Save.
-#  * Stage 164: DBF-Dateiöffnung, nicht-visuelle WFM-Properties/Table/SQL, Designer-TAB-Fokus und 4-Space-Indent.
-#  * Stage 166: Bearbeiten-Menü + Ctrl+Z/Ctrl+Y Undo/Redo und Copy/Paste/Cut für Texteditoren.
-#  * Stage 167: Ansicht->Sprache als 4-spaltiges Flaggen-/Radiobutton-Menü aus LANGUAGE_CODES.
-#  * Stage ASM 106: Hauptmenü Projekt mit Öffnen/Schließen und zentralem Save/Close-Dialog.
-#  * Stage 169: vollständige Stage-167-Basis bleibt erhalten; interner MSZIP-Packer für PE32 und PE32+/AMD64.
-#  * Stage 170: gepacktes Layout .text/.loader/.ztext/.idata und optionale lokale DLL-Ordinalimporte.
-#  * Stage 171: Pascal-UNITs als getrennte COFF32/COFF64-Objekte; zielabhängige Wiederverwendung beim EXE-Link.
-#  * Stage 172: PE32-Packed-Image-Compactor; .ztext wird platzsparend in .loader eingebettet.
-#  * Stage 173: konservativer PE32-Compactor; .ztext-Sectionheader/RVAs bleiben vollständig erhalten.
-#  * Stage 210: Projektoptionen fuer D64I-Import-Packer, Groessenwaechter und Mindest-Ersparnis.
-#  * Stage 211: PEB/LDR-Resolver kann die Bootstrap-IAT vollständig entfernen.
-#  * Stage 212: Projekt-/Informationen-Dock seitlich auf maximal 1/4 der Hauptfensterbreite begrenzt.
-#  * Stage 213: Loader-/Runtime-ABI- und Ordinal-Map-Versionierung fuer D64I v2.
-#  * Stage 214: Linker->Optimierung in eine ScrollArea mit Mindestbreite eingebettet.
-#  * Stage 215: Ordinal-Rewriter akzeptiert die erweiterten Stage-213-Importmetadaten.
-#  * Stage 216: PE32-Header auf 64-Byte-DOS-Header minimiert; gepackter Loader physisch vor .idata.
-#  * Stage 217: WFM-Default-Property-Elision, leere Standardstrings und Dead-Property-Imports.
-#  * Stage 218: Cut Multiple Codes bündelt Property-Setter in kompakte DATA-Tabellen.
-#  * Stage 219: Exact Runtime bindet D64I v3 optional an den SHA-256 der kompletten Runtime-DLL.
-#  * Stage 220: PE32 Raw-Section-Fusion entfernt interne FileAlignment-Leerbloecke.
-#  * Stage 221: waehbares physisches Image-Layout Loader+DATA+CODE / Loader+CODE+DATA.
-#  * Stage 222: Windows-IAT bleibt bei konventionellen Importen initialisiert und raw vorhanden.
-#  * Stage 223: Zero-Storage nach .bss, 1-Byte-Property-Laengen, String-Interning und engere Loader/D64Z-Fusion.
-#  * Stage 224: Packed-Property-Decoder lokal in der EXE/DLL; kein neuer Qt5-Runtime-Export erforderlich.
-#  * Stage 225: PE32-.bss-RVA-Planung an den tatsaechlichen Import-Packer-Pfad gebunden; keine falschen BSS-Absolutadressen mehr.
-#  * Stage 226: Linker -> Optionen: PE-Packing pro PE32/PE32+ schaltbar; neue Projekte standardmaessig ungepackt.
-#  * Stage 227: Linker -> Signierung mit Authenticode/SignTool; OpenSSL-CA-Workflow fuer Personal/Web/Server/Code-Signing.
-#  * Stage 174: Pascal-Projektziele Windows PE32/PE32+ mit Module/Units, EXE/DLL-Build und Start.
-#  * Stage 175: Pascal-ANTLR-Parser-Synchronisierung für CLASS virtual/override und COFF32-UNIT-Build.
-#  * Stage 176: Pascal-Kommentare + {$define/ifdef/ifndef/if/elseif/else/endif}-Vorverarbeitung für UNIT/COFF32.
-#  * Stage 186: PUI Information Hiding; nur ABI-/Objekt-Metadaten, kein Pascal-Quelltext.
-#  * Stage 190: Pascal-Projekt-Units nach Namespace (System/Crypto/...) gruppiert; Blattnamen verkürzt.
-#  * Stage 191: PE32+-Pascal-Units nutzen AMD64-Anker; Units-Kontextmenü sortiert auf-/absteigend und speichert.
-#  * Stage 193: interner AMD64-Assembler akzeptiert 8-/16-Bit-ModR/M-Register (z.B. movzx eax, al).
-#  * Stage 198: Pascal-Compile mit QThread und echter 1..100-%-ProgressBar unter dem Quelltexteditor.
-#  * Stage 229: zielgenaue Pascal-COFF-Linkeingaben; Legacy-*.o bevorzugt
-#    *.coff32.o/*.coff64.o, Archive ignorieren Symbolindizes und Fehler nennen
-#    die konkrete Datei samt erkannter Architektur.
-#  * Stage 230: PE32-COFF-Reader akzeptiert .text$*/.data*/.rdata*/.bss*
-#    samt Ausrichtung, Sektionssymbolen und Relocations; kein Zwang mehr auf
-#    eine einzelne, exakt '.text' benannte Sektion. Stage 235 bewahrt .bss virtuell.
-#  * Stage 231: GNU-/Microsoft-Importbibliotheksmitglieder (.idata$* und
-#    IMPORT_OBJECT_HEADER) werden nicht als statische Codeobjekte materialisiert;
-#    DLL-Aufrufe bleiben Aufgabe der vorhandenen d64-Importauflösung.
-#  * Stage 235: echte PE32-.bss-Sektion mit RESB/RESW/RESD/RESQ; nullinitialisierte
-#    Pascal-Runtimeblöcke besitzen keine COFF-/PE-Rohdaten mehr.
-#  * Stage 299: DBF-Tabellen-Designer als zentraler Workspace neben Projekt/Informationen;
-#    Dateisystem/Protokoll bleiben beim Tabellenstart verborgen, Recent-Projekte öffnen erste DBF.
-#  * Stage 296: DBF-Daten-Tab mit Datensatz-hinzufügen-Button (+84 px) und
-#    zeilenweisem Auto-Save nach Schließen des Zell-Editors.
-#  * Stage 239: deutsche Qt-Standard-Kontextmenüs in DBF-Grid-Editoren;
-#    Undo/Redo/Cut/Copy/Paste/Delete/Select All werden übersetzt, Shortcuts bleiben.
-#  * Stage 236: Pascal PE32/PE32+ Projektzweig „Tabellen“ mit DBF-Hinzufügen,
-#    Projektpersistenz und Doppelklick in Tabellen-Designer/-Editor.
-#  * Stage 255: Projekt-Hauptknoten „Commodore C= 64“ direkt unter Bookmarks.
-#  * Stage ASM 30: dBase-Bericht-Builder mit Kopf/Detail/Fuss, PDF/Druck und Projektknoten Berichte.
-#  * Stage ASM 32: Report-PDF-Fontskalierung korrigiert; 10 pt bleiben physische 10 pt.
-#  * Stage ASM 29: dBase-Projektbaum mit Programme/Formulare/Tabellen/Abfragen/Objekt-/Archiv-Dateien.
-#  * Stage ASM 45: SQL-Builder-Headerbreiten persistent; SQL-/Bericht-Builder schliessen alle Docks ausser Projekt.
-#  * Stage ASM 73: dBase-Etiketten-Designer mit Formatbibliothek und DBF/SQL-Feldpalette.
-#  * Stage ASM 74: Etiketten-Layout Speichern/Speichern unter sowie Daten-PDF und druckfertige A4-PDF.
-#  * Stage ASM 75: Etiketten-Layout Laden-Button ueber Speichern; verwendet die bestehende load_layout()-Restore-Logik.
-#  * Stage ASM 76: dBase-Projektbaum mit Etiketten-Unterknoten unter Berichte, *.d64label-Hinzufuegen/Entfernen und Doppelklick-Laden.
-#  * Stage ASM 77: PyQt5-WYSIWYG-HTML-Editor als Docking-Fenster unter Werkzeuge -> HTML Editor.
-#  * Stage ASM 78: HTML-Editor-Tabellen mit horizontaler/vertikaler Maus-Skalierung und exakter Groesseneingabe.
-#  * Stage ASM 11: dBase SQL Builder mit verschiebbaren Tabellen-Proxies, feldgenauen orthogonalen Beziehungen,
-#  * Stage ASM 20: ODBC-Datenquellen/DSN-Auswahl (User/System, 32/64-Bit Fallback),
-#    Login/Test-Dialog und View-Datensatznavigator,
-#    Linienauswahl/Löschen, SQL-Regel-Editor sowie Speichern/Laden von *.d64sql-Projekten.
-# Stage ASM 39: Report-Datenfelder werden vor PDF/Druck frisch aus DBF bzw. aktiver SQL/ODBC-Query geladen.
-# Stage ASM 40: Alle Meldungsdialoge des Bericht-Builders folgen explizit dem Dark-/Light-Mode.
-#  * Stage ASM 12: SQL-Builder mit vertikalem Dreiweg-Splitter, Beziehungs-/Sortierungsgrid,
-#    ORDER-BY-Synchronisierung sowie Design/View-Tabs mit vorbereitetem Query-Ergebnisgrid.
-#  * Stage ASM 27: dBase-ODBC nutzt den SQL-Builder-Pfad explizit als DBQ; DSN-/Effektivpfad-Diagnose
-#  * Stage ASM 41: ODBC-Login mit editierbarem DBQ; DSN-Pfad wird nicht mehr automatisch ueberschrieben.
-#  * Stage ASM 42: dBase ODBC strikt DSN-Manager ODER expliziter Dialog-DBQ; keine versteckten Pfad-Overrides.
-#  * Stage ASM 43: SQL-Builder speichert exakte ODBC-Auswahl; lokaler DBF-SQL-Parser fuer *.d64sql/Reports.
-#  * Stage ASM 28: interner PE32-Assembler mit echter COFF32-.data-Sektion; .section .data/.data/.rdata,
-#    initialisierte DB/DW/DD-Daten und Relocations zwischen .text und .data werden unterstützt.
-#  * Stage ASM 23: ODBC-Login- und ODBC-Meldungsdialoge mit Dark-/Light-Mode
-#  * Stage ASM 24: bitness-aware ODBC-DSNs; 32-Bit-DSNs werden aus 64-Bit-Prozess
-#    ueber einen 32-Bit-Windows-PowerShell-ODBC-Helper getestet/abgefragt.
-#    und Resultat als Python-Liste oder formatierter String.
-#  * Stage 256: *.prg bleibt Binärprogramm; Rohdaten zeigt Disassembly, Hex zeigt 4+4 Bytes.
-#  * Stage 257: C64-PRG/BIN-Disassembly im QThread mit bytebasierter 0..100-%-ProgressBar;
-#  * Stage 258: Formel-Designer: Bruchgrenze per Delete/Backspace löschbar; Zähler und Nenner werden zusammengeführt.
-#  * Stage 262: Formel-Designer: Wurzelgrad ~42px tiefer; Ansicht->Zoom + STRG/Mausrad; Sigma sowie 1-/2-/3-fache Integrale mit Ober-/Unterobjekten.
-#  * Stage 263: Formel-Designer: Wurzelgrad dynamisch auf Höhe der linken Wurzelfaltung;
-#    untere Wurzelfaltung folgt nahezu der Unterkante des Radikanden.
-#  * Stage 259 GEO: Lernen->Deutsch->Geographie mit eingebetteter Deutschlandkarte und Bundesland-Hover.
-#  * Stage 260 GEO: Deutschland-PNG Base85 lazy in deutschland.py; Modul/Qt-Kartenressourcen werden beim Dock-Schliessen freigegeben.
-#  * Stage 344 GEO: Lernen->Geographie->Deutschland/England; England-Karte lazy in england.py, eigenes Vollflaechen-Dock und gemeinsamer Zoom.
-#  * Stage 346 GEO: Frankreich nun als Untermenue Landkarte/Fluesse; nur eine bereinigte Frankreich-Landkarte im Asset, Fluesse als 2-Pixel-Overlay-Pfade.
-#  * Stage 349 GEO: Frankreich-Fluesse aus echten GSHHG/WDBII-Flussgeometrien statt handgezeichneter SVG-Polylinien; Georeferenzierung per Stadtmarkern.
-#  * Stage 261 GEO: Dark-Mode schwarz, Ansicht->Zoom/Strg+Mausrad, Wappen-Tooltip; Wappen lazy in deutschland_wappen.py.
-#  * Stage 259: C64-ProgressBar wird vor Workerstart garantiert gezeichnet; Live-Repaint,
-#               verzögerter Threadstart und Mindestanzeigezeit bis/bei 100 %.
-#    __main__.py startet d64_dism hinter einem Commodore-C64-Splash und übergibt danach den Fokus.
-#  * Stage 258: QtWebEngine-OpenGL-Kontext wird vor QApplication aktiviert; Splash lädt C64Pro.ttf
-#    nicht mehr doppelt. C64Pro bleibt exklusiv für die C64-/Hex-Darstellung im Hauptprogramm.
-#  * Stage 244: Periodensystem als Vollbreiten-Dock; oberer Detailrahmen +64 px,
-#    Kacheln +150 px nach unten und weiße Dock-Titelleisten-Symbole im Dark-Mode.
-#  * Stage 247: Mathematischer Formel-Designer mit QGraphicsScene, Objektfokus,
-#    Exponenten/Klammern/Wurzeln bis Tiefe 32 sowie *.d64formula Save/Load.
-#  * Stage 251: MineSweeper-Mauslernspiel unter Lernen->Computer->Maus mit quadratischen Schwierigkeitsstufen,
-#    Zeit/Punkten, klassischen Nachbarhinweisen, Rechtsklick-Markierung und automatischem Entschärfen.
-#  * Stage 252: C64-BASIC-MineSweeper-Beispiel; RND(FAC) im BASIC-Compiler,
-#    weit-sprungsicheres IF/THEN sowie BASIC->6510-ASM->PRG Buildnachweis.
-#  * Stage 253: C64-BASIC-MineSweeper: GET-Leerstring vor ASC() abgefangen;
-#    behebt ?ILLEGAL QUANTITY ERROR IN 100 in VICE.
-#  * Stage 254: C64-BASIC-MineSweeper: reserviertes ST in Zeile 400 durch T0 ersetzt;
-#    Compiler lehnt numerische Schreibzugriffe auf ST/TI jetzt C64-V2-kompatibel ab.
-#  * Stage 255: MOS-6510-Assembler relaxiert bedingte Sprünge außerhalb ±127 Bytes
-#    automatisch als inversen Kurzsprung über JMP absolute.
-#  * Stage 256: Formel-Designer: Division über '/' als echten Bruchknoten;
-#    Zähler und Nenner werden zweizeilig mit horizontalem Bruchstrich dargestellt.
-#  * Stage 250: Formel-Designer mit 2-px-Textcursor und Links/Rechts-Navigation innerhalb langer Eingabefelder.
-#  * Stage 257: Formel-Designer: Bruch-Rendering korrigiert; Zähler/Nenner und Fokusrahmen sind sichtbar.
-#  * Stage 248: Formel-Eingaberahmen exakt auf Glyphenhöhe + 4 px oben/unten;
-#    n-te Wurzel reserviert die volle Breite des Wurzelgrades vor dem Wurzelsymbol.
-#  * Stage 249: '_' erzeugt tiefgestellte Indizes; Index-Inhalte sind vollwertige
-#    Formelobjekte und können bis Tiefe 32 weiter verschachtelt werden.
-#  * Stage 270: Workstation-Start aus der GUI uebergibt die fertig gelinkte PE32/PE32+-EXE
-#    ausschliesslich ueber die DWR1-Named-Pipe; der Runner startet argumentlos als Host.
-#  * Stage 241: Workstation Runner: generischer PE32/PE32+-Session-Host auf Basis
-#    des vorhandenen src/d64qt5/d64_workstation.cpp; keine Quellsprachenpflicht.
-#  * Stage 237: DBF-Datengrid mit Ganzgrid-/Zeilen-/Spaltenauswahl, Auswahl-Clipboard,
-#    Ausschneiden/Löschen sowie bestätigtem Bereinigen aller Datensätze.
-#  * Stage 238: ESC löscht im DBF-Datengrid ausschließlich die aktuelle Auswahl/Markierung;
-#    Daten und DBF-Inhalt bleiben unverändert. ZIP legt compiler.py unter c64pascal/ ab.
-#  * Stage 137: farbcodierte Zahlenmauern sowie Addition/Subtraktion/Einmaleins/Fehlende-Zahl-Spiele.
-#    Mehrtabellen-Tabs, Feldeditoren und Kontextoperationen für Feldzeilen
-#
-#  * PROLOG Wissen-Browser Stage 71: Stage-70 Multi-Scroll bleibt erhalten;
-#    Alternativen-ComboBox als Viewport-Overlay exakt unter dem Parent-Button,
-#    Dropdown beim Klick sofort geöffnet, lokaler Button "Prüfen +" darunter.
-#    Layout-Verhalten orientiert sich am hochgeladenen Stage-62-Referenzstand.
-#  * PROLOG Wissen-Browser Stage 70: festes Overlay-Panel unter dem Parent-Button
-#  * Stage 69: sichtbare Alternativen-ComboBox durch explizite FlowLayout-Hoehe
-#  * PROLOG Wissen-Browser Stage 65: mehrere unabhängige Abfrage-ScrollAreas in einer Haupt-ScrollArea
-#  * PROLOG IEEE-754 Double: Float-Literale, gemischte Arithmetik und echte /-Division
-#  * zielabhängiger Start in VICE, WinUAE oder als Windows-PE32-Programm
-#  * Operanden-Rechner fuer Dezimal-, Hexadezimal- und Binaerwerte
-#  * integrierter CHM-Viewer mit unterschiedlichen Themen-/Blatt-Icons
-#  * INI-basiertes Projekt-Panel mit geschuetzten Kategorien und *.pro-Dateien
-#  * Projekt-Kontextaktion Neu mit Unbenannt_<n> und passendem Spezialeditor
-#  * Hilfe-Schaltflaeche links neben dem Zoom sowie dunkler Projekt-Oeffnen-Button
-#  * Protokoll-Loeschaktion in der Dock-Leiste und weisse Dock-/Tab-Symbole
-#  * Statusfelder fuer INS/CAPS/NUM, Dateigroesse, Zeile und Spalte
-#  * Registerkarten-Kontextmenue und sprachabhaengige F1-Kontexthilfe
-# * PROLOG Stage 56: benannte Wissenswerte (_name = Wert.) mit Database-ID-Persistenz
-#  * F2-Ein-Tasten-Build fuer BASIC/ASM/C/Pascal/LISP/PROLOG/LOGO/dBase:
-#    Compile/Assemble -> interner Linker -> EXE-Start
-#  * Projekt-TreeList: Doppelklick fuer Datei-/Archivinfos, Einfachklick fuer Checkboxen
-#  * Datei-Neu-Untermenue fuer BASIC, ASM, Pascal, C, LISP, PROLOG, LOGO, dBase und C64-Editoren
-#  * Editor-Zoom sowie umschaltbarer Hell-/Dunkelmodus
-#
 # Installation:
 #    py -m pip install PyQt5 PyQtWebEngine antlr4-python3-runtime==4.13.2 pyodbc
 #
@@ -264,6 +10,8 @@
 #    py d64_dism.py "T:/C64/Images"
 # ---------------------------------------------------------------------------
 from __future__ import annotations
+
+global APP_MENU_BAR
 
 import argparse
 import calendar
@@ -280,6 +28,7 @@ import gc
 import random
 import platform
 import secrets
+import json
 
 from ctypes import wintypes
 from typing import (
@@ -295,14 +44,115 @@ from typing import (
     Union
 )
 
-from html.parser import HTMLParser
-from collections import defaultdict, deque
-from contextlib  import redirect_stderr, redirect_stdout
+from html.parser  import HTMLParser
+from collections  import defaultdict, deque
+from contextlib   import redirect_stderr, redirect_stdout
+
+from text_manager import translate_qt
+
+# ---------------------------------------------------------------------------
+# supported languages ...
+# ---------------------------------------------------------------------------
+lazy from app_lang.deu import APP_LANGUAGE as LANG_DEU
+lazy from app_lang.enu import APP_LANGUAGE as LANG_ENU
+
+#lazy from locales.lang_pol import APP_LANGUAGE as LANG_POL
+#lazy from locales.lang_rus import APP_LANGUAGE as LANG_RUS
+
+APP_LANGUAGE_LOADERS = {
+    "DEU": lambda: LANG_DEU,
+    "ENG": lambda: LANG_ENU,
+    "ENU": lambda: LANG_ENU,
+    #"POL": lambda: LANG_POL,
+    #"RUS": lambda: LANG_RUS,
+}
+
+# ---------------------------------------------------------------------------
+# Menue IDs
+# ---------------------------------------------------------------------------
+APP_LANG_ID__file_menu                          = 0x100100
+APP_LANG_ID__file_menu_statustext               = 0x500200
+
+APP_LANG_ID__edit_menu                          = 0x100200
+APP_LANG_ID__edit_menu_statustext               = 0x100200100100
+
+APP_LANG_ID__view_menu                          = 0x100300
+APP_LANG_ID__view_menu_statustext               = 0x100300100100
+
+APP_LANG_ID__project_menu                       = 0x100400
+APP_LANG_ID__project_menu_statustext            = 0x100400100100
+
+APP_LANG_ID__project_open_action                = 0x100400101
+APP_LANG_ID__project_open_action_statustext     = 0x100400101100
+APP_LANG_ID__project_clos_action                = 0x100400102
+APP_LANG_ID__project_clos_action_statustext     = 0x100400102100
+
+APP_LANG_ID__insert_menu                        = 0x100D00
+APP_LANG_ID__insert_menu_statustext             = 0x100D00100100
+
+APP_LANG_ID__format_menu                        = 0x100C00
+APP_LANG_ID__format_menu_statustext             = 0x100C00100100
+
+APP_LANG_ID__tools_menu                         = 0x100900
+APP_LANG_ID__tools_menu_statustext              = 0x100900100100
+
+# ---------------------------------------------------------------------------
+# Tabellen IDs
+# ---------------------------------------------------------------------------
+APP_LANG_ID__table_menu                         = 0x100E00
+APP_LANG_ID__table_menu_statustext              = 0x100E00100100
+
+APP_LANG_ID__table_record_menu_add              = 0x500100
+APP_LANG_ID__table_record_menu_add_statustext   = 0x500100100
+
+APP_LANG_ID__table_record_menu_del              = 0x500101
+APP_LANG_ID__table_record_menu_del_statustext   = 0x500101100
+
+APP_LANGUAGE = {}
+APP_LANG_ID  = "languageID"
+APP_STAT_ID  = "statusTipID"
+
+APP_CURRENT_LANGUAGE = None
+
+# ---------------------------------------------------------------------------
+# Nur die gewünschte Sprache auflösen.
+# APP_LANGUAGE darf ein Dictionary oder JSON-Text sein.
+# ---------------------------------------------------------------------------
+class LanguageValueError(Exception):
+    def __init__(self, message=""):
+        super().__init__(message)
+        self.message = message
+
+def set_language(language: str) -> dict:
+    global APP_LANGUAGE, CURRENT_LANGUAGE
+    language = language.upper()
+
+    if language not in APP_LANGUAGE_LOADERS:
+        raise LanguageValueError(f"Unknown language: {language}")
+        
+    data = APP_LANGUAGE_LOADERS[language]()
+    if isinstance(data, str):
+        data = json.loads(data)
+
+    if not isinstance(data, dict):
+        raise TypeError(
+            "APP_LANGUAGE muss ein Dictionary "
+            "oder einen JSON-Objekttext enthalten."
+        )
+
+    APP_LANGUAGE = data
+    APP_CURRENT_LANGUAGE = language
+
+    return APP_LANGUAGE
+
+# ---------------------------------------------------------------------------
+# set german as default language ...
+# ---------------------------------------------------------------------------
+set_language("DEU")
 
 import io
 import csv
 import copy
-import json
 import math
 import uuid
 import os
@@ -344,8 +194,7 @@ try:
 except ModuleNotFoundError as exc:
     from   __main__ import APP_INIT, APP_SPLASH
     import __main__
-    if  APP_SPLASH is None:
-        print("eeee")
+
     if  APP_SPLASH is not None:
         APP_SPLASH.close()
 
@@ -733,11 +582,13 @@ FILE_TYPES = {
 DALEK_ATTACK_TSM_SHA256 = ("62bca1663b6cd0cfcf3b53bbcd8073592c7e955ab0edf1216fcb20f1bcba69d5")
 DALEK_INTRO_SHA256      = ("cb2f84b45fe73257d45888ff39fa9fc76883cc9b5241c5770efd7abf3ba91170")
 
+# ---------------------------------------------------------------------------
 # Diese Fingerabdrücke kennzeichnen exakt die sieben nummerierten
 # DALEK-ATTACK-Dateien aus dem untersuchten Diskettenabbild. Das Profil ist
 # absichtlich prüfsummengebunden: Aussagen über ihre gemeinsame Struktur
 # werden dadurch nicht auf zufällig ähnlich benannte fremde Dateien
 # übertragen.
+# ---------------------------------------------------------------------------
 DALEK_NUMBERED_PRG_PROFILES = {
     "b9b99a73068935fe44f7c9979dd68421111a5123519c9f32092cfef537cd5ac9": "00",
     "8ebe9845f93da5e74cf9d18a56dd7c012e9a7e6f60194e56a9b84a45cc3ec0b7": "01",
@@ -758,10 +609,12 @@ WINDOWS_RESERVED_FILENAMES     = frozenset({
     *(f"LPT{number}" for number in range(1, 10)),
 })
 
+# ---------------------------------------------------------------------------
 # Offizielle NMOS-6502/6510-Opcodes. Undokumentierte Opcodes werden im
 # Listing absichtlich als einzelne .byte-Direktiven ausgegeben. Dadurch bleibt
 # die Adressausrichtung erhalten, ohne deren je nach Prozessorrevision
 # abweichendes Verhalten als gesicherte Instruktion darzustellen.
+# ---------------------------------------------------------------------------
 MOS6510_OPCODES: dict[int, tuple[str, str]] = {
     0x00: ("BRK", "imp"),
     0x01: ("ORA", "izx"),
@@ -991,6 +844,7 @@ C64_KERNAL_JSR_ROUTINES: Tuple[Tuple[int, str, str], ...] = (
     (0xFFF3, "IOBASE", "Basisadresse des I/O-Bereichs zurueckgeben"),
 )
 
+# ---------------------------------------------------------------------------
 # Stage 82: zusaetzliche interne ROM-Routinen.
 #
 # Diese Einsprungpunkte sind absichtlich NICHT Teil der offiziellen KERNAL-
@@ -1000,6 +854,7 @@ C64_KERNAL_JSR_ROUTINES: Tuple[Tuple[int, str, str], ...] = (
 #
 # Die BASIC-Tabelle startet mit einem konservativen, in realem 6510-Code
 # haeufig anzutreffenden Satz. Sie kann spaeter additiv erweitert werden.
+# ---------------------------------------------------------------------------
 C64_BASIC_INTERNAL_JSR_ROUTINES: Tuple[Tuple[int, str, str], ...] = (
     (0xA474, "RESTART", "BASIC-Eingabeschleife neu starten"),
     (0xA560, "LNKPRG" , "BASIC-Zeilenzeiger neu verketten"),
@@ -1041,7 +896,9 @@ C64_KERNAL_INTERNAL_JSR_ROUTINES: Tuple[Tuple[int, str, str], ...] = (
     (0xEA81, "IRQRTI" , "IRQ-Register restaurieren und mit RTI zurueckkehren"),
 )
 
+# ---------------------------------------------------------------------------
 # Rueckwaertskompatibler Sammelname aus Stage 81.
+# ---------------------------------------------------------------------------
 C64_INTERNAL_JSR_ROUTINES: Tuple[Tuple[int, str, str], ...] = (
     *C64_BASIC_INTERNAL_JSR_ROUTINES,
     *C64_KERNAL_INTERNAL_JSR_ROUTINES,
@@ -1082,10 +939,12 @@ C64_DISASSEMBLY_CALL_STABILITY.update({
     for address, _name, _description in C64_KERNAL_INTERNAL_JSR_ROUTINES
 })
 
+# ---------------------------------------------------------------------------
 # Stage 83: small contextual data-flow annotations for the most common
 # C64 screen/color stores.  These are deliberately based on opcode bytes,
 # not on pretty-printed assembler text, so labels/formatting cannot change
 # the recognition.
+# ---------------------------------------------------------------------------
 C64_COLOR_NAMES: Tuple[str, ...] = (
     "schwarz",
     "weis",
@@ -1110,6 +969,7 @@ _ASSEMBLER_BRANCHES = frozenset(
     {"BCC", "BCS", "BEQ", "BMI", "BNE", "BPL", "BVC", "BVS"}
 )
 
+# ---------------------------------------------------------------------------
 # Stage 255:
 # Der MOS 6502/6510 kann bei bedingten Sprüngen nur -128..+127 Bytes
 # relativ verzweigen. Der integrierte Assembler relaxiert weiter entfernte
@@ -1127,6 +987,7 @@ _ASSEMBLER_BRANCHES = frozenset(
 # Dadurch bleiben Compiler-Ausgaben auch dann assemblierbar, wenn ein
 # BASIC-Ausdruck/Arrayzugriff einen THEN-/Loop-Block über 127 Bytes anwachsen
 # lässt.
+# ---------------------------------------------------------------------------
 _ASSEMBLER_BRANCH_INVERSE = {
     "BCC": "BCS",
     "BCS": "BCC",
@@ -1153,7 +1014,9 @@ _ASSEMBLER_DIRECTIVE_ALIASES = {
     "end": "empty",
 }
 
+# ---------------------------------------------------------------------------
 # Binärer VICE-Monitor, API-Version 2.
+# ---------------------------------------------------------------------------
 VICE_API_VERSION         = 0x02
 VICE_STX                 = 0x02
 VICE_EVENT_REQUEST_ID    = 0xFFFFFFFF
@@ -1419,6 +1282,7 @@ APACHE_INSTALLER_DOWNLOADS = [
     ),
 ]
 
+# ---------------------------------------------------------------------------
 # ISO-3166-1 Alpha-2 country codes used by X.509/OpenSSL C=.
 # The display names are deliberately German because the surrounding UI
 # is German.
@@ -1605,12 +1469,12 @@ CA_SUBDIVISIONS = {
     "AU": [
         ("ACT", "Australian Capital Territory"),
         ("NSW", "New South Wales"),
-        ("NT", "Northern Territory"),
+        ("NT" , "Northern Territory"),
         ("QLD", "Queensland"),
-        ("SA", "South Australia"),
+        ("SA" , "South Australia"),
         ("TAS", "Tasmania"),
         ("VIC", "Victoria"),
-        ("WA", "Western Australia"),
+        ("WA" , "Western Australia"),
     ],
 }
 
@@ -1647,21 +1511,20 @@ RESOURCE_CODEPAGES = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Codec for raw RC string data and the text column of the hex viewer.
+#
+# Windows structures (STRINGTABLE, DIALOG, MENU, VERSIONINFO) still have
+# mandatory UTF-16LE fields regardless of their PE CodePage metadata.
+# ---------------------------------------------------------------------------
 def _resource_text_codec(codepage: int) -> str:
-    """Codec for raw RC string data and the text column of the hex viewer.
-
-    Windows structures (STRINGTABLE, DIALOG, MENU, VERSIONINFO) still have
-    mandatory UTF-16LE fields regardless of their PE CodePage metadata.
-    """
     page = int(codepage)
-    if page == 1200:
-        return "utf-16le"
-    if page == 65001:
-        return "utf-8"
-    if page == 20127:
-        return "ascii"
-    if page in (0, 1252):
-        return "cp1252"
+    
+    if page == 1200:      return "utf-16le"
+    if page == 65001:     return "utf-8"
+    if page == 20127:     return "ascii"
+    if page in (0, 1252): return "cp1252"
+    
     try:
         import codecs
         codecs.lookup(f"cp{page}")
@@ -1669,43 +1532,45 @@ def _resource_text_codec(codepage: int) -> str:
     except LookupError:
         return "cp1252"  # unsupported metadata: show bytes with ANSI fallback
 
-
+# ---------------------------------------------------------------------------
+# Encode RC raw strings with exactly one terminator in the chosen codec.
+#
+# WSTRING literals explicitly require UTF-16LE and do not follow code_page.
+# Unrepresentable ASCII characters raise an error rather than lose data.
+# ---------------------------------------------------------------------------
 def _resource_encode_string(text: str, codepage: int, *, wide: bool = False) -> bytes:
-    """Encode RC raw strings with exactly one terminator in the chosen codec.
-
-    WSTRING literals explicitly require UTF-16LE and do not follow code_page.
-    Unrepresentable ASCII characters raise an error rather than lose data.
-    """
     codec = "utf-16le" if wide else _resource_text_codec(codepage)
     raw = str(text).encode(codec, errors="strict")
     return raw + (b"\x00\x00" if codec.startswith("utf-16") else b"\x00")
 
-
+# ---------------------------------------------------------------------------
+# These Microsoft resource formats contain structural UTF-16LE fields.
+# ---------------------------------------------------------------------------
 def _resource_has_native_utf16_fields(resource_type) -> bool:
-    """These Microsoft resource formats contain structural UTF-16LE fields."""
     return resource_type in (RT_STRING, RT_DIALOG, RT_MENU, RT_VERSION)
 
-
+# ---------------------------------------------------------------------------
+# Extract UTF-16LE STRINGTABLE text for a virtual ASCII/UTF-8 hex view.
+#
+# Each element is (resource_text_offset, encoded_text, source_byte_offsets).
+# Every emitted byte is mapped back to the beginning of the original
+# UTF-16LE character. This makes a string beginning at native offset 0x150
+# appear at offset 0x150 even though its virtual ASCII text is shorter.
+# Length prefixes and unused STRINGTABLE slots are never interpreted as
+# characters or included as virtual text bytes. Underlying data is intact.
+# ---------------------------------------------------------------------------
 def _resource_stringtable_text_preview(data: bytes, codepage: int) -> tuple[list, int]:
-    """Extract UTF-16LE STRINGTABLE text for a virtual ASCII/UTF-8 hex view.
-
-    Each element is (resource_text_offset, encoded_text, source_byte_offsets).
-    Every emitted byte is mapped back to the beginning of the original
-    UTF-16LE character. This makes a string beginning at native offset 0x150
-    appear at offset 0x150 even though its virtual ASCII text is shorter.
-    Length prefixes and unused STRINGTABLE slots are never interpreted as
-    characters or included as virtual text bytes. Underlying data is intact.
-    """
     import struct
-    raw = bytes(data)
-    offset = 0
-    entries = []
+    raw          = bytes(data)
+    offset       = 0
+    entries      = []
     replacements = 0
-    codec = _resource_text_codec(codepage)
+    codec        = _resource_text_codec(codepage)
+    
     for _ in range(16):
         if offset + 2 > len(raw):
             raise ValueError("STRINGTABLE: Längenfeld unvollständig")
-        length = struct.unpack_from("<H", raw, offset)[0]
+        length  = struct.unpack_from("<H", raw, offset)[0]
         offset += 2
         byte_length = length * 2
         if byte_length > len(raw) - offset:
@@ -1736,17 +1601,20 @@ def _resource_stringtable_text_preview(data: bytes, codepage: int) -> tuple[list
         raise ValueError("STRINGTABLE: zusätzliche Bytes hinter Block")
     return entries, replacements
 
-
-
-def format_resource_hex(data: bytes, codepage: int = 0, *, bytes_per_line: int = 16,
-                        resource_type=None) -> str:
-    """Format original bytes or a codepage-encoded STRINGTABLE text view.
-
-    Native Windows STRINGTABLE entries contain UTF-16LE, regardless of RC
-    code_page. If ASCII/UTF-8 is selected, transcode the *displayed bytes*
-    for each string without rewriting the valid native resource. The hex
-    offset column in this preview refers to the original resource address.
-    """
+# ---------------------------------------------------------------------------
+# Format original bytes or a codepage-encoded STRINGTABLE text view.
+#
+# Native Windows STRINGTABLE entries contain UTF-16LE, regardless of RC
+# code_page. If ASCII/UTF-8 is selected, transcode the *displayed bytes*
+# for each string without rewriting the valid native resource. The hex
+# offset column in this preview refers to the original resource address.
+# ---------------------------------------------------------------------------
+def format_resource_hex(
+    data: bytes,
+    codepage: int = 0, *,
+    bytes_per_line: int = 16,
+    resource_type=None) -> str:
+    
     import codecs
     if bytes_per_line <= 0:
         raise ValueError("bytes_per_line muss positiv sein")
@@ -1758,8 +1626,10 @@ def format_resource_hex(data: bytes, codepage: int = 0, *, bytes_per_line: int =
     group_at = 8
     full_hex_width = bytes_per_line * 3 - 1 + (3 if bytes_per_line > group_at else 0)
 
+    # ---------------------------------------------------------------------------
     # Display a STRINGTABLE's *text*, not its Windows length prefix/UTF16LE
     # structure, when the user selects a one-byte or UTF8 codepage.
+    # ---------------------------------------------------------------------------
     if resource_type == RT_STRING and selected_page in (20127, 65001):
         try:
             text_entries, replaced = _resource_stringtable_text_preview(native, selected_page)
@@ -1767,9 +1637,11 @@ def format_resource_hex(data: bytes, codepage: int = 0, *, bytes_per_line: int =
             # Not a valid full 16-string block: stay in byte-exact raw mode.
             pass
         else:
+            # --------------------------------------------------------------------
             # Bucket the new codepage bytes by the ORIGINAL 16-byte line.
             # The last native UTF-16LE line at 0x150 therefore shows
             # "61 62 65 6E 2E" (ASCII) under the same 0x150 offset.
+            # --------------------------------------------------------------------
             from collections import defaultdict
             grouped_bytes = defaultdict(bytearray)
             view_length = 0
@@ -1822,17 +1694,15 @@ def format_resource_hex(data: bytes, codepage: int = 0, *, bytes_per_line: int =
         lines.append(f"{offset:08X}  {hexpart:<{full_hex_width}}  {shown}")
     return "\n".join(lines)
 
-
-
-
+# ---------------------------------------------------------------------------
+# Show every compiled resource (or one type) as a separate hex block.
+#
+# The offsets inside each block are relative to that resource payload, not
+# offsets inside the RC file or the .res wrapper. The bytes are never merged
+# or silently converted: `format_resource_hex` handles the selected codepage
+# as a display-only STRINGTABLE preview, retaining valid native payloads.
+# ---------------------------------------------------------------------------
 def format_resource_collection_hex(entries, *, resource_type_label=None) -> str:
-    """Show every compiled resource (or one type) as a separate hex block.
-
-    The offsets inside each block are relative to that resource payload, not
-    offsets inside the RC file or the .res wrapper. The bytes are never merged
-    or silently converted: `format_resource_hex` handles the selected codepage
-    as a display-only STRINGTABLE preview, retaining valid native payloads.
-    """
     visible = [entry for entry in entries if resource_type_label is None or
                describe_resource_id(entry.type_id) == resource_type_label]
     if not visible:
@@ -2864,13 +2734,13 @@ class PeriodicTableCanvas(QGraphicsView):
     def set_outer_scroll_area(self, scroll_area):
         self.outer_scroll_area = scroll_area
 
+    # -----------------------------------------------------------------------
+    # Hält die per Tastatur fokussierte Kachel innerhalb der sichtbaren
+    # QScrollArea. Die Element-QWidgets selbst liegen in QGraphicsProxyWidgets
+    # und sind daher keine normalen Child-Widgets der QScrollArea; deshalb
+    # werden die Scrollbars anhand der Proxy-Position gesetzt.
+    # -----------------------------------------------------------------------
     def _ensure_tile_visible(self, tile):
-        """
-        Hält die per Tastatur fokussierte Kachel innerhalb der sichtbaren
-        QScrollArea. Die Element-QWidgets selbst liegen in QGraphicsProxyWidgets
-        und sind daher keine normalen Child-Widgets der QScrollArea; deshalb
-        werden die Scrollbars anhand der Proxy-Position gesetzt.
-        """
         scroll = self.outer_scroll_area
         proxy = getattr(tile, "_periodic_proxy", None)
 
@@ -2940,19 +2810,19 @@ class PeriodicTableCanvas(QGraphicsView):
         reason = Qt.TabFocusReason if delta > 0 else Qt.BacktabFocusReason
         self._focus_tile(self.focus_order[index], reason)
 
+    # -----------------------------------------------------------------------
+    # Räumliche Cursor-Navigation für das Periodensystem.
+    #
+    # Links/Rechts:
+    #     nächste vorhandene Kachel derselben sichtbaren Zeile.
+    #
+    # Oben/Unten:
+    #     nächste vorhandene sichtbare Zeile; darin wird die Kachel mit
+    #     der geringsten Spaltenentfernung gewählt. Das funktioniert auch
+    #     bei den großen Lücken der ersten drei Perioden sowie bei
+    #     Lanthanoiden und Actinoiden.
+    # -----------------------------------------------------------------------
     def focus_direction(self, current_tile, key):
-        """
-        Räumliche Cursor-Navigation für das Periodensystem.
-
-        Links/Rechts:
-            nächste vorhandene Kachel derselben sichtbaren Zeile.
-
-        Oben/Unten:
-            nächste vorhandene sichtbare Zeile; darin wird die Kachel mit
-            der geringsten Spaltenentfernung gewählt. Das funktioniert auch
-            bei den großen Lücken der ersten drei Perioden sowie bei
-            Lanthanoiden und Actinoiden.
-        """
         if current_tile not in self.tiles:
             return
 
@@ -3256,15 +3126,15 @@ class PeriodicTableController:
         QTimer.singleShot(25, self._expand_to_free_width)
         QTimer.singleShot(0, dock.canvas.focus_first)
 
+# -----------------------------------------------------------------------
+# Installiert das Periodensystem in ein bestehendes QMainWindow.
+#
+# Empfohlene Stelle in d64_dism.py:
+#     nachdem die Hauptmenüs erzeugt wurden.
+#
+#     self._periodic_table_controller = install_periodic_table(self)
+# -----------------------------------------------------------------------
 def install_periodic_table(main_window, title_bar_factory=None):
-    """
-    Installiert das Periodensystem in ein bestehendes QMainWindow.
-
-    Empfohlene Stelle in d64_dism.py:
-        nachdem die Hauptmenüs erzeugt wurden.
-
-        self._periodic_table_controller = install_periodic_table(self)
-    """
     controller = getattr(main_window, "_periodic_table_controller", None)
     if controller is None:
         controller = PeriodicTableController(
@@ -3344,15 +3214,14 @@ FORMULA_DESIGNER_CONSOLE_COLOR_VALUES = frozenset(
     for _name, color in FORMULA_DESIGNER_CONSOLE_COLORS
 )
 
-
+# -----------------------------------------------------------------------
+# Färbt einen kompletten Formel-Unterbaum.
+#
+# Damit erhalten bei einem ausgewählten Struktur-Objekt sowohl die
+# strukturellen Symbole (z. B. Σ, ∫, Wurzel, Klammern, Bruchstrich)
+# als auch alle darin enthaltenen Zahlen/Zeichen dieselbe Farbe.
+# -----------------------------------------------------------------------
 def _formula_set_subtree_color(node, color_hex):
-    """
-    Färbt einen kompletten Formel-Unterbaum.
-
-    Damit erhalten bei einem ausgewählten Struktur-Objekt sowohl die
-    strukturellen Symbole (z. B. Σ, ∫, Wurzel, Klammern, Bruchstrich)
-    als auch alle darin enthaltenen Zahlen/Zeichen dieselbe Farbe.
-    """
     if not isinstance(node, dict):
         return False
 
@@ -3646,19 +3515,18 @@ def _formula_last_leaf_id(node):
         result = leaf.get("id")
     return result
 
-
+# -----------------------------------------------------------------------
+# Entfernt die Bruchstruktur und führt Zähler/Nenner wieder horizontal
+# zusammen.
+#
+# Sind beide Seiten einfache Textfelder, werden ihre Texte wirklich zu
+# EINEM Eingabeobjekt verbunden: 2/4 -> 24. Bei komplexen Formelobjekten
+# entsteht eine normale Sequence, damit keine Struktur verloren geht.
+#
+# Rückgabe:
+#     (replacement_node, focus_leaf_id, cursor_position)
+# -----------------------------------------------------------------------
 def _formula_join_fraction_sides(numerator, denominator):
-    """
-    Entfernt die Bruchstruktur und führt Zähler/Nenner wieder horizontal
-    zusammen.
-
-    Sind beide Seiten einfache Textfelder, werden ihre Texte wirklich zu
-    EINEM Eingabeobjekt verbunden: 2/4 -> 24. Bei komplexen Formelobjekten
-    entsteht eine normale Sequence, damit keine Struktur verloren geht.
-
-    Rückgabe:
-        (replacement_node, focus_leaf_id, cursor_position)
-    """
     if (
         numerator.get("type") == "text"
         and denominator.get("type") == "text"
@@ -12717,7 +12585,6 @@ class ResourceScriptCompiler:
         data=struct.pack("<HHHH",1,width&0xFFFF,height&0xFFFF,len(ids)&0xFFFF)+b"".join(struct.pack("<H",i&0xFFFF) for i in ids)
         self.entries.append(ResourceEntry(RT_TOOLBAR,name,data,self.language,memory_flags=MOVEABLE|PURE,codepage=self.codepage,source=str(self.source_path)))
 
-
 # ---------------------------------------------------------------------------
 # Public convenience API / small command line frontend
 # ---------------------------------------------------------------------------
@@ -13011,24 +12878,26 @@ class ResourceRcHighlighter(QSyntaxHighlighter):
             self.setFormat(start_pos, end_pos - start_pos, self.comment_format)
             start = self._block_start.search(text, end_pos)
 
-
+# ---------------------------------------------------------------------------
 # Stage 463: German standard editing context menus for all source editors.
 # Translate ONLY QAction display texts; the existing triggered connections,
 # enabled state, actual QKeySequence shortcuts and separator QAction instances
 # are retained. The literal STRG label deliberately uses the Windows naming.
+# ---------------------------------------------------------------------------
 _SOURCE_EDITOR_CONTEXT_TRANSLATIONS = {
-    "undo": ("Rückgängig", "STRG + Z"),
-    "redo": ("Wiederherstellen", "STRG + Y"),
-    "cut": ("Ausschneiden", "STRG + X"),
-    "copy": ("Kopieren", "STRG + C"),
-    "paste": ("Einfügen", "STRG + V"),
-    "delete": ("Löschen", ""),
-    "select all": ("Alles markieren", "STRG + A"),
+    "undo"      : ("Rückgängig"         , "STRG + Z"),
+    "redo"      : ("Wiederherstellen"   , "STRG + Y"),
+    "cut"       : ("Ausschneiden"       , "STRG + X"),
+    "copy"      : ("Kopieren"           , "STRG + C"),
+    "paste"     : ("Einfügen"           , "STRG + V"),
+    "delete"    : ("Löschen"            , ""),
+    "select all": ("Alles markieren"    , "STRG + A"),
 }
 
-
+# ---------------------------------------------------------------------------
+# Germanise Qt's editing actions in-place, preserving separators/actions.
+# ---------------------------------------------------------------------------
 def _translate_source_editor_context_menu(menu):
-    """Germanise Qt's editing actions in-place, preserving separators/actions."""
     for action in menu.actions():
         if action is None or action.isSeparator():
             continue
@@ -13142,17 +13011,17 @@ class ResourceCodeEditor(GermanSourceEditorContextMenuMixin, QPlainTextEdit):
         painter = QPainter(self.line_number_area)
         try:
             if self._dark_mode:
-                background = QColor("#252526")
-                foreground = QColor("#9A9A9A")
-                current = QColor("#FFFFFF")
-                current_background = QColor("#303030")
-                separator = QColor("#3A3A3A")
+                background          = QColor("#252526")
+                foreground          = QColor("#9A9A9A")
+                current             = QColor("#FFFFFF")
+                current_background  = QColor("#303030")
+                separator           = QColor("#3A3A3A")
             else:
-                background = QColor("#F0F0F0")
-                foreground = QColor("#707070")
-                current = QColor("#000000")
-                current_background = QColor("#FFF2A8")
-                separator = QColor("#C8C8C8")
+                background          = QColor("#F0F0F0")
+                foreground          = QColor("#707070")
+                current             = QColor("#000000")
+                current_background  = QColor("#FFF2A8")
+                separator           = QColor("#C8C8C8")
 
             painter.fillRect(event.rect(), background)
             painter.setPen(separator)
@@ -14872,8 +14741,8 @@ class TranslationManager:
 # ---------------------------------------------------------------------------
 I18N = TranslationManager()
 
-def tr(msgid: str) -> str:
-    return I18N.tr(msgid)
+def tr(msgid: str) -> str : return I18N.tr(msgid)
+def Switch_Lang(lang: str): return I18N.switch_lang(lang)
 
 class TeeTextWriter:
     """
@@ -32184,20 +32053,18 @@ def _odbc_text_value(value: object) -> str:
         return value.isoformat(sep=" ") if isinstance(value, dt.datetime) else value.isoformat()
     return str(value)
 
-
+# -----------------------------------------------------------------------
+# Kleine, wiederverwendbare ODBC-Verbindung fuer den dBase SQL Builder.
+#
+# Beispiel::
+#
+#     with D64ODBCConnection("DSN=MeineDatenbank;UID=user;PWD=pw") as db:
+#         rows = db.execute("SELECT ID, NAME FROM CUSTOMER", result_type="list")
+#
+# result_type="list"   -> List[List[Any]]
+# result_type="string" -> tabulatorgetrennter String
+# -----------------------------------------------------------------------
 class D64ODBCConnection:
-    """
-    Kleine, wiederverwendbare ODBC-Verbindung fuer den dBase SQL Builder.
-
-    Beispiel::
-
-        with D64ODBCConnection("DSN=MeineDatenbank;UID=user;PWD=pw") as db:
-            rows = db.execute("SELECT ID, NAME FROM CUSTOMER", result_type="list")
-
-    result_type="list"   -> List[List[Any]]
-    result_type="string" -> tabulatorgetrennter String
-    """
-
     def __init__(
         self,
         connection_string: str,
@@ -32321,7 +32188,28 @@ class D64ODBCConnection:
                 except Exception:
                     pass
 
-
+# -----------------------------------------------------------------------
+# One-Shot-Helfer: ODBC verbinden -> SQL ausfuehren -> Verbindung schliessen.
+#
+# Beispiel Liste::
+#
+#     rows = execute_odbc_sql(
+#         "DSN=MeineDB;UID=user;PWD=secret",
+#         "SELECT ID, NAME FROM CUSTOMER WHERE ID > ?",
+#         [10],
+#         result_type="list",
+#         include_columns=True,
+#     )
+#
+# Beispiel String::
+#
+#     text = execute_odbc_sql(
+#         "DSN=MeineDB",
+#         "SELECT ID, NAME FROM CUSTOMER",
+#         result_type="string",
+#         include_columns=True,
+#     )
+# -----------------------------------------------------------------------
 def execute_odbc_sql(
     connection_string: str,
     sql: str,
@@ -32332,30 +32220,7 @@ def execute_odbc_sql(
     timeout: int = 30,
     autocommit: bool = False,
     column_separator: str = "\t",
-    row_separator: str = "\n",
-) -> Union[List[List[Any]], str]:
-    """
-    One-Shot-Helfer: ODBC verbinden -> SQL ausfuehren -> Verbindung schliessen.
-
-    Beispiel Liste::
-
-        rows = execute_odbc_sql(
-            "DSN=MeineDB;UID=user;PWD=secret",
-            "SELECT ID, NAME FROM CUSTOMER WHERE ID > ?",
-            [10],
-            result_type="list",
-            include_columns=True,
-        )
-
-    Beispiel String::
-
-        text = execute_odbc_sql(
-            "DSN=MeineDB",
-            "SELECT ID, NAME FROM CUSTOMER",
-            result_type="string",
-            include_columns=True,
-        )
-    """
+    row_separator: str = "\n") -> Union[List[List[Any]], str]:
     with D64ODBCConnection(
         connection_string,
         timeout=timeout,
@@ -32426,14 +32291,14 @@ def d64_resolve_runtime_resource(relative_path: str) -> Path:
 
 _QTWEBENGINE_PREFLIGHT_CACHE: Optional[Tuple[bool, str]] = None
 
-
+# -----------------------------------------------------------------------
+# Prüft im PyInstaller-Bundle die für QtWebEngine nötigen Dateien.
+#
+# Die Prüfung läuft bewusst vor der Konstruktion von QWebEngineView. Fehlt
+# eine native Chromium-Komponente, kann Qt sonst den Prozess beenden, bevor
+# Python eine Exception oder einen Traceback erzeugen kann.
+# -----------------------------------------------------------------------
 def d64_qtwebengine_frozen_preflight() -> Tuple[bool, str]:
-    """Prüft im PyInstaller-Bundle die für QtWebEngine nötigen Dateien.
-
-    Die Prüfung läuft bewusst vor der Konstruktion von QWebEngineView. Fehlt
-    eine native Chromium-Komponente, kann Qt sonst den Prozess beenden, bevor
-    Python eine Exception oder einen Traceback erzeugen kann.
-    """
     global _QTWEBENGINE_PREFLIGHT_CACHE
     if _QTWEBENGINE_PREFLIGHT_CACHE is not None:
         return _QTWEBENGINE_PREFLIGHT_CACHE
@@ -32863,15 +32728,15 @@ def _pascal_patch_frontend_parser_bindings(
             except (AttributeError, TypeError):
                 pass
 
-
+# -----------------------------------------------------------------------
+# Prefer and validate the repo-local Pascal ANTLR frontend.
+#
+# This routine deliberately returns a diagnostic dictionary instead of
+# raising. Existing compiler error handling therefore remains untouched.
+# -----------------------------------------------------------------------
 def prepare_pascal_frontend_for_compile(
     source_path: Optional[Path] = None,
 ) -> Dict[str, object]:
-    """Prefer and validate the repo-local Pascal ANTLR frontend.
-
-    This routine deliberately returns a diagnostic dictionary instead of
-    raising. Existing compiler error handling therefore remains untouched.
-    """
     info: Dict[str, object] = {
         "ready": False,
         "reason": "Kein src/asmjit-Pascalparser gefunden.",
@@ -33256,7 +33121,13 @@ def _pascal_pp_expand_identifier(
         return str(macros[key])
     return identifier
 
-
+# -----------------------------------------------------------------------
+# Preprocess Pascal while preserving physical line numbers.
+#
+# Directives are blanked to spaces; comments and inactive conditional blocks
+# are likewise blanked while every original newline remains present. This
+# keeps ANTLR error line numbers aligned with the editor/source file.
+# -----------------------------------------------------------------------
 def preprocess_pascal_source(
     source: str,
     *,
@@ -33264,12 +33135,6 @@ def preprocess_pascal_source(
     predefined_macros: Optional[Dict[str, object]] = None,
     link_search_paths: Iterable[Path | str] = (),
 ) -> PascalPreprocessResult:
-    """Preprocess Pascal while preserving physical line numbers.
-
-    Directives are blanked to spaces; comments and inactive conditional blocks
-    are likewise blanked while every original newline remains present. This
-    keeps ANTLR error line numbers aligned with the editor/source file.
-    """
     text = str(source or "")
     macros: Dict[str, str] = {}
     defined = set()
@@ -33777,14 +33642,14 @@ def _dbase_dbf_field_bytes(value: str, field_type: str, length: int) -> bytes:
         return first.encode("ascii").ljust(length, b" ")
     return text.encode("cp1252", errors="replace")[:length].ljust(length, b" ")
 
-
+# -----------------------------------------------------------------------
+# Stage 521: benennt eine DBF ohne Ueberschreiben samt Sidecars um.
+#
+# Geprueft werden Quell-/Ziel-Dateien, Verzeichnisrechte, NTFS-typische
+# Kollisionen ohne Beachtung der Grossschreibung und eventuelle OS-Fehler.
+# Bei einem Fehler werden bereits umbenannte Dateien zurueckgerollt.
+# -----------------------------------------------------------------------
 def rename_dbase_table_files(source: Path, new_name: str) -> Path:
-    """Stage 521: benennt eine DBF ohne Ueberschreiben samt Sidecars um.
-
-    Geprueft werden Quell-/Ziel-Dateien, Verzeichnisrechte, NTFS-typische
-    Kollisionen ohne Beachtung der Grossschreibung und eventuelle OS-Fehler.
-    Bei einem Fehler werden bereits umbenannte Dateien zurueckgerollt.
-    """
     source = Path(source).expanduser().absolute()
     name = str(new_name or "").strip()
     if (not name or name in {".", ".."}
@@ -34134,13 +33999,13 @@ def _d64sql_split_boolean_and(text: str) -> List[str]:
     parts.append(source[start:].strip())
     return [p for p in parts if p]
 
-
+# -----------------------------------------------------------------------
+# Fuehrt den SELECT-Dialekt des SQL Builders direkt auf DBF-Dateien aus.
+#
+# Dadurch kann insbesondere der Bericht Builder *.d64sql als Datenquelle
+# verwenden, ohne dass eine ODBC-Verbindung bereits live geoeffnet sein muss.
+# -----------------------------------------------------------------------
 def execute_d64sql_dbf_project(payload: Dict[str, object], *, sql: str = '') -> Tuple[List[str], List[List[object]]]:
-    """Fuehrt den SELECT-Dialekt des SQL Builders direkt auf DBF-Dateien aus.
-
-    Dadurch kann insbesondere der Bericht Builder *.d64sql als Datenquelle
-    verwenden, ohne dass eine ODBC-Verbindung bereits live geoeffnet sein muss.
-    """
     query_text = str(sql or payload.get('sql', '') or '').strip()
     parsed = _d64sql_parse_select(query_text)
 
@@ -34554,13 +34419,13 @@ def _parse_c64_petscii_unicode(value) -> int:
         raise ValueError(f"Ungueltiger Unicode-Codepoint: {value}")
     return result
 
-
+# -----------------------------------------------------------------------
+# Laedt eine 256-Eintraege-Tabelle; bei Problemen unveraenderte Defaults.
+#
+# JSON-Key: Byte als 0x00..0xFF oder 0..255; Wert: U+XXXX.
+# Unvollstaendige/duplizierte Maps werden verworfen, nie still gemischt.
+# -----------------------------------------------------------------------
 def load_c64_petscii_unicode_map(path: Optional[Path] = None) -> Dict[int, int]:
-    """Laedt eine 256-Eintraege-Tabelle; bei Problemen unveraenderte Defaults.
-
-    JSON-Key: Byte als 0x00..0xFF oder 0..255; Wert: U+XXXX.
-    Unvollstaendige/duplizierte Maps werden verworfen, nie still gemischt.
-    """
     fallback = _build_c64_petscii_to_c64pro_codepoint()
     if path is None:
         # Im PyInstaller-onedir-Build bleibt die editierbare Map neben der EXE.
@@ -34635,16 +34500,16 @@ VICE_BINARY_MONITOR_RESOURCE_SET = 0x52
 class ViceBinaryMonitorError(RuntimeError):
     pass
 
-
+# -----------------------------------------------------------------------
+# Erkennt die Compiler-Erweiterung LOAD SCREEN im VICE-Debugpfad.
+#
+# VICE fuehrt im Keyboard-Feed das originale C64 BASIC V2 aus. ``LOAD
+# SCREEN`` ist dagegen eine d64_dism-Compiler-Erweiterung und muss deshalb
+# hostseitig ueber den Binary Monitor umgesetzt werden. Ein optionaler
+# BASIC-Zeilennummernpraefix wird mitgeliefert, damit beim Programmtransfer
+# eine REM-Platzhalterzeile erzeugt werden kann.
+# -----------------------------------------------------------------------
 def c64_basic_debug_load_screen(line: str):
-    """Erkennt die Compiler-Erweiterung LOAD SCREEN im VICE-Debugpfad.
-
-    VICE fuehrt im Keyboard-Feed das originale C64 BASIC V2 aus. ``LOAD
-    SCREEN`` ist dagegen eine d64_dism-Compiler-Erweiterung und muss deshalb
-    hostseitig ueber den Binary Monitor umgesetzt werden. Ein optionaler
-    BASIC-Zeilennummernpraefix wird mitgeliefert, damit beim Programmtransfer
-    eine REM-Platzhalterzeile erzeugt werden kann.
-    """
     text = str(line or "").strip()
     match = re.fullmatch(
         r'(?is)(?:(\d+)\s+)?(?:LOAD\s+SCREEN|LOADSCREEN|SCREENLOAD)\s+'
@@ -34656,16 +34521,16 @@ def c64_basic_debug_load_screen(line: str):
     number = int(match.group(1)) if match.group(1) else None
     return number, match.group(2).replace('""', '"')
 
-
+# -----------------------------------------------------------------------
+# Kodiert die fuer den BASIC-Debugtransfer benoetigte PETSCII-Teilmenge.
+#
+# C64-Pro-Direct-PETSCII-Zeichen U+E000..U+E0FF werden bytegenau
+# uebertragen. BASIC-Schluesselwoerter liegen im Editor ohnehin in
+# Grossschrift. Kleinbuchstaben werden fuer den Debug-Tastaturpfad auf die
+# robuste Upper/Graphics-PETSCII-Teilmenge abgebildet; der Compilerpfad wird
+# dadurch nicht beruehrt.
+# -----------------------------------------------------------------------
 def c64_basic_text_to_petscii(text: str) -> bytes:
-    """Kodiert die fuer den BASIC-Debugtransfer benoetigte PETSCII-Teilmenge.
-
-    C64-Pro-Direct-PETSCII-Zeichen U+E000..U+E0FF werden bytegenau
-    uebertragen. BASIC-Schluesselwoerter liegen im Editor ohnehin in
-    Grossschrift. Kleinbuchstaben werden fuer den Debug-Tastaturpfad auf die
-    robuste Upper/Graphics-PETSCII-Teilmenge abgebildet; der Compilerpfad wird
-    dadurch nicht beruehrt.
-    """
     # Im C64-BASIC-Editor sind TABs ein reines Layoutzeichen. Die VICE-
     # Tastatur-API erwartet dagegen PETSCII und kann Unicode TAB (U+0009)
     # nicht als druckbaren Text entgegennehmen. Nur den Uebertragungsstrom
@@ -34941,12 +34806,13 @@ class ViceBinaryMonitorClient:
             address, bytes((int(value) & 0xFF,)), side_effects=True
         )
 
+    # -----------------------------------------------------------------------
+    # Uebertraegt die bereits dekodierten Host-Sprites in den C64-RAM.
+    #
+    # Keine PRG-Ladeadresse als Nutzdaten und kein Grafikmoduswechsel:
+    # Sprite-Pointer/Enable/Farben kontrolliert weiterhin das BASIC-Programm.
+    # -----------------------------------------------------------------------
     def load_sprite_resource(self, address: int, data: bytes) -> None:
-        """Uebertraegt die bereits dekodierten Host-Sprites in den C64-RAM.
-
-        Keine PRG-Ladeadresse als Nutzdaten und kein Grafikmoduswechsel:
-        Sprite-Pointer/Enable/Farben kontrolliert weiterhin das BASIC-Programm.
-        """
         address = int(address)
         payload = bytes(data)
         if not payload or len(payload) % 64 or address % 64 or address + len(payload) > 0x10000:
@@ -35012,14 +34878,15 @@ class ViceBinaryMonitorClient:
             bytes((kind, len(encoded_name))) + encoded_name + bytes((len(payload),)) + payload,
         )
 
+    # -----------------------------------------------------------------------
+    # Expose staged sprites through VICE's KERNAL filesystem traps.
+    #
+    # - FileSystemDevice8 selects the host directory as backend.
+    # - TrapDevice8 (VICE >= 3.10) / VirtualDevice8 (older VICE)
+    #   enables KERNAL traps. BusDevice8/IECDevice8 are NOT equivalent.
+    # - True Drive Emulation must not intercept the LOAD request.
+    # -----------------------------------------------------------------------
     def configure_virtual_drive8(self, directory: Path) -> None:
-        """Expose staged sprites through VICE's KERNAL filesystem traps.
-
-        - FileSystemDevice8 selects the host directory as backend.
-        - TrapDevice8 (VICE >= 3.10) / VirtualDevice8 (older VICE)
-          enables KERNAL traps. BusDevice8/IECDevice8 are NOT equivalent.
-        - True Drive Emulation must not intercept the LOAD request.
-        """
         directory = Path(directory).resolve()
         if not directory.is_dir():
             raise ViceBinaryMonitorError(
@@ -35733,14 +35600,14 @@ _X86_SETCC = {
     "setg": 0x9F, "setnle": 0x9F,
 }
 
-
+# -----------------------------------------------------------------------
+# Parst die ueblichen 32-Bit-Intel-Speicheroperanden.
+#
+# Unterstuetzt werden [reg], [reg+disp], [base+index*scale+disp] und
+# [symbol]. Ein Symbol zusammen mit Basis-/Indexregister wird bewusst noch
+# abgewiesen, damit Relocations deterministisch bleiben.
+# -----------------------------------------------------------------------
 def _x86_memory_operand(text: str, line: int):
-    """Parst die ueblichen 32-Bit-Intel-Speicheroperanden.
-
-    Unterstuetzt werden [reg], [reg+disp], [base+index*scale+disp] und
-    [symbol]. Ein Symbol zusammen mit Basis-/Indexregister wird bewusst noch
-    abgewiesen, damit Relocations deterministisch bleiben.
-    """
     match = _X86_SIZE_PREFIX_RE.fullmatch(str(text).strip())
     if match is None:
         return None
@@ -35910,7 +35777,22 @@ def _pe32_unquote(text: str) -> str:
         return str(decoded)
     return value
 
-
+# -----------------------------------------------------------------------
+# Parst den internen IA-32-Assembler einschließlich Linker-Metadaten.
+#
+# Zusätzliche Direktiven:
+#
+# ``import symbol, "dll", "member"``
+#     Ordnet ein externes COFF-Symbol einem DLL-Import zu. Wird ``member``
+#     weggelassen, wird der Symbolname als DLL-Member verwendet.
+#
+# ``export public_name, internal_symbol``
+#     Exportiert beim DLL-Link den internen COFF-Symbolnamen unter dem
+#     angegebenen öffentlichen Namen. Der zweite Operand ist optional.
+#
+# ``dllname "name.dll"``
+#     Speichert den gewünschten DLL-Namen im COFF32-Objekt.
+# -----------------------------------------------------------------------
 def _parse_pe32_source_lines(
     source: str,
     progress_callback=None,
@@ -35925,21 +35807,6 @@ def _parse_pe32_source_lines(
     Optional[str],
     int,
 ]:
-    """Parst den internen IA-32-Assembler einschließlich Linker-Metadaten.
-
-    Zusätzliche Direktiven:
-
-    ``import symbol, "dll", "member"``
-        Ordnet ein externes COFF-Symbol einem DLL-Import zu. Wird ``member``
-        weggelassen, wird der Symbolname als DLL-Member verwendet.
-
-    ``export public_name, internal_symbol``
-        Exportiert beim DLL-Link den internen COFF-Symbolnamen unter dem
-        angegebenen öffentlichen Namen. Der zweite Operand ist optional.
-
-    ``dllname "name.dll"``
-        Speichert den gewünschten DLL-Namen im COFF32-Objekt.
-    """
     lines: List[Tuple[int, str, str]] = []
     labels: Dict[str, int] = {}
     symbol_sections: Dict[str, str] = {}
@@ -37073,7 +36940,12 @@ def _build_pe32_export_section(
         struct.pack_into("<H", data, ordinal_offset + index * 2, index)
     return bytes(data)
 
-
+# -----------------------------------------------------------------------
+# Schreibt ein vollständiges PE32-EXE- oder DLL-Image intern.
+#
+# Es werden keine externen Compiler, Assembler oder Linker verwendet.
+# ``code`` ist bereits aus internen COFF32-Objekten zusammengeführt.
+# -----------------------------------------------------------------------
 def build_pe32_image_with_imports_exports(
     code: bytes,
     entry_offset: Optional[int],
@@ -37086,13 +36958,7 @@ def build_pe32_image_with_imports_exports(
     dll: bool = False,
     image_base: int = PE32_IMAGE_BASE,
     base_relocations: Optional[Sequence[int]] = None,
-    bss_size: int = 0,
-) -> Tuple[bytes, bytes]:
-    """Schreibt ein vollständiges PE32-EXE- oder DLL-Image intern.
-
-    Es werden keine externen Compiler, Assembler oder Linker verwendet.
-    ``code`` ist bereits aus internen COFF32-Objekten zusammengeführt.
-    """
+    bss_size: int = 0) -> Tuple[bytes, bytes]:
     text = bytearray(code)
     text_rva = PE32_SECTION_RVA
     bss_size = max(0, int(bss_size or 0))
@@ -38429,14 +38295,14 @@ def _coff32_metadata_bytes(obj: PE32ObjectProgram) -> bytes:
         return b""
     return (json.dumps(document, ensure_ascii=True, sort_keys=True) + "\n").encode("ascii")
 
-
+# -----------------------------------------------------------------------
+# Schreibt ein Microsoft-COFF32-Objekt ohne externen Assembler.
+#
+# Linker-Metadaten werden optional in einer echten ``.drectve``-Sektion
+# gespeichert. Dadurch bleiben DLL-Import-/Exportinformationen auch nach
+# dem Ablegen in einer ``.o``-Datei oder einem ``.a``-Archiv erhalten.
+# -----------------------------------------------------------------------
 def write_coff32_object(obj: PE32ObjectProgram) -> bytes:
-    """Schreibt ein Microsoft-COFF32-Objekt ohne externen Assembler.
-
-    Linker-Metadaten werden optional in einer echten ``.drectve``-Sektion
-    gespeichert. Dadurch bleiben DLL-Import-/Exportinformationen auch nach
-    dem Ablegen in einer ``.o``-Datei oder einem ``.a``-Archiv erhalten.
-    """
     all_names = list(obj.symbols.keys())
     for name in obj.externals:
         if name not in all_names:
@@ -38934,7 +38800,14 @@ def parse_coff32_archive(data: bytes) -> Tuple[Tuple[str, bytes], ...]:
         members.append((name or "<unbenannt>", member_data))
     return tuple(members)
 
-
+# -----------------------------------------------------------------------
+# Linkt interne COFF32-Objekte zu einer PE32-EXE oder -DLL.
+#
+# Import- und Exportinformationen werden primär aus der ".drectve"-Sektion
+# der Objekte übernommen. Zusätzlich können sie programmgesteuert ergänzt
+# werden. Nicht explizit zugeordnete Win32-Symbole dürfen weiterhin über
+# ``PE32_DEFAULT_IMPORTS`` aufgelöst werden.
+# -----------------------------------------------------------------------
 def link_coff32_objects(
     objects: Sequence[bytes],
     *,
@@ -38943,15 +38816,7 @@ def link_coff32_objects(
     dll: bool = False,
     imports: Optional[Dict[str, Tuple[str, str]]] = None,
     exports: Optional[Dict[str, str]] = None,
-    dll_name: Optional[str] = None,
-) -> PE32Program:
-    """Linkt interne COFF32-Objekte zu einer PE32-EXE oder -DLL.
-
-    Import- und Exportinformationen werden primär aus der ``.drectve``-Sektion
-    der Objekte übernommen. Zusätzlich können sie programmgesteuert ergänzt
-    werden. Nicht explizit zugeordnete Win32-Symbole dürfen weiterhin über
-    ``PE32_DEFAULT_IMPORTS`` aufgelöst werden.
-    """
+    dll_name: Optional[str] = None) -> PE32Program:
     parsed = [parse_coff32_object(item) for item in objects]
     code = bytearray()
     object_bases: List[int] = []
@@ -39273,16 +39138,16 @@ def _coff_target_header_matches(data: bytes, target: str) -> bool:
     )
     return machine == expected_machine and sections >= 1 and optional_size == 0
 
-
+# -----------------------------------------------------------------------
+# Erkennt GNU-dlltool- und Microsoft-Short-Import-Mitglieder.
+#
+# Importbibliotheken sind Symbolkataloge für eine DLL, keine statischen
+# Laufzeitobjekte. Der d64-Linker erzeugt seine IAT/ILT bereits aus den
+# "import" -Deklarationen des generierten Hauptobjekts. Ein zusätzliches
+# Materialisieren der .idata$*-Fragmente würde unvollständige fremde
+# Importtabellen als normalen Programmcode behandeln.
+# -----------------------------------------------------------------------
 def _coff_import_library_member(data: bytes, target: str) -> bool:
-    """Erkennt GNU-dlltool- und Microsoft-Short-Import-Mitglieder.
-
-    Importbibliotheken sind Symbolkataloge für eine DLL, keine statischen
-    Laufzeitobjekte. Der d64-Linker erzeugt seine IAT/ILT bereits aus den
-    ``import``-Deklarationen des generierten Hauptobjekts. Ein zusätzliches
-    Materialisieren der .idata$*-Fragmente würde unvollständige fremde
-    Importtabellen als normalen Programmcode behandeln.
-    """
     payload = bytes(data)
     expected_machine = (
         IMAGE_FILE_MACHINE_AMD64
@@ -39368,21 +39233,21 @@ def _coff_preferred_input_for_target(path: Path, target: str) -> Path:
             continue
     return original
 
-
+# -----------------------------------------------------------------------
+# Liest COFF-Objekte und extrahiert Archive symbolorientiert.
+#
+# Stage ASM 29: ".a/.lib" werden nicht mehr blind vollständig in den
+# Link aufgenommen. Zuerst werden die normalen Objektdateien ausgewertet;
+# anschließend werden aus Archiven iterativ nur Mitglieder übernommen, die
+# aktuell noch undefinierte Symbole bereitstellen. Referenzen eines neu
+# ausgewählten Archivmitglieds können wiederum weitere Mitglieder nachziehen.
+# -----------------------------------------------------------------------
 def _coff_link_input_objects(
     paths: Sequence[Path],
     *,
     target: str,
     required_symbols: Sequence[str] = (),
 ) -> List[bytes]:
-    """Liest COFF-Objekte und extrahiert Archive symbolorientiert.
-
-    Stage ASM 29: ``.a/.lib`` werden nicht mehr blind vollständig in den
-    Link aufgenommen. Zuerst werden die normalen Objektdateien ausgewertet;
-    anschließend werden aus Archiven iterativ nur Mitglieder übernommen, die
-    aktuell noch undefinierte Symbole bereitstellen. Referenzen eines neu
-    ausgewählten Archivmitglieds können wiederum weitere Mitglieder nachziehen.
-    """
     is64 = str(target).casefold() == "pe64"
     expected = "AMD64-COFF64" if is64 else "IA-32-COFF32"
     error_type = PE64AssemblerError if is64 else PE32AssemblerError
@@ -39731,16 +39596,16 @@ def _x64_memory_operand(text: str, line: int):
         raise PE64AssemblerError("Symbol+Register-Adressierung wird im PE64-Assembler noch nicht unterstützt.", line)
     return {"size":size,"base":base,"index":index,"scale":scale,"disp":disp,"symbol":symbol,"rip":rip}
 
-
+# -----------------------------------------------------------------------
+# Return (body, rex_r, rex_x, rex_b, relocation_local, relocation_symbol).
+#
+# Stage 193: ModR/M r/m operands are not limited to the 32/64-bit register
+# table.  Instructions such as ``movzx eax, al`` and ``movzx eax, ax``
+# use an 8/16-bit source register but encode the same register number in the
+# ModR/M r/m field.  Rejecting AL here made valid PE64 code generated for
+# Pascal Boolean comparisons fail while assembling System.Objects.pas.
+# -----------------------------------------------------------------------
 def _x64_rm_body(reg_field: int, operand: str, line: int):
-    """Return (body, rex_r, rex_x, rex_b, relocation_local, relocation_symbol).
-
-    Stage 193: ModR/M r/m operands are not limited to the 32/64-bit register
-    table.  Instructions such as ``movzx eax, al`` and ``movzx eax, ax``
-    use an 8/16-bit source register but encode the same register number in the
-    ModR/M r/m field.  Rejecting AL here made valid PE64 code generated for
-    Pascal Boolean comparisons fail while assembling System.Objects.pas.
-    """
     key = str(operand).strip().casefold()
     if key in _X64_REG_CODE:
         rm = _X64_REG_CODE[key]
@@ -39787,19 +39652,20 @@ def _x64_rm_body(reg_field: int, operand: str, line: int):
     return bytes(out), (reg_field>>3)&1, rex_x, rex_b, None, None
 
 
+# -----------------------------------------------------------------------
+# Append opcode + ModR/M/SIB/displacement for an AMD64 r/m operand.
+#
+# For RIP-relative symbolic memory operands COFF needs REL32_N whenever
+# bytes follow the displacement in the *same instruction*.  Plain REL32
+# is relative to the byte immediately after the disp32 field, while the
+# CPU uses RIP at the end of the complete instruction.  Without the N
+# adjustment ``add dword ptr [symbol], 2`` addresses ``symbol+4``.
+# -----------------------------------------------------------------------
 def _x64_append_rm(
     out: bytearray, opcode: bytes, reg_field: int, operand: str, line: int, *,
     w: bool=False, force_rex: bool=False, relocs=None, base_offset=0,
     rip_tail_bytes: int=0,
 ):
-    """Append opcode + ModR/M/SIB/displacement for an AMD64 r/m operand.
-
-    For RIP-relative symbolic memory operands COFF needs REL32_N whenever
-    bytes follow the displacement in the *same instruction*.  Plain REL32
-    is relative to the byte immediately after the disp32 field, while the
-    CPU uses RIP at the end of the complete instruction.  Without the N
-    adjustment ``add dword ptr [symbol], 2`` addresses ``symbol+4``.
-    """
     body, rr, rx, rb, local, symbol = _x64_rm_body(reg_field, operand, line)
     rex = _x64_rex(w=w, r=rr, x=rx, b=rb, force=force_rex)
     start = len(out); out.extend(rex); out.extend(opcode); body_start=len(out); out.extend(body)
@@ -40862,6 +40728,16 @@ def parse_coff64_object(data: bytes) -> Coff64ParsedObject:
     )
 
 
+# -----------------------------------------------------------------------
+# Build a compact, standard PE32+ image with RX/RW/BSS separation.
+#
+# We keep the standard 0xF0-byte PE32+ optional header and all 16 data
+# directories for loader compatibility.  Space is saved by using only the
+# mandatory 64-byte DOS header (e_lfanew=0x40) and by storing imports,
+# exports and base-relocation blocks in one linker-data section.  Therefore
+# the normal image has at most four section headers and the complete header
+# fits into one 0x200-byte FileAlignment block.
+# -----------------------------------------------------------------------
 def build_pe64_image_with_imports_exports(
     code: bytes,
     entry_offset: Optional[int],
@@ -40869,17 +40745,7 @@ def build_pe64_image_with_imports_exports(
     iat_call_patches: Dict[str, List[int]],
     *, exports=None, dll_name="library.dll", gui=False, dll=False,
     image_base=PE64_IMAGE_BASE, base_relocations=(), data: bytes = b"",
-    bss_size: int = 0,
-):
-    """Build a compact, standard PE32+ image with RX/RW/BSS separation.
-
-    We keep the standard 0xF0-byte PE32+ optional header and all 16 data
-    directories for loader compatibility.  Space is saved by using only the
-    mandatory 64-byte DOS header (e_lfanew=0x40) and by storing imports,
-    exports and base-relocation blocks in one linker-data section.  Therefore
-    the normal image has at most four section headers and the complete header
-    fits into one 0x200-byte FileAlignment block.
-    """
+    bss_size: int = 0):
     text = bytearray(code)
     init_data = bytes(data or b"")
     bss_size = max(0, int(bss_size or 0))
@@ -42213,20 +42079,20 @@ def _pe_import_spec_parts(spec) -> Tuple[str, object]:
 
     return dll, text
 
-
+# -----------------------------------------------------------------------
+# Gemeinsamer PE32/PE32+-Importbuilder mit Name- und Ordinalimporten.
+#
+# Stage 223 uses the PE-defined OriginalFirstThunk==0 form.  Before the
+# Windows loader binds the image, FirstThunk itself is the lookup table; the
+# loader then overwrites those entries with resolved addresses.  Keeping a
+# second, byte-identical ILT therefore only bloats .idata.
+# -----------------------------------------------------------------------
 def _build_pe_import_section_stage170(
     import_specs,
     idata_rva: int,
     *,
     pointer_size: int,
 ) -> Tuple[bytes, Dict[str, int], int, int]:
-    """Gemeinsamer PE32/PE32+-Importbuilder mit Name- und Ordinalimporten.
-
-    Stage 223 uses the PE-defined OriginalFirstThunk==0 form.  Before the
-    Windows loader binds the image, FirstThunk itself is the lookup table; the
-    loader then overwrites those entries with resolved addresses.  Keeping a
-    second, byte-identical ILT therefore only bloats .idata.
-    """
     if pointer_size not in {4, 8}:
         raise PE32AssemblerError("PE-Importpointer muss 4 oder 8 Byte groß sein.")
 
@@ -42547,9 +42413,11 @@ PE_D64I_BOOTSTRAP_IMPORTS.update({
     "__d64_loader_GetProcAddress": ("kernel32.dll", "GetProcAddress"),
 })
 
+# -----------------------------------------------------------------------
 # Stage 219: extra imports used only when Exact Runtime hashes the full DLL
 # file at process startup. CryptoAPI keeps the loader substantially smaller
 # than embedding a second SHA-256 implementation in machine code.
+# -----------------------------------------------------------------------
 PE_D64I_EXACT_RUNTIME_IMPORTS: Dict[str, Tuple[str, str]] = {
     "__d64_loader_GetModuleFileNameA": ("kernel32.dll", "GetModuleFileNameA"),
     "__d64_loader_CreateFileA": ("kernel32.dll", "CreateFileA"),
@@ -42598,11 +42466,13 @@ PE_IMPORT_PACKER_RUNTIME_SETTINGS = {
 }
 PE_IMPORT_PACKER_LAST_DECISION: Dict[str, object] = {}
 
+# -----------------------------------------------------------------------
 # Stage 226: PE-Packing ist bewusst von der D64I-Import-Packer-Option getrennt.
 # Bestehende Projekte behalten aus Kompatibilitaetsgruenden den gepackten
 # Modus als Default. Im neuen Linker->Optionen-Panel kann auf Standard-PE
 # ohne .loader/.ztext umgeschaltet werden, um typische heuristische AV-
 # Merkmale zu vermeiden. Eine Whitelist kann dadurch nicht garantiert werden.
+# -----------------------------------------------------------------------
 PE_PACKING_DEFAULT = True
 PE_PACKING_RUNTIME_SETTINGS: Dict[str, bool] = {
     "pe32": PE_PACKING_DEFAULT,
@@ -42726,14 +42596,14 @@ def _pe_import_packer_accepts(
     saved = int(baseline_size) - int(packed_size)
     return saved >= int(settings["minimum_savings"])
 
-
+# -----------------------------------------------------------------------
+# Stable SHA-256 over the core d64qt5 name->ordinal ABI mapping.
+#
+# Optional Qt5 PROLOG, external UI JSON, and UTF-8 string exports are
+# resolved strictly by name. They do not alter the stable 64-entry core
+# ordinal ABI of existing dBase/WFM binaries (Stage 459).
+# -----------------------------------------------------------------------
 def _pe_export_ordinal_map_hash(ordinals: Dict[str, int]) -> bytes:
-    """Stable SHA-256 over the core d64qt5 name->ordinal ABI mapping.
-
-    Optional Qt5 PROLOG, external UI JSON, and UTF-8 string exports are
-    resolved strictly by name. They do not alter the stable 64-entry core
-    ordinal ABI of existing dBase/WFM binaries (Stage 459).
-    """
     rows = sorted(
         (
             (int(ordinal), str(name))
@@ -43347,7 +43217,13 @@ def _pe_find_target_dll(
             return candidate
     return None
 
-
+# -----------------------------------------------------------------------
+# Ersetzt Namensimporte durch Ordinale aus der lokalen Ziel-DLL.
+#
+# Das spart IMAGE_IMPORT_BY_NAME-Zeichenketten. Die Bindung an lokale
+# System-DLL-Ordinale ist absichtlich abschaltbar, weil Microsoft die
+# Ordinalnummern vieler System-DLLs nicht als stabile API garantiert.
+# -----------------------------------------------------------------------
 def _pe_import_specs_with_local_ordinals(
     import_specs,
     *,
@@ -43356,12 +43232,6 @@ def _pe_import_specs_with_local_ordinals(
     search_paths: Iterable[Path | str] = (),
     require_all: bool = False,
 ) -> Dict[str, object]:
-    """Ersetzt Namensimporte durch Ordinale aus der lokalen Ziel-DLL.
-
-    Das spart IMAGE_IMPORT_BY_NAME-Zeichenketten. Die Bindung an lokale
-    System-DLL-Ordinale ist absichtlich abschaltbar, weil Microsoft die
-    Ordinalnummern vieler System-DLLs nicht als stabile API garantiert.
-    """
     if enabled is None:
         enabled = PE_PACK_IMPORTS_BY_LOCAL_ORDINAL_DEFAULT
 
@@ -43491,7 +43361,12 @@ def _pe_import_specs_with_local_ordinals(
 
     return result
 
-
+# -----------------------------------------------------------------------
+# Ersetzt sichtbare DLL-Funktionsnamen durch "#<Ordinal>" .
+#
+# Die Zeilenzahl bleibt unverändert, damit Source-Maps und ASM-Diagnosen
+# weiterhin auf dieselben Zeilen zeigen.
+# -----------------------------------------------------------------------
 def rewrite_pe_assembly_imports_to_ordinals(
     source: str,
     *,
@@ -43499,11 +43374,6 @@ def rewrite_pe_assembly_imports_to_ordinals(
     search_paths: Iterable[Path | str] = (),
     require_all: bool = True,
 ) -> str:
-    """Ersetzt sichtbare DLL-Funktionsnamen durch ``"#<Ordinal>"``.
-
-    Die Zeilenzahl bleibt unverändert, damit Source-Maps und ASM-Diagnosen
-    weiterhin auf dieselben Zeilen zeigen.
-    """
     target_key = str(target or "").strip().casefold()
     if target_key not in {"pe32", "pe64"}:
         return str(source)
@@ -43861,7 +43731,13 @@ def _pe_emit_stage170_image(
 
     return bytes(image)
 
-
+# -----------------------------------------------------------------------
+# Stage209-PE32: D64Z program image + compressed D64I imports.
+#
+# Only the small loader/bootstrap import table remains as normal PE .idata.
+# Program DLL/function names and dense target-IAT slots are represented by
+# D64I metadata inside the MSZIP-compressed D64Z image.
+# -----------------------------------------------------------------------
 def build_pe32_image_with_imports_exports(
     code: bytes,
     entry_offset: Optional[int],
@@ -43878,12 +43754,6 @@ def build_pe32_image_with_imports_exports(
     imports_by_local_ordinal: Optional[bool] = None,
     bss_size: int = 0,
 ) -> Tuple[bytes, bytes]:
-    """Stage209-PE32: D64Z program image + compressed D64I imports.
-
-    Only the small loader/bootstrap import table remains as normal PE .idata.
-    Program DLL/function names and dense target-IAT slots are represented by
-    D64I metadata inside the MSZIP-compressed D64Z image.
-    """
     if compress_text_mszip is None:
         compress_text_mszip = _pe_packing_enabled("pe32")
 
@@ -44635,18 +44505,17 @@ def _pe32_compactor_fail(
         raise PE32AssemblerError(str(message))
     return original
 
-
+# -----------------------------------------------------------------------
+# Compact a Stage-170/171 packed PE32 image without external tools.
+#
+# Only the known D64Z x86 loader layout is touched.  Unsupported, signed or
+# already compact images are returned byte-identically unless "strict" is
+# requested.  No PE32+ image is modified by this routine.
+# -----------------------------------------------------------------------
 def compact_packed_pe32_image(
     image: bytes,
     *,
-    strict: bool = False,
-) -> bytes:
-    """Compact a Stage-170/171 packed PE32 image without external tools.
-
-    Only the known D64Z x86 loader layout is touched.  Unsupported, signed or
-    already compact images are returned byte-identically unless ``strict`` is
-    requested.  No PE32+ image is modified by this routine.
-    """
+    strict: bool = False) -> bytes:
     original = bytes(image)
 
     if len(original) < 0x100 or original[:2] != b"MZ":
@@ -45204,7 +45073,6 @@ def build_pe32_image_with_imports_exports(
 # ---------------------------------------------------------------------------
 _compact_packed_pe32_image_stage172 = compact_packed_pe32_image
 
-
 # ---------------------------------------------------------------------------
 # Stage 216: physische PE32-Minimierung.
 #
@@ -45217,19 +45085,18 @@ _compact_packed_pe32_image_stage172 = compact_packed_pe32_image
 # Loader. Die virtuellen RVAs, Section-Reihenfolge und DataDirectories bleiben
 # dabei unverändert.
 # ---------------------------------------------------------------------------
+# Repack an internally generated PE32 without changing virtual RVAs.
+#
+# Safe scope: unsigned PE32 images without Debug Directory, COFF symbol
+# table, reloc/line-number file pointers or other file-offset metadata.  All
+# section RVAs and SizeOfRawData values remain unchanged; only e_lfanew,
+# SizeOfHeaders and PointerToRawData are rewritten.
+# -----------------------------------------------------------------------
 def _pe32_minimize_physical_layout(
     image: bytes,
     *,
     loader_first: bool = True,
-    strict: bool = False,
-) -> Tuple[bytes, Dict[str, object]]:
-    """Repack an internally generated PE32 without changing virtual RVAs.
-
-    Safe scope: unsigned PE32 images without Debug Directory, COFF symbol
-    table, reloc/line-number file pointers or other file-offset metadata.  All
-    section RVAs and SizeOfRawData values remain unchanged; only e_lfanew,
-    SizeOfHeaders and PointerToRawData are rewritten.
-    """
+    strict: bool = False) -> Tuple[bytes, Dict[str, object]]:
     original = bytes(image)
     info: Dict[str, object] = {
         "changed": False,
@@ -48597,12 +48464,12 @@ def format_c64_palette_output(
 # Flaeche mit 16 Farben; im Rohformat werden je zwei Pixel in einem Byte
 # zusammengefasst.
 # ---------------------------------------------------------------------------
+# Stage 440: Kontrast der GroupBox-Titel bei geöffneten Werkzeug-Docks.
+#
+# Die vorhandene Box-Gestaltung bleibt erhalten; beim Umschalten in den
+# Light-Mode wird das ursprüngliche lokale Stylesheet wiederhergestellt.
+# -----------------------------------------------------------------------
 def apply_c64_tool_groupbox_theme(widget: QWidget, dark_mode: bool) -> None:
-    """Stage 440: Kontrast der GroupBox-Titel bei geöffneten Werkzeug-Docks.
-
-    Die vorhandene Box-Gestaltung bleibt erhalten; beim Umschalten in den
-    Light-Mode wird das ursprüngliche lokale Stylesheet wiederhergestellt.
-    """
     for group in widget.findChildren(QGroupBox):
         base = group.property("_d64_original_groupbox_stylesheet")
         if base is None:
@@ -49492,22 +49359,22 @@ C64_BASIC_HELP_ALIASES = {
     "?": "PRINT",
 }
 
-
+# -----------------------------------------------------------------------
+# Liest numerische CHM-Context-IDs aus [MAP]/[ALIAS], soweit vorhanden.
+#
+# Unterstuetzt die ueblichen HHP-Formen::
+#
+#     [MAP]
+#     #define IDH_TEST 21
+#
+#     [ALIAS]
+#     IDH_TEST=test.html
+#
+# sowie MAP-Includes/Header mit "#define". Fehlen diese Metadaten in einer
+# bereits kompilierten CHM, bleibt die Text-/Keyword-Suche des Viewers der
+# sichere Fallback.
+# -----------------------------------------------------------------------
 def read_chm_context_map(root: Path) -> Dict[int, str]:
-    """Liest numerische CHM-Context-IDs aus [MAP]/[ALIAS], soweit vorhanden.
-
-    Unterstuetzt die ueblichen HHP-Formen::
-
-        [MAP]
-        #define IDH_TEST 21
-
-        [ALIAS]
-        IDH_TEST=test.html
-
-    sowie MAP-Includes/Header mit ``#define``. Fehlen diese Metadaten in einer
-    bereits kompilierten CHM, bleibt die Text-/Keyword-Suche des Viewers der
-    sichere Fallback.
-    """
     root = Path(root)
     project = find_chm_file_by_suffix(root, ".hhp")
     if project is None:
@@ -49920,14 +49787,20 @@ class D64Image:
 PROJECT_C_ARCHIVES_KEY = "__c_archives__"
 PROJECT_PROLOG_KNOWLEDGE_KEY = "__prolog_knowledge_databases__"
 
+# ---------------------------------------------------------------------------
 # Stage ASM 30: dBase-Programme besitzt feste geschützte Unterknoten einschließlich Berichte.
 # Programme bleiben für Rückwärtskompatibilität im normalen ``dbase``-Eintrag;
 # die übrigen Ressourcen bekommen getrennte Projektabschnitte.
+# ---------------------------------------------------------------------------
 PROJECT_DBASE_FORMS_KEY = "__dbase_forms__"
 PROJECT_DBASE_TABLES_KEY = "__dbase_tables__"
+# ---------------------------------------------------------------------------
 # Stage 302: Spaltenbreiten des Daten-Grids pro DBF und Projekt.
+# ---------------------------------------------------------------------------
 PROJECT_DBASE_DATA_WIDTHS_KEY = "__dbase_data_column_widths__"
+# ---------------------------------------------------------------------------
 # Stage 305: Monotoner Auto-Increment-Zaehler fuer jede DBF je Projekt.
+# ---------------------------------------------------------------------------
 PROJECT_DBASE_ID_COUNTERS_KEY = "__dbase_table_id_counters__"
 
 def _dbase_table_width_key(path) -> str:
@@ -50017,32 +49890,49 @@ PROJECT_DBASE_SECTIONS = {
     PROJECT_DBASE_ARCHIVES_KEY: "Category.dbase.archives",
 }
 
+# ---------------------------------------------------------------------------
 # Stage 246: Breakpoints und Bookmarks sind echte Projektressourcen.
 # Sie werden absichtlich außerhalb der Sprachkategorien gespeichert, damit
 # der Projektbaum sie ganz oben und unabhängig vom Build-Ziel anzeigen kann.
+# ---------------------------------------------------------------------------
 PROJECT_BREAKPOINTS_KEY = "__debug_breakpoints__"
 PROJECT_BOOKMARKS_KEY = "__source_bookmarks__"
+
+# ---------------------------------------------------------------------------
 # Stage ASM 63: Das im Dateisystem-Dock sichtbare Arbeitsverzeichnis und die
 # Root-Wurzel der TreeList werden getrennt projektbezogen gespeichert. Damit
 # wird beim erneuten Laden exakt derselbe Dateisystemzustand wiederhergestellt.
+# ---------------------------------------------------------------------------
 PROJECT_WORKING_DIRECTORY_KEY = "__project_working_directory__"
 PROJECT_WORKSPACE_ROOT_KEY = "__project_workspace_root__"
+
+# ---------------------------------------------------------------------------
 # Stage ASM 65: projektbezogener QMainWindow-Dock-/Ansichtszustand.
 # Der Base64-Wert stammt direkt aus QMainWindow.saveState() und enthält die
 # Positionen/Größen/Sichtbarkeit der Docks um den zentralen Editor.
+# ---------------------------------------------------------------------------
 PROJECT_VIEW_STATE_KEY = "__project_view_state__"
+
+# ---------------------------------------------------------------------------
 # Stage ASM 69: autoritative Projekt-/Dateisystem-Dockbeziehung. Anders als
 # geometrische Heuristiken wird dieser Zustand nur durch Benutzer-Snap bzw.
 # beim Projektladen gesetzt und deshalb nicht durch die Bildschirmtastatur
 # versehentlich von "gestapelt" auf "nebeneinander" umgedeutet.
+# ---------------------------------------------------------------------------
 PROJECT_PRIMARY_DOCK_LAYOUT_KEY = "__project_primary_dock_layout__"
+
+# ---------------------------------------------------------------------------
 # Stage ASM 67: offene C64-BASIC-Dateireferenzen werden als projektspezifische
 # Editor-Session gespeichert und beim Laden wieder geöffnet.
+# ---------------------------------------------------------------------------
 PROJECT_C64_OPEN_EDITORS_KEY = "__project_c64_open_editors__"
+
+# ---------------------------------------------------------------------------
 # Stage ASM 70/71: expliziter projektbezogener Geometrie-/Layout-Snapshot.
 # saveState() bleibt als vollständiger Qt-Dockzustand erhalten; zusätzlich
 # werden die vom Benutzer verschiebbaren Trennlinien (Dock-Separatoren und
 # C64-BASIC-QSplitter) deterministisch und lesbar gespeichert.
+# ---------------------------------------------------------------------------
 PROJECT_SESSION_GEOMETRY_KEY = "__project_session_geometry__"
 PROJECT_C64_LAST_BASIC_FILE_KEY = "__project_c64_last_basic_file__"
 PROJECT_MARKER_SECTIONS: Dict[str, Tuple[str, str]] = {
@@ -50098,9 +49988,11 @@ PROJECT_PASCAL_TABLE_SECTIONS: Dict[str, str] = {
     "pe64": "Category.pascal.pe64.tables",
 }
 
+# ---------------------------------------------------------------------------
 # Stage 404: Neue Sprite-Dateien sind echte 63/64-Byte-VIC-II-Rohdaten.
 # Historische .c64sprite-JSON-Dateien werden ausschliesslich zum Import gelesen.
 # Stage 416: 16-Farben-Bitmap-Sprites getrennt vom VIC-II-Rohsprite-Format.
+# ---------------------------------------------------------------------------
 from c64_bitmap_sprite_editor import C64BitmapSpriteEditorDialog
 from c64_sprite_codec import (
     default_sprite_meta, normalize_meta, normalize_palette,
@@ -50110,10 +50002,12 @@ from c64_sprite_codec import (
     palette_from_bytes, save_document, load_document,
 )
 
+# ---------------------------------------------------------------------------
 # Stage 150: Microsoft-Windows-Ressourcen sind fuer alle Windows-faehigen
 # Sprachzweige zielgebunden. Die Dateien bleiben .rc/.res-Projektressourcen;
 # der interne Compiler kann daraus standardkonforme COFF32-/COFF64-Objekte
 # mit .rsrc$01/.rsrc$02 erzeugen.
+# ---------------------------------------------------------------------------
 PROJECT_WINDOWS_RESOURCE_LANGUAGES: Tuple[str, ...] = (
     "basic", "assembler", "pascal", "c", "lisp", "prolog", "dbase",
 )
@@ -50121,14 +50015,18 @@ PROJECT_WINDOWS_RESOURCE_EXTENSIONS: Tuple[str, ...] = (".rc", ".res")
 PROJECT_NODE_WINDOWS_TARGET = "windows_target"
 PROJECT_NODE_RESOURCE_ROOT = "windows_resource_root"
 PROJECT_NODE_RESOURCE_FILE = "windows_resource_file"
+# ---------------------------------------------------------------------------
 # Stage 387: separate C64-Zielzweige und BASIC-Ressourcen (keine Windows-RC-Dateien).
+# ---------------------------------------------------------------------------
 PROJECT_NODE_C64_TARGET = "c64_target"
 PROJECT_NODE_C64_SOURCE_FILE = "c64_source_file"
 PROJECT_NODE_C64_RESOURCE_ROOT = "c64_resource_root"
 PROJECT_NODE_C64_RESOURCE_FILE = "c64_resource_file"
 PROJECT_C64_RESOURCE_ENTRY_KEY = "__basic_c64_resources__"
 PROJECT_C64_RESOURCE_SECTION = "Category.basic.c64.resources"
+# ---------------------------------------------------------------------------
 # Stage 396: eigenstaendiger Projektknoten fuer C64-Sprite-Projekte.
+# ---------------------------------------------------------------------------
 PROJECT_NODE_C64_SPRITES_ROOT = "c64_sprites_root"
 PROJECT_NODE_C64_SPRITE_FILE = "c64_sprite_file"
 PROJECT_C64_SPRITES_ENTRY_KEY = "__c64_sprites__"
@@ -50140,7 +50038,9 @@ PROJECT_C64_SOURCE_KEYS = {
 PROJECT_C64_SOURCE_SECTIONS = {
     language: f"Category.{language}.c64" for language in PROJECT_C64_SOURCE_KEYS
 }
+# ---------------------------------------------------------------------------
 # Der Dateityp wird beim Hinzufuegen explicit gespeichert: .bin ist nicht eindeutig.
+# ---------------------------------------------------------------------------
 PROJECT_C64_RESOURCE_TYPES = {
     "palettes": ("Paletten", (".pal", ".palette", ".bin"), "C64-Paletten (*.pal *.palette *.bin)"),
     "sprites": ("Sprites", (".spr", ".sprite", ".bin", ".c64sprite"), "C64-Sprites (*.spr *.sprite *.bin *.c64sprite)"),
@@ -50268,46 +50168,69 @@ def remove_recent_path(
         limit=limit,
     )
 
+# ---------------------------------------------------------------------------
 # Stage 196: Windows Compiler-Verzeichnisse sind architekturspezifisch.
 # PE32 und PE32+ duerfen niemals dieselbe PUI-Ausgabe ueberschreiben, weil
 # PUI und COFF-Objekt einen architekturspezifischen ABI-Vertrag bilden.
-PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY = "__windows_pe32_link_search_paths__"
-PROJECT_WINDOWS_PE64_LINK_SEARCH_PATHS_KEY = "__windows_pe64_link_search_paths__"
-PROJECT_WINDOWS_PE32_OUTPUT_DIRECTORY_KEY = "__windows_pe32_output_directory__"
-PROJECT_WINDOWS_PE64_OUTPUT_DIRECTORY_KEY = "__windows_pe64_output_directory__"
-PROJECT_WINDOWS_PE32_INPUT_RELATIVE_PATHS_KEY = "__windows_pe32_input_relative_paths__"
-PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY = "__windows_pe32_output_relative_paths__"
-PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY = "__windows_pe64_input_relative_paths__"
-PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY = "__windows_pe64_output_relative_paths__"
-PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY = "__windows_pe32_link_with_ordinals__"
-PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY = "__windows_pe64_link_with_ordinals__"
+# ---------------------------------------------------------------------------
+PROJECT_WINDOWS_PE32_LINK_SEARCH_PATHS_KEY              = "__windows_pe32_link_search_paths__"
+PROJECT_WINDOWS_PE64_LINK_SEARCH_PATHS_KEY              = "__windows_pe64_link_search_paths__"
+PROJECT_WINDOWS_PE32_OUTPUT_DIRECTORY_KEY               = "__windows_pe32_output_directory__"
+PROJECT_WINDOWS_PE64_OUTPUT_DIRECTORY_KEY               = "__windows_pe64_output_directory__"
+PROJECT_WINDOWS_PE32_INPUT_RELATIVE_PATHS_KEY           = "__windows_pe32_input_relative_paths__"
+PROJECT_WINDOWS_PE32_OUTPUT_RELATIVE_PATHS_KEY          = "__windows_pe32_output_relative_paths__"
+PROJECT_WINDOWS_PE64_INPUT_RELATIVE_PATHS_KEY           = "__windows_pe64_input_relative_paths__"
+PROJECT_WINDOWS_PE64_OUTPUT_RELATIVE_PATHS_KEY          = "__windows_pe64_output_relative_paths__"
+PROJECT_WINDOWS_PE32_LINK_WITH_ORDINALS_KEY             = "__windows_pe32_link_with_ordinals__"
+PROJECT_WINDOWS_PE64_LINK_WITH_ORDINALS_KEY             = "__windows_pe64_link_with_ordinals__"
+
+# ---------------------------------------------------------------------------
 # Stage 210: D64I Import-Packer settings per Windows ABI.
-PROJECT_WINDOWS_PE32_IMPORT_PACKER_ENABLED_KEY = "__windows_pe32_import_packer_enabled__"
-PROJECT_WINDOWS_PE64_IMPORT_PACKER_ENABLED_KEY = "__windows_pe64_import_packer_enabled__"
-PROJECT_WINDOWS_PE32_IMPORT_PACKER_REQUIRE_SAVINGS_KEY = "__windows_pe32_import_packer_require_savings__"
-PROJECT_WINDOWS_PE64_IMPORT_PACKER_REQUIRE_SAVINGS_KEY = "__windows_pe64_import_packer_require_savings__"
-PROJECT_WINDOWS_PE32_IMPORT_PACKER_MIN_SAVINGS_KEY = "__windows_pe32_import_packer_min_savings__"
-PROJECT_WINDOWS_PE64_IMPORT_PACKER_MIN_SAVINGS_KEY = "__windows_pe64_import_packer_min_savings__"
+# ---------------------------------------------------------------------------
+PROJECT_WINDOWS_PE32_IMPORT_PACKER_ENABLED_KEY          = "__windows_pe32_import_packer_enabled__"
+PROJECT_WINDOWS_PE64_IMPORT_PACKER_ENABLED_KEY          = "__windows_pe64_import_packer_enabled__"
+PROJECT_WINDOWS_PE32_IMPORT_PACKER_REQUIRE_SAVINGS_KEY  = "__windows_pe32_import_packer_require_savings__"
+PROJECT_WINDOWS_PE64_IMPORT_PACKER_REQUIRE_SAVINGS_KEY  = "__windows_pe64_import_packer_require_savings__"
+PROJECT_WINDOWS_PE32_IMPORT_PACKER_MIN_SAVINGS_KEY      = "__windows_pe32_import_packer_min_savings__"
+PROJECT_WINDOWS_PE64_IMPORT_PACKER_MIN_SAVINGS_KEY      = "__windows_pe64_import_packer_min_savings__"
+
+# ---------------------------------------------------------------------------
 # Stage 217: WFM object-property optimizer per Windows ABI.
-PROJECT_WINDOWS_PE32_OBJECT_DEFAULTS_ENABLED_KEY = "__windows_pe32_object_defaults_enabled__"
-PROJECT_WINDOWS_PE64_OBJECT_DEFAULTS_ENABLED_KEY = "__windows_pe64_object_defaults_enabled__"
-PROJECT_WINDOWS_PE32_DEAD_PROPERTY_IMPORTS_KEY = "__windows_pe32_dead_property_imports__"
-PROJECT_WINDOWS_PE64_DEAD_PROPERTY_IMPORTS_KEY = "__windows_pe64_dead_property_imports__"
-PROJECT_WINDOWS_PE32_EMPTY_STANDARD_STRINGS_KEY = "__windows_pe32_empty_standard_strings__"
-PROJECT_WINDOWS_PE64_EMPTY_STANDARD_STRINGS_KEY = "__windows_pe64_empty_standard_strings__"
+# ---------------------------------------------------------------------------
+PROJECT_WINDOWS_PE32_OBJECT_DEFAULTS_ENABLED_KEY        = "__windows_pe32_object_defaults_enabled__"
+PROJECT_WINDOWS_PE64_OBJECT_DEFAULTS_ENABLED_KEY        = "__windows_pe64_object_defaults_enabled__"
+PROJECT_WINDOWS_PE32_DEAD_PROPERTY_IMPORTS_KEY          = "__windows_pe32_dead_property_imports__"
+PROJECT_WINDOWS_PE64_DEAD_PROPERTY_IMPORTS_KEY          = "__windows_pe64_dead_property_imports__"
+PROJECT_WINDOWS_PE32_EMPTY_STANDARD_STRINGS_KEY         = "__windows_pe32_empty_standard_strings__"
+PROJECT_WINDOWS_PE64_EMPTY_STANDARD_STRINGS_KEY         = "__windows_pe64_empty_standard_strings__"
+
+# ---------------------------------------------------------------------------
 # Stage 218: fold consecutive WFM property setters into one table call.
+# ---------------------------------------------------------------------------
 PROJECT_WINDOWS_PE32_CUT_MULTIPLE_CODES_KEY = "__windows_pe32_cut_multiple_codes__"
 PROJECT_WINDOWS_PE64_CUT_MULTIPLE_CODES_KEY = "__windows_pe64_cut_multiple_codes__"
+
+# ---------------------------------------------------------------------------
 # Stage 221: physical PE image layout order per Windows ABI.
+# ---------------------------------------------------------------------------
 PROJECT_WINDOWS_PE32_IMAGE_LAYOUT_KEY = "__windows_pe32_image_layout__"
 PROJECT_WINDOWS_PE64_IMAGE_LAYOUT_KEY = "__windows_pe64_image_layout__"
+
+# ---------------------------------------------------------------------------
 # Stage 226: optionales D64Z/MSZIP-PE-Packing pro Windows ABI.
+# ---------------------------------------------------------------------------
 PROJECT_WINDOWS_PE32_PE_PACKING_ENABLED_KEY = "__windows_pe32_pe_packing_enabled__"
 PROJECT_WINDOWS_PE64_PE_PACKING_ENABLED_KEY = "__windows_pe64_pe_packing_enabled__"
+
+# ---------------------------------------------------------------------------
 # Stage 227: Authenticode-Signierung pro Windows ABI.
+# ---------------------------------------------------------------------------
 PROJECT_WINDOWS_PE32_SIGNING_KEY = "__windows_pe32_signing__"
 PROJECT_WINDOWS_PE64_SIGNING_KEY = "__windows_pe64_signing__"
+
+# ---------------------------------------------------------------------------
 # Stage 213: ABI/ordinal-map compatibility settings per Windows ABI.
+# ---------------------------------------------------------------------------
 PROJECT_WINDOWS_PE32_ABI_MAJOR_KEY = "__windows_pe32_abi_major__"
 PROJECT_WINDOWS_PE64_ABI_MAJOR_KEY = "__windows_pe64_abi_major__"
 PROJECT_WINDOWS_PE32_ABI_MINOR_KEY = "__windows_pe32_abi_minor__"
@@ -50337,10 +50260,12 @@ PROJECT_WINDOWS_PE64_DEBUG_THEME_WORKSTATION_KEY = "__windows_pe64_debug_theme_w
 PROJECT_WINDOWS_PE32_PROLOG_WITH_DESCRIPTORS_KEY = "__windows_pe32_prolog_with_descriptors__"
 PROJECT_WINDOWS_PE64_PROLOG_WITH_DESCRIPTORS_KEY = "__windows_pe64_prolog_with_descriptors__"
 
+# ---------------------------------------------------------------------------
 # Stage 198: projektweite Darstellung der Quelltext-Eingabeeditoren.
 # Die Einstellung wird in beiden Windows-Architektur-Tabs gespiegelt, ist aber
 # bewusst nur einmal pro Projekt gespeichert, damit Pascal-/dBase-Editoren
 # unabhängig vom gerade gewählten PE-Ziel gleich aussehen.
+# ---------------------------------------------------------------------------
 PROJECT_WINDOWS_ASSEMBLER_TOOLTIPS_KEY = "__windows_assembler_tooltips__"
 PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY = "__windows_editor_font_family__"
 PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY = "__windows_editor_font_size__"
@@ -51524,10 +51449,12 @@ def format_project_ini(
                 _payload, ensure_ascii=False, separators=(",", ":")
             )
 
+    # -----------------------------------------------------------------------
     # Stage 197: PE32 und PE32+ speichern getrennte Eingabe-/Ausgabe-
     # Verzeichnisse und zusätzlich den Darstellungsmodus. RelativePaths=true
     # serialisiert die Pfade relativ zur *.pro-Datei, false schreibt absolute
     # Pfade. Die PathXXXX-Reihenfolge bleibt die echte Suchpriorität.
+    # -----------------------------------------------------------------------
     for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
         _input_relative = _project_bool_entry(
             entries, _settings["input_relative_key"], True
@@ -54396,8 +54323,10 @@ def run_gui(
             super().mouseReleaseEvent(event)
             if self.kind not in ("switch", "button") or event.button() != Qt.LeftButton or press is None:
                 return
+            # -----------------------------------------------------------------------
             # Ein kurzer Klick schaltet. Eine Mausbewegung bleibt dagegen eine
             # reine Positionsaenderung des sichtbaren Bauteils.
+            # -----------------------------------------------------------------------
             if distance(press, event.scenePos()) <= 5.0 and self.scene():
                 self.scene().request_control_toggle(self)
 
@@ -54996,13 +54925,14 @@ def run_gui(
                         loose.append(f"{c.name}.{name}")
             return list(nets.values()), loose
 
+        # -----------------------------------------------------------------------
+        # Liefert fuer jeden Bauteil-Port sein echtes elektrisches Netz.
+        #
+        # Nicht zusammengefuehrte Bildschirmkreuzungen tauchen hier absichtlich
+        # nicht als Verbindung auf. Unverdrahtete Ports bilden jeweils ein
+        # eigenes, isoliertes Netz.
+        # -----------------------------------------------------------------------
         def electrical_net_map(self):
-            """Liefert fuer jeden Bauteil-Port sein echtes elektrisches Netz.
-
-            Nicht zusammengefuehrte Bildschirmkreuzungen tauchen hier absichtlich
-            nicht als Verbindung auf. Unverdrahtete Ports bilden jeweils ein
-            eigenes, isoliertes Netz.
-            """
             parent = {}
 
             def find(key):
@@ -55201,12 +55131,13 @@ def run_gui(
                 return 1 - out if gate == "XNOR" else out
             return "X"
 
+        # -----------------------------------------------------------------------
+        # Kombinatorische TTL-Simulation für 74LS/74xx, Gatter, Schalter und Pull-ups.
+        #
+        # Signale: 0, 1, X (unbestimmt/Konflikt) und Z (hochohmig). Push-Pull,
+        # Open-Collector und 3-State-Ausgänge werden getrennt aufgelöst.
+        # -----------------------------------------------------------------------
         def ttl_logic_simulation(self):
-            """Kombinatorische TTL-Simulation für 74LS/74xx, Gatter, Schalter und Pull-ups.
-
-            Signale: 0, 1, X (unbestimmt/Konflikt) und Z (hochohmig). Push-Pull,
-            Open-Collector und 3-State-Ausgänge werden getrennt aufgelöst.
-            """
             errors, warnings, info = [], [], []
             # Eigene Netzbildung: geschlossene Schalter/Taster verbinden zwei Netze.
             parent = {}
@@ -55470,13 +55401,14 @@ def run_gui(
                         a[row][j] -= factor * a[column][j]
             return [a[row][n] for row in range(n)]
 
+        # -----------------------------------------------------------------------
+        # Simulationsart 2: erste DC-MNA fuer Batterie/DC, R und LED.
+        #
+        # LEDs werden stueckweise linearisiert: gesperrt mit sehr grossem
+        # Widerstand, leitend mit Flussspannung + 1 Ohm dynamischem Widerstand.
+        # Dadurch lassen sich auch einfache Parallelzweige ohne NumPy berechnen.
+        # -----------------------------------------------------------------------
         def dc_value_simulation(self):
-            """Simulationsart 2: erste DC-MNA fuer Batterie/DC, R und LED.
-
-            LEDs werden stueckweise linearisiert: gesperrt mit sehr grossem
-            Widerstand, leitend mit Flussspannung + 1 Ohm dynamischem Widerstand.
-            Dadurch lassen sich auch einfache Parallelzweige ohne NumPy berechnen.
-            """
             topology = self.topology_check()
             result = {
                 "errors": list(topology["errors"]), "warnings": list(topology["warnings"]),
@@ -55678,14 +55610,15 @@ def run_gui(
                 result["warnings"].append("Die Quelle liefert praktisch keinen Strom; der Stromkreis ist offen oder alle LEDs sperren.")
             return result
 
+        # -----------------------------------------------------------------------
+        # Diskrete CMOS-Zeitbereichssimulation fuer die Stage-99-4000-Serie.
+        #
+        # Das Modell ist eine digitale Transientensimulation, keine analoge SPICE-
+        # Integration. Es wertet Rechteck-Taktquellen, kombinatorische CMOS-Gatter
+        # und die gespeicherten Zustandsautomaten der Zaehler/Flip-Flops pro
+        # Zeitschritt aus. Messgeraete erhalten echte Zeitstempel in Millisekunden.
+        # -----------------------------------------------------------------------
         def cmos_transient_simulation(self, duration_ms=2000.0, time_step_ms=10.0):
-            """Diskrete CMOS-Zeitbereichssimulation fuer die Stage-99-4000-Serie.
-
-            Das Modell ist eine digitale Transientensimulation, keine analoge SPICE-
-            Integration. Es wertet Rechteck-Taktquellen, kombinatorische CMOS-Gatter
-            und die gespeicherten Zustandsautomaten der Zaehler/Flip-Flops pro
-            Zeitschritt aus. Messgeraete erhalten echte Zeitstempel in Millisekunden.
-            """
             errors, warnings, info = [], [], []
             try:
                 duration_ms = float(duration_ms)
@@ -58240,943 +58173,13 @@ def run_gui(
 
     def css(msgid: str) -> str: return msgid # return QCSS._tr(msgid)
     def LangSwitch(lang: str): return I18N._langSwitch(lang)
-
+        
     # Statically known component markers. Each value deliberately uses the
     # literal tr("mo:name") form so gettext scanners can see every marker.
-    MO_COMPONENT_NAMES = {
-        "mo:AliasRow.alias_edit": tr("mo:AliasRow.alias_edit"),
-        "mo:AliasRow.dir_edit": tr("mo:AliasRow.dir_edit"),
-        "mo:AliasRow.label": tr("mo:AliasRow.label"),
-        "mo:amiga_cpu_combo": tr("mo:amiga_cpu_combo"),
-        "mo:amiga_fpu_combo": tr("mo:amiga_fpu_combo"),
-        "mo:archive_information_list": tr("mo:archive_information_list"),
-        "mo:archive_information_tab": tr("mo:archive_information_tab"),
-        "mo:ArithmeticTrainerWidget.check_button": tr("mo:ArithmeticTrainerWidget.check_button"),
-        "mo:ArithmeticTrainerWidget.help_label": tr("mo:ArithmeticTrainerWidget.help_label"),
-        "mo:ArithmeticTrainerWidget.status_label": tr("mo:ArithmeticTrainerWidget.status_label"),
-        "mo:ArithmeticTrainerWidget.task_widget": tr("mo:ArithmeticTrainerWidget.task_widget"),
-        "mo:ArithmeticTrainerWidget.title_label": tr("mo:ArithmeticTrainerWidget.title_label"),
-        "mo:assemble_button": tr("mo:assemble_button"),
-        "mo:assemble_generated_button": tr("mo:assemble_generated_button"),
-        "mo:assembler_action_panel": tr("mo:assembler_action_panel"),
-        "mo:assembler_completion_description": tr("mo:assembler_completion_description"),
-        "mo:assembler_completion_frame": tr("mo:assembler_completion_frame"),
-        "mo:assembler_completion_ghost": tr("mo:assembler_completion_ghost"),
-        "mo:assembler_completion_header": tr("mo:assembler_completion_header"),
-        "mo:assembler_instruction_help_current": tr("mo:assembler_instruction_help_current"),
-        "mo:assembler_instruction_help_description": tr("mo:assembler_instruction_help_description"),
-        "mo:assembler_instruction_help_frame": tr("mo:assembler_instruction_help_frame"),
-        "mo:assembler_instruction_help_header": tr("mo:assembler_instruction_help_header"),
-        "mo:assembler_number_calculator": tr("mo:assembler_number_calculator"),
-        "mo:assembly_status_label": tr("mo:assembly_status_label"),
-        "mo:breadcrumb_folder_button": tr("mo:breadcrumb_folder_button"),
-        "mo:breadcrumb_subdir_button": tr("mo:breadcrumb_subdir_button"),
-        "mo:build_target_combo": tr("mo:build_target_combo"),
-        "mo:c64_character_editor_dialog": tr("mo:c64_character_editor_dialog"),
-        "mo:c64_palette_editor_dialog": tr("mo:c64_palette_editor_dialog"),
-        "mo:c64_pixel_screen_canvas": tr("mo:c64_pixel_screen_canvas"),
-        "mo:c64_pixel_screen_editor_dialog": tr("mo:c64_pixel_screen_editor_dialog"),
-        "mo:c64_text_screen_canvas": tr("mo:c64_text_screen_canvas"),
-        "mo:c64_text_screen_editor_dialog": tr("mo:c64_text_screen_editor_dialog"),
-        "mo:C64CharacterEditorDialog.background_combo": tr("mo:C64CharacterEditorDialog.background_combo"),
-        "mo:C64CharacterEditorDialog.byte_label": tr("mo:C64CharacterEditorDialog.byte_label"),
-        "mo:C64CharacterEditorDialog.character_heading": tr("mo:C64CharacterEditorDialog.character_heading"),
-        "mo:C64CharacterEditorDialog.character_list": tr("mo:C64CharacterEditorDialog.character_list"),
-        "mo:C64CharacterEditorDialog.clear_button": tr("mo:C64CharacterEditorDialog.clear_button"),
-        "mo:C64CharacterEditorDialog.close_button": tr("mo:C64CharacterEditorDialog.close_button"),
-        "mo:C64CharacterEditorDialog.code_input": tr("mo:C64CharacterEditorDialog.code_input"),
-        "mo:C64CharacterEditorDialog.copy_button": tr("mo:C64CharacterEditorDialog.copy_button"),
-        "mo:C64CharacterEditorDialog.foreground_combo": tr("mo:C64CharacterEditorDialog.foreground_combo"),
-        "mo:C64CharacterEditorDialog.invert_button": tr("mo:C64CharacterEditorDialog.invert_button"),
-        "mo:C64CharacterEditorDialog.jump_button": tr("mo:C64CharacterEditorDialog.jump_button"),
-        "mo:C64CharacterEditorDialog.load_button": tr("mo:C64CharacterEditorDialog.load_button"),
-        "mo:C64CharacterEditorDialog.mirror_h_button": tr("mo:C64CharacterEditorDialog.mirror_h_button"),
-        "mo:C64CharacterEditorDialog.mirror_v_button": tr("mo:C64CharacterEditorDialog.mirror_v_button"),
-        "mo:C64CharacterEditorDialog.new_button": tr("mo:C64CharacterEditorDialog.new_button"),
-        "mo:C64CharacterEditorDialog.next_button": tr("mo:C64CharacterEditorDialog.next_button"),
-        "mo:C64CharacterEditorDialog.output_format_box": tr("mo:C64CharacterEditorDialog.output_format_box"),
-        "mo:C64CharacterEditorDialog.output_save_as_button": tr("mo:C64CharacterEditorDialog.output_save_as_button"),
-        "mo:C64CharacterEditorDialog.paste_button": tr("mo:C64CharacterEditorDialog.paste_button"),
-        "mo:C64CharacterEditorDialog.path_label": tr("mo:C64CharacterEditorDialog.path_label"),
-        "mo:C64CharacterEditorDialog.pixel_grid": tr("mo:C64CharacterEditorDialog.pixel_grid"),
-        "mo:C64CharacterEditorDialog.preview": tr("mo:C64CharacterEditorDialog.preview"),
-        "mo:C64CharacterEditorDialog.previous_button": tr("mo:C64CharacterEditorDialog.previous_button"),
-        "mo:C64CharacterEditorDialog.save_as_button": tr("mo:C64CharacterEditorDialog.save_as_button"),
-        "mo:C64CharacterEditorDialog.save_button": tr("mo:C64CharacterEditorDialog.save_button"),
-        "mo:C64CharacterEditorDialog.shift_down_button": tr("mo:C64CharacterEditorDialog.shift_down_button"),
-        "mo:C64CharacterEditorDialog.shift_left_button": tr("mo:C64CharacterEditorDialog.shift_left_button"),
-        "mo:C64CharacterEditorDialog.shift_right_button": tr("mo:C64CharacterEditorDialog.shift_right_button"),
-        "mo:C64CharacterEditorDialog.shift_up_button": tr("mo:C64CharacterEditorDialog.shift_up_button"),
-        "mo:C64CharacterEditorDialog.status_label": tr("mo:C64CharacterEditorDialog.status_label"),
-        # Stage ASM 56: components introduced by the C64 project settings,
-        # BASIC optimizer and D64PACK image-packer stages 48-55.
-        "mo:C64CompilerSettingsPage.environment_group": tr("mo:C64CompilerSettingsPage.environment_group"),
-        "mo:C64CompilerSettingsPage.environment_page": tr("mo:C64CompilerSettingsPage.environment_page"),
-        "mo:C64CompilerSettingsPage.screen_keyboard_checkbox": tr("mo:C64CompilerSettingsPage.screen_keyboard_checkbox"),
-        "mo:C64CompilerSettingsPage.keyboard_layout_combo": tr("mo:C64CompilerSettingsPage.keyboard_layout_combo"),
-        "mo:project_settings_scroll_area": tr("mo:project_settings_scroll_area"),
-        "mo:c64_environment_screen_keyboard_checkbox": tr("mo:c64_environment_screen_keyboard_checkbox"),
-        "mo:c64_environment_keyboard_layout_combo": tr("mo:c64_environment_keyboard_layout_combo"),
-        "mo:c64_environment_screen_keyboard_hint": tr("mo:c64_environment_screen_keyboard_hint"),
-        "mo:C64CompilerSettingsPage.optimizer_enabled_checkbox": tr("mo:C64CompilerSettingsPage.optimizer_enabled_checkbox"),
-        "mo:C64CompilerSettingsPage.optimizer_group": tr("mo:C64CompilerSettingsPage.optimizer_group"),
-        "mo:C64CompilerSettingsPage.optimizer_page": tr("mo:C64CompilerSettingsPage.optimizer_page"),
-        "mo:C64CompilerSettingsPage.packer_enabled_checkbox": tr("mo:C64CompilerSettingsPage.packer_enabled_checkbox"),
-        "mo:C64CompilerSettingsPage.packer_group": tr("mo:C64CompilerSettingsPage.packer_group"),
-        "mo:C64CompilerSettingsPage.packer_include_decruncher_source_checkbox": tr("mo:C64CompilerSettingsPage.packer_include_decruncher_source_checkbox"),
-        "mo:C64CompilerSettingsPage.packer_page": tr("mo:C64CompilerSettingsPage.packer_page"),
-        "mo:C64CompilerSettingsPage.packer_search_groupbox": tr("mo:C64CompilerSettingsPage.packer_search_groupbox"),
-        "mo:C64CompilerSettingsPage.splitter": tr("mo:C64CompilerSettingsPage.splitter"),
-        "mo:C64CompilerSettingsPage.stack": tr("mo:C64CompilerSettingsPage.stack"),
-        "mo:C64CompilerSettingsPage.tree": tr("mo:C64CompilerSettingsPage.tree"),
-        "mo:c64_optimizer_direct_radio": tr("mo:c64_optimizer_direct_radio"),
-        "mo:c64_optimizer_inline_pointer_radio": tr("mo:c64_optimizer_inline_pointer_radio"),
-        "mo:c64_optimizer_string_thunk_radio": tr("mo:c64_optimizer_string_thunk_radio"),
-        "mo:c64_optimizer_auto_radio": tr("mo:c64_optimizer_auto_radio"),
-        "mo:c64_optimizer_auto_hint": tr("mo:c64_optimizer_auto_hint"),
-        "mo:c64_image_packer_none_radio": tr("mo:c64_image_packer_none_radio"),
-        "mo:c64_image_packer_rle_radio": tr("mo:c64_image_packer_rle_radio"),
-        "mo:c64_image_packer_lz_radio": tr("mo:c64_image_packer_lz_radio"),
-        "mo:c64_image_packer_auto_radio": tr("mo:c64_image_packer_auto_radio"),
-        "mo:c64_image_packer_search_fast_radio": tr("mo:c64_image_packer_search_fast_radio"),
-        "mo:c64_image_packer_search_balanced_radio": tr("mo:c64_image_packer_search_balanced_radio"),
-        "mo:c64_image_packer_search_maximum_radio": tr("mo:c64_image_packer_search_maximum_radio"),
-        "mo:c64_image_packer_hint": tr("mo:c64_image_packer_hint"),
-        "mo:project_settings_c64_architecture_tabs": tr("mo:project_settings_c64_architecture_tabs"),
-        "mo:C64PaletteEditorDialog.apply_button": tr("mo:C64PaletteEditorDialog.apply_button"),
-        "mo:C64PaletteEditorDialog.close_button": tr("mo:C64PaletteEditorDialog.close_button"),
-        "mo:C64PaletteEditorDialog.color_heading": tr("mo:C64PaletteEditorDialog.color_heading"),
-        "mo:C64PaletteEditorDialog.color_swatch": tr("mo:C64PaletteEditorDialog.color_swatch"),
-        "mo:C64PaletteEditorDialog.hex_input": tr("mo:C64PaletteEditorDialog.hex_input"),
-        "mo:C64PaletteEditorDialog.load_button": tr("mo:C64PaletteEditorDialog.load_button"),
-        "mo:C64PaletteEditorDialog.name_input": tr("mo:C64PaletteEditorDialog.name_input"),
-        "mo:C64PaletteEditorDialog.new_button": tr("mo:C64PaletteEditorDialog.new_button"),
-        "mo:C64PaletteEditorDialog.output_format_box": tr("mo:C64PaletteEditorDialog.output_format_box"),
-        "mo:C64PaletteEditorDialog.output_save_as_button": tr("mo:C64PaletteEditorDialog.output_save_as_button"),
-        "mo:C64PaletteEditorDialog.palette_list": tr("mo:C64PaletteEditorDialog.palette_list"),
-        "mo:C64PaletteEditorDialog.path_label": tr("mo:C64PaletteEditorDialog.path_label"),
-        "mo:C64PaletteEditorDialog.reset_all_button": tr("mo:C64PaletteEditorDialog.reset_all_button"),
-        "mo:C64PaletteEditorDialog.reset_color_button": tr("mo:C64PaletteEditorDialog.reset_color_button"),
-        "mo:C64PaletteEditorDialog.rgb_label": tr("mo:C64PaletteEditorDialog.rgb_label"),
-        "mo:C64PaletteEditorDialog.save_as_button": tr("mo:C64PaletteEditorDialog.save_as_button"),
-        "mo:C64PaletteEditorDialog.save_button": tr("mo:C64PaletteEditorDialog.save_button"),
-        "mo:C64PaletteEditorDialog.status_label": tr("mo:C64PaletteEditorDialog.status_label"),
-        "mo:C64PixelScreenEditorDialog.canvas": tr("mo:C64PixelScreenEditorDialog.canvas"),
-        "mo:C64PixelScreenEditorDialog.clear_button": tr("mo:C64PixelScreenEditorDialog.clear_button"),
-        "mo:C64PixelScreenEditorDialog.close_button": tr("mo:C64PixelScreenEditorDialog.close_button"),
-        "mo:C64PixelScreenEditorDialog.fill_screen_button": tr("mo:C64PixelScreenEditorDialog.fill_screen_button"),
-        "mo:C64PixelScreenEditorDialog.load_button": tr("mo:C64PixelScreenEditorDialog.load_button"),
-        "mo:C64PixelScreenEditorDialog.new_button": tr("mo:C64PixelScreenEditorDialog.new_button"),
-        "mo:C64PixelScreenEditorDialog.output_format_box": tr("mo:C64PixelScreenEditorDialog.output_format_box"),
-        "mo:C64PixelScreenEditorDialog.output_save_button": tr("mo:C64PixelScreenEditorDialog.output_save_button"),
-        "mo:C64PixelScreenEditorDialog.path_label": tr("mo:C64PixelScreenEditorDialog.path_label"),
-        "mo:C64PixelScreenEditorDialog.save_as_button": tr("mo:C64PixelScreenEditorDialog.save_as_button"),
-        "mo:C64PixelScreenEditorDialog.save_button": tr("mo:C64PixelScreenEditorDialog.save_button"),
-        "mo:C64PixelScreenEditorDialog.status_label": tr("mo:C64PixelScreenEditorDialog.status_label"),
-        "mo:C64TextScreenEditorDialog.canvas": tr("mo:C64TextScreenEditorDialog.canvas"),
-        "mo:C64TextScreenEditorDialog.character_list": tr("mo:C64TextScreenEditorDialog.character_list"),
-        "mo:C64TextScreenEditorDialog.clear_button": tr("mo:C64TextScreenEditorDialog.clear_button"),
-        "mo:C64TextScreenEditorDialog.close_button": tr("mo:C64TextScreenEditorDialog.close_button"),
-        "mo:C64TextScreenEditorDialog.color_combo": tr("mo:C64TextScreenEditorDialog.color_combo"),
-        "mo:C64TextScreenEditorDialog.fill_button": tr("mo:C64TextScreenEditorDialog.fill_button"),
-        "mo:C64TextScreenEditorDialog.load_button": tr("mo:C64TextScreenEditorDialog.load_button"),
-        "mo:C64TextScreenEditorDialog.new_button": tr("mo:C64TextScreenEditorDialog.new_button"),
-        "mo:C64TextScreenEditorDialog.output_format_box": tr("mo:C64TextScreenEditorDialog.output_format_box"),
-        "mo:C64TextScreenEditorDialog.output_save_button": tr("mo:C64TextScreenEditorDialog.output_save_button"),
-        "mo:C64TextScreenEditorDialog.path_label": tr("mo:C64TextScreenEditorDialog.path_label"),
-        "mo:C64TextScreenEditorDialog.save_as_button": tr("mo:C64TextScreenEditorDialog.save_as_button"),
-        "mo:C64TextScreenEditorDialog.save_button": tr("mo:C64TextScreenEditorDialog.save_button"),
-        "mo:C64TextScreenEditorDialog.status_label": tr("mo:C64TextScreenEditorDialog.status_label"),
-        "mo:calculator_backspace": tr("mo:calculator_backspace"),
-        "mo:calculator_clear": tr("mo:calculator_clear"),
-        "mo:calculator_equals": tr("mo:calculator_equals"),
-        "mo:calculator_error": tr("mo:calculator_error"),
-        "mo:calculator_expression": tr("mo:calculator_expression"),
-        "mo:calculator_memory_label": tr("mo:calculator_memory_label"),
-        "mo:calculator_priority": tr("mo:calculator_priority"),
-        "mo:calculator_result": tr("mo:calculator_result"),
-        "mo:cantor_calculate_button": tr("mo:cantor_calculate_button"),
-        "mo:cantor_columns_spin": tr("mo:cantor_columns_spin"),
-        "mo:cantor_diagonal_value_list": tr("mo:cantor_diagonal_value_list"),
-        "mo:cantor_rows_spin": tr("mo:cantor_rows_spin"),
-        "mo:CantorDiagonalFactWidget.calculate_button": tr("mo:CantorDiagonalFactWidget.calculate_button"),
-        "mo:CantorDiagonalFactWidget.columns_spin": tr("mo:CantorDiagonalFactWidget.columns_spin"),
-        "mo:CantorDiagonalFactWidget.description_label": tr("mo:CantorDiagonalFactWidget.description_label"),
-        "mo:CantorDiagonalFactWidget.rows_spin": tr("mo:CantorDiagonalFactWidget.rows_spin"),
-        "mo:CantorDiagonalFactWidget.status_label": tr("mo:CantorDiagonalFactWidget.status_label"),
-        "mo:CantorDiagonalFactWidget.title_label": tr("mo:CantorDiagonalFactWidget.title_label"),
-        "mo:CantorDiagonalFactWidget.value_list": tr("mo:CantorDiagonalFactWidget.value_list"),
-        "mo:character_editor_list": tr("mo:character_editor_list"),
-        "mo:character_pixel_grid": tr("mo:character_pixel_grid"),
-        "mo:character_preview": tr("mo:character_preview"),
-        "mo:chm_content_view": tr("mo:chm_content_view"),
-        "mo:chm_navigation_toolbar": tr("mo:chm_navigation_toolbar"),
-        "mo:chm_search_button": tr("mo:chm_search_button"),
-        "mo:chm_viewer_dialog": tr("mo:chm_viewer_dialog"),
-        "mo:ChmSearchTab.search_button": tr("mo:ChmSearchTab.search_button"),
-        "mo:ChmSearchTab.search_edit": tr("mo:ChmSearchTab.search_edit"),
-        "mo:ChmSearchTab.tree": tr("mo:ChmSearchTab.tree"),
-        "mo:ChmSourceDialog.editor": tr("mo:ChmSourceDialog.editor"),
-        "mo:ChmViewerDialog.about_action": tr("mo:ChmViewerDialog.about_action"),
-        "mo:ChmViewerDialog.add_favorite_button": tr("mo:ChmViewerDialog.add_favorite_button"),
-        "mo:ChmViewerDialog.back_action": tr("mo:ChmViewerDialog.back_action"),
-        "mo:ChmViewerDialog.copy_action": tr("mo:ChmViewerDialog.copy_action"),
-        "mo:ChmViewerDialog.favorites_tab": tr("mo:ChmViewerDialog.favorites_tab"),
-        "mo:ChmViewerDialog.file_status": tr("mo:ChmViewerDialog.file_status"),
-        "mo:ChmViewerDialog.forward_action": tr("mo:ChmViewerDialog.forward_action"),
-        "mo:ChmViewerDialog.home_action": tr("mo:ChmViewerDialog.home_action"),
-        "mo:ChmViewerDialog.keywords_tab": tr("mo:ChmViewerDialog.keywords_tab"),
-        "mo:ChmViewerDialog.menu_bar": tr("mo:ChmViewerDialog.menu_bar"),
-        "mo:ChmViewerDialog.navigation_toolbar": tr("mo:ChmViewerDialog.navigation_toolbar"),
-        "mo:ChmViewerDialog.open_action": tr("mo:ChmViewerDialog.open_action"),
-        "mo:ChmViewerDialog.quit_action": tr("mo:ChmViewerDialog.quit_action"),
-        "mo:ChmViewerDialog.remove_favorite_button": tr("mo:ChmViewerDialog.remove_favorite_button"),
-        "mo:ChmViewerDialog.source_action": tr("mo:ChmViewerDialog.source_action"),
-        "mo:ChmViewerDialog.splitter": tr("mo:ChmViewerDialog.splitter"),
-        "mo:ChmViewerDialog.status_bar": tr("mo:ChmViewerDialog.status_bar"),
-        "mo:ChmViewerDialog.tabs": tr("mo:ChmViewerDialog.tabs"),
-        "mo:ChmViewerDialog.topics_tab": tr("mo:ChmViewerDialog.topics_tab"),
-        "mo:ChmViewerDialog.web_view": tr("mo:ChmViewerDialog.web_view"),
-        "mo:coff_object_button": tr("mo:coff_object_button"),
-        "mo:custom_dock_title_bar": tr("mo:custom_dock_title_bar"),
-        "mo:dock_snap_overlay": tr("mo:dock_snap_overlay"),
-        "mo:custom_dock_title_label": tr("mo:custom_dock_title_label"),
-        "mo:d64_content_dock": tr("mo:d64_content_dock"),
-        "mo:d64_content_list": tr("mo:d64_content_list"),
-        "mo:dbase_form_assemble_button": tr("mo:dbase_form_assemble_button"),
-        "mo:dbase_form_border_color_button": tr("mo:dbase_form_border_color_button"),
-        "mo:dbase_form_border_color_combo": tr("mo:dbase_form_border_color_combo"),
-        "mo:dbase_form_border_round_bl_spinbox": tr("mo:dbase_form_border_round_bl_spinbox"),
-        "mo:dbase_form_border_round_br_spinbox": tr("mo:dbase_form_border_round_br_spinbox"),
-        "mo:dbase_form_border_round_tl_spinbox": tr("mo:dbase_form_border_round_tl_spinbox"),
-        "mo:dbase_form_border_round_tr_spinbox": tr("mo:dbase_form_border_round_tr_spinbox"),
-        "mo:dbase_form_border_shadow_color_button": tr("mo:dbase_form_border_shadow_color_button"),
-        "mo:dbase_form_border_shadow_color_combo": tr("mo:dbase_form_border_shadow_color_combo"),
-        "mo:dbase_form_border_size_spinbox": tr("mo:dbase_form_border_size_spinbox"),
-        "mo:dbase_form_border_style_combo": tr("mo:dbase_form_border_style_combo"),
-        "mo:dbase_form_brush_cut_height_spinbox": tr("mo:dbase_form_brush_cut_height_spinbox"),
-        "mo:dbase_form_brush_cut_width_spinbox": tr("mo:dbase_form_brush_cut_width_spinbox"),
-        "mo:dbase_form_brush_gradient_combo": tr("mo:dbase_form_brush_gradient_combo"),
-        "mo:dbase_form_brush_style_combo": tr("mo:dbase_form_brush_style_combo"),
-        "mo:dbase_form_build_bar": tr("mo:dbase_form_build_bar"),
-        "mo:dbase_form_build_status": tr("mo:dbase_form_build_status"),
-        "mo:dbase_form_compile_button": tr("mo:dbase_form_compile_button"),
-        "mo:dbase_form_component_tabs": tr("mo:dbase_form_component_tabs"),
-        "mo:dbase_form_database_icon_view": tr("mo:dbase_form_database_icon_view"),
-        "mo:dbase_form_designer_dock": tr("mo:dbase_form_designer_dock"),
-        "mo:dbase_form_event_grid": tr("mo:dbase_form_event_grid"),
-        "mo:dbase_form_event_source_button": tr("mo:dbase_form_event_source_button"),
-        "mo:dbase_form_font_alpha_combo": tr("mo:dbase_form_font_alpha_combo"),
-        "mo:dbase_form_font_background_button": tr("mo:dbase_form_font_background_button"),
-        "mo:dbase_form_font_background_combo": tr("mo:dbase_form_font_background_combo"),
-        "mo:dbase_form_font_bold_checkbox": tr("mo:dbase_form_font_bold_checkbox"),
-        "mo:dbase_form_font_family_combo": tr("mo:dbase_form_font_family_combo"),
-        "mo:dbase_form_font_foreground_button": tr("mo:dbase_form_font_foreground_button"),
-        "mo:dbase_form_font_foreground_combo": tr("mo:dbase_form_font_foreground_combo"),
-        "mo:dbase_form_font_italic_checkbox": tr("mo:dbase_form_font_italic_checkbox"),
-        "mo:dbase_form_font_size_spinbox": tr("mo:dbase_form_font_size_spinbox"),
-        "mo:dbase_form_font_stroke_checkbox": tr("mo:dbase_form_font_stroke_checkbox"),
-        "mo:dbase_form_font_underline_checkbox": tr("mo:dbase_form_font_underline_checkbox"),
-        "mo:dbase_form_graphics_view": tr("mo:dbase_form_graphics_view"),
-        "mo:dbase_form_property_dock": tr("mo:dbase_form_property_dock"),
-        "mo:dbase_form_property_splitter": tr("mo:dbase_form_property_splitter"),
-        "mo:dbase_form_property_tree": tr("mo:dbase_form_property_tree"),
-        "mo:dbase_form_source_outline": tr("mo:dbase_form_source_outline"),
-        "mo:dbase_form_source_splitter": tr("mo:dbase_form_source_splitter"),
-        "mo:dbase_form_standard_icon_view": tr("mo:dbase_form_standard_icon_view"),
-        "mo:dbase_form_start_button": tr("mo:dbase_form_start_button"),
-        "mo:dbase_form_tabs": tr("mo:dbase_form_tabs"),
-        "mo:dbase_form_target_combo": tr("mo:dbase_form_target_combo"),
-        "mo:dbase_form_timer_active_checkbox": tr("mo:dbase_form_timer_active_checkbox"),
-        "mo:dbase_form_timer_interval_spinbox": tr("mo:dbase_form_timer_interval_spinbox"),
-        "mo:dbase_form_upper_tabs": tr("mo:dbase_form_upper_tabs"),
-        "mo:dbase_label_add_field_button": tr("mo:dbase_label_add_field_button"),
-        "mo:dbase_label_add_format_button": tr("mo:dbase_label_add_format_button"),
-        "mo:dbase_label_designer": tr("mo:dbase_label_designer"),
-        "mo:dbase_label_field_list": tr("mo:dbase_label_field_list"),
-        "mo:dbase_label_fields_group": tr("mo:dbase_label_fields_group"),
-        "mo:dbase_label_format_actions": tr("mo:dbase_label_format_actions"),
-        "mo:dbase_label_format_list": tr("mo:dbase_label_format_list"),
-        "mo:dbase_label_formats_group": tr("mo:dbase_label_formats_group"),
-        "mo:dbase_label_main_splitter": tr("mo:dbase_label_main_splitter"),
-        "mo:dbase_label_load_button": tr("mo:dbase_label_load_button"),
-        "mo:dbase_label_pdf_button": tr("mo:dbase_label_pdf_button"),
-        "mo:dbase_label_print_button": tr("mo:dbase_label_print_button"),
-        "mo:dbase_label_save_as_button": tr("mo:dbase_label_save_as_button"),
-        "mo:dbase_label_save_button": tr("mo:dbase_label_save_button"),
-        "mo:dbase_label_source_button": tr("mo:dbase_label_source_button"),
-        "mo:dbase_label_source_edit": tr("mo:dbase_label_source_edit"),
-        "mo:dbase_label_source_group": tr("mo:dbase_label_source_group"),
-        "mo:dbase_label_tools": tr("mo:dbase_label_tools"),
-        "mo:dbase_label_tools_scroll": tr("mo:dbase_label_tools_scroll"),
-        "mo:dbase_label_view": tr("mo:dbase_label_view"),
-        "mo:dbase_table_designer_dock": tr("mo:dbase_table_designer_dock"),
-        "mo:dbase_table_field_decimals_spin": tr("mo:dbase_table_field_decimals_spin"),
-        "mo:dbase_table_field_grid": tr("mo:dbase_table_field_grid"),
-        "mo:dbase_table_field_index_checkbox": tr("mo:dbase_table_field_index_checkbox"),
-        "mo:dbase_table_field_length_spin": tr("mo:dbase_table_field_length_spin"),
-        "mo:dbase_table_field_type_combo": tr("mo:dbase_table_field_type_combo"),
-        "mo:dbase_table_inner_tabs": tr("mo:dbase_table_inner_tabs"),
-        "mo:dbase_table_load_button": tr("mo:dbase_table_load_button"),
-        "mo:dbase_table_parent_tabs": tr("mo:dbase_table_parent_tabs"),
-        "mo:dbase_table_save_as_button": tr("mo:dbase_table_save_as_button"),
-        "mo:dbase_table_save_button": tr("mo:dbase_table_save_button"),
-        "mo:DBaseFormControlItem.proxy": tr("mo:DBaseFormControlItem.proxy"),
-        "mo:DBaseFormPropertyPanel.bold_check": tr("mo:DBaseFormPropertyPanel.bold_check"),
-        "mo:DBaseFormPropertyPanel.border_color_button": tr("mo:DBaseFormPropertyPanel.border_color_button"),
-        "mo:DBaseFormPropertyPanel.border_color_combo": tr("mo:DBaseFormPropertyPanel.border_color_combo"),
-        "mo:DBaseFormPropertyPanel.border_color_holder": tr("mo:DBaseFormPropertyPanel.border_color_holder"),
-        "mo:DBaseFormPropertyPanel.border_round_bl_spin": tr("mo:DBaseFormPropertyPanel.border_round_bl_spin"),
-        "mo:DBaseFormPropertyPanel.border_round_br_spin": tr("mo:DBaseFormPropertyPanel.border_round_br_spin"),
-        "mo:DBaseFormPropertyPanel.border_round_tl_spin": tr("mo:DBaseFormPropertyPanel.border_round_tl_spin"),
-        "mo:DBaseFormPropertyPanel.border_round_tr_spin": tr("mo:DBaseFormPropertyPanel.border_round_tr_spin"),
-        "mo:DBaseFormPropertyPanel.border_shadow_color_button": tr("mo:DBaseFormPropertyPanel.border_shadow_color_button"),
-        "mo:DBaseFormPropertyPanel.border_shadow_color_combo": tr("mo:DBaseFormPropertyPanel.border_shadow_color_combo"),
-        "mo:DBaseFormPropertyPanel.border_shadow_color_holder": tr("mo:DBaseFormPropertyPanel.border_shadow_color_holder"),
-        "mo:DBaseFormPropertyPanel.border_size_spin": tr("mo:DBaseFormPropertyPanel.border_size_spin"),
-        "mo:DBaseFormPropertyPanel.border_style_combo": tr("mo:DBaseFormPropertyPanel.border_style_combo"),
-        "mo:DBaseFormPropertyPanel.brush_cut_height_spin": tr("mo:DBaseFormPropertyPanel.brush_cut_height_spin"),
-        "mo:DBaseFormPropertyPanel.brush_cut_width_spin": tr("mo:DBaseFormPropertyPanel.brush_cut_width_spin"),
-        "mo:DBaseFormPropertyPanel.brush_gradient_combo": tr("mo:DBaseFormPropertyPanel.brush_gradient_combo"),
-        "mo:DBaseFormPropertyPanel.brush_style_combo": tr("mo:DBaseFormPropertyPanel.brush_style_combo"),
-        "mo:DBaseFormPropertyPanel.database_icon_view": tr("mo:DBaseFormPropertyPanel.database_icon_view"),
-        "mo:DBaseFormPropertyPanel.event_grid": tr("mo:DBaseFormPropertyPanel.event_grid"),
-        "mo:DBaseFormPropertyPanel.font_alpha_combo": tr("mo:DBaseFormPropertyPanel.font_alpha_combo"),
-        "mo:DBaseFormPropertyPanel.font_background_button": tr("mo:DBaseFormPropertyPanel.font_background_button"),
-        "mo:DBaseFormPropertyPanel.font_background_combo": tr("mo:DBaseFormPropertyPanel.font_background_combo"),
-        "mo:DBaseFormPropertyPanel.font_background_holder": tr("mo:DBaseFormPropertyPanel.font_background_holder"),
-        "mo:DBaseFormPropertyPanel.font_combo": tr("mo:DBaseFormPropertyPanel.font_combo"),
-        "mo:DBaseFormPropertyPanel.font_foreground_button": tr("mo:DBaseFormPropertyPanel.font_foreground_button"),
-        "mo:DBaseFormPropertyPanel.font_foreground_combo": tr("mo:DBaseFormPropertyPanel.font_foreground_combo"),
-        "mo:DBaseFormPropertyPanel.font_foreground_holder": tr("mo:DBaseFormPropertyPanel.font_foreground_holder"),
-        "mo:DBaseFormPropertyPanel.font_size_spin": tr("mo:DBaseFormPropertyPanel.font_size_spin"),
-        "mo:DBaseFormPropertyPanel.italic_check": tr("mo:DBaseFormPropertyPanel.italic_check"),
-        "mo:DBaseFormPropertyPanel.lower_tabs": tr("mo:DBaseFormPropertyPanel.lower_tabs"),
-        "mo:DBaseFormPropertyPanel.property_tree": tr("mo:DBaseFormPropertyPanel.property_tree"),
-        "mo:DBaseFormPropertyPanel.standard_icon_view": tr("mo:DBaseFormPropertyPanel.standard_icon_view"),
-        "mo:DBaseFormPropertyPanel.stroke_check": tr("mo:DBaseFormPropertyPanel.stroke_check"),
-        "mo:DBaseFormPropertyPanel.timer_active_check": tr("mo:DBaseFormPropertyPanel.timer_active_check"),
-        "mo:DBaseFormPropertyPanel.timer_interval_spin": tr("mo:DBaseFormPropertyPanel.timer_interval_spin"),
-        "mo:DBaseFormPropertyPanel.underline_check": tr("mo:DBaseFormPropertyPanel.underline_check"),
-        "mo:DBaseFormPropertyPanel.upper_tabs": tr("mo:DBaseFormPropertyPanel.upper_tabs"),
-        "mo:DBaseFormPropertyPanel.vertical_splitter": tr("mo:DBaseFormPropertyPanel.vertical_splitter"),
-        "mo:DBaseTableDesignerWidget.table_tabs": tr("mo:DBaseTableDesignerWidget.table_tabs"),
-        "mo:DBaseTablePage.field_grid": tr("mo:DBaseTablePage.field_grid"),
-        "mo:DBaseTablePage.inner_tabs": tr("mo:DBaseTablePage.inner_tabs"),
-        "mo:DBaseTablePage.load_button": tr("mo:DBaseTablePage.load_button"),
-        "mo:DBaseTablePage.save_as_button": tr("mo:DBaseTablePage.save_as_button"),
-        "mo:DBaseTablePage.save_button": tr("mo:DBaseTablePage.save_button"),
-        "mo:desktop_properties_panel": tr("mo:desktop_properties_panel"),
-        "mo:desktop_properties_scroll_area": tr("mo:desktop_properties_scroll_area"),
-        "mo:desktop_properties_scroll_widget": tr("mo:desktop_properties_scroll_widget"),
-        "mo:desktop_properties_tabs": tr("mo:desktop_properties_tabs"),
-        "mo:desktop_settings_action": tr("mo:desktop_settings_action"),
-        "mo:desktop_settings_dock": tr("mo:desktop_settings_dock"),
-        "mo:DesktopPropertiesDialog.btn_apply": tr("mo:DesktopPropertiesDialog.btn_apply"),
-        "mo:DesktopPropertiesDialog.btn_cancel": tr("mo:DesktopPropertiesDialog.btn_cancel"),
-        "mo:DesktopPropertiesDialog.btn_components": tr("mo:DesktopPropertiesDialog.btn_components"),
-        "mo:DesktopPropertiesDialog.btn_external_editor": tr("mo:DesktopPropertiesDialog.btn_external_editor"),
-        "mo:DesktopPropertiesDialog.btn_files_current_dir": tr("mo:DesktopPropertiesDialog.btn_files_current_dir"),
-        "mo:DesktopPropertiesDialog.btn_files_search_path": tr("mo:DesktopPropertiesDialog.btn_files_search_path"),
-        "mo:DesktopPropertiesDialog.btn_help": tr("mo:DesktopPropertiesDialog.btn_help"),
-        "mo:DesktopPropertiesDialog.btn_logfile": tr("mo:DesktopPropertiesDialog.btn_logfile"),
-        "mo:DesktopPropertiesDialog.btn_ok": tr("mo:DesktopPropertiesDialog.btn_ok"),
-        "mo:DesktopPropertiesDialog.btn_prog_error_log": tr("mo:DesktopPropertiesDialog.btn_prog_error_log"),
-        "mo:DesktopPropertiesDialog.btn_prog_html_template": tr("mo:DesktopPropertiesDialog.btn_prog_html_template"),
-        "mo:DesktopPropertiesDialog.btn_test_beep": tr("mo:DesktopPropertiesDialog.btn_test_beep"),
-        "mo:DesktopPropertiesDialog.cb_currency": tr("mo:DesktopPropertiesDialog.cb_currency"),
-        "mo:DesktopPropertiesDialog.cb_datefmt": tr("mo:DesktopPropertiesDialog.cb_datefmt"),
-        "mo:DesktopPropertiesDialog.cb_lang": tr("mo:DesktopPropertiesDialog.cb_lang"),
-        "mo:DesktopPropertiesDialog.cb_prog_error_action": tr("mo:DesktopPropertiesDialog.cb_prog_error_action"),
-        "mo:DesktopPropertiesDialog.chk_app_anim": tr("mo:DesktopPropertiesDialog.chk_app_anim"),
-        "mo:DesktopPropertiesDialog.chk_app_datamodule": tr("mo:DesktopPropertiesDialog.chk_app_datamodule"),
-        "mo:DesktopPropertiesDialog.chk_app_fit": tr("mo:DesktopPropertiesDialog.chk_app_fit"),
-        "mo:DesktopPropertiesDialog.chk_app_form": tr("mo:DesktopPropertiesDialog.chk_app_form"),
-        "mo:DesktopPropertiesDialog.chk_app_labels": tr("mo:DesktopPropertiesDialog.chk_app_labels"),
-        "mo:DesktopPropertiesDialog.chk_app_ole": tr("mo:DesktopPropertiesDialog.chk_app_ole"),
-        "mo:DesktopPropertiesDialog.chk_app_report": tr("mo:DesktopPropertiesDialog.chk_app_report"),
-        "mo:DesktopPropertiesDialog.chk_app_save_logins": tr("mo:DesktopPropertiesDialog.chk_app_save_logins"),
-        "mo:DesktopPropertiesDialog.chk_app_splash": tr("mo:DesktopPropertiesDialog.chk_app_splash"),
-        "mo:DesktopPropertiesDialog.chk_app_sql_trace": tr("mo:DesktopPropertiesDialog.chk_app_sql_trace"),
-        "mo:DesktopPropertiesDialog.chk_app_table": tr("mo:DesktopPropertiesDialog.chk_app_table"),
-        "mo:DesktopPropertiesDialog.chk_approx": tr("mo:DesktopPropertiesDialog.chk_approx"),
-        "mo:DesktopPropertiesDialog.chk_autonull": tr("mo:DesktopPropertiesDialog.chk_autonull"),
-        "mo:DesktopPropertiesDialog.chk_autosave": tr("mo:DesktopPropertiesDialog.chk_autosave"),
-        "mo:DesktopPropertiesDialog.chk_backup": tr("mo:DesktopPropertiesDialog.chk_backup"),
-        "mo:DesktopPropertiesDialog.chk_beep": tr("mo:DesktopPropertiesDialog.chk_beep"),
-        "mo:DesktopPropertiesDialog.chk_century": tr("mo:DesktopPropertiesDialog.chk_century"),
-        "mo:DesktopPropertiesDialog.chk_confirm": tr("mo:DesktopPropertiesDialog.chk_confirm"),
-        "mo:DesktopPropertiesDialog.chk_cua": tr("mo:DesktopPropertiesDialog.chk_cua"),
-        "mo:DesktopPropertiesDialog.chk_currency_format": tr("mo:DesktopPropertiesDialog.chk_currency_format"),
-        "mo:DesktopPropertiesDialog.chk_deleted": tr("mo:DesktopPropertiesDialog.chk_deleted"),
-        "mo:DesktopPropertiesDialog.chk_enable_log": tr("mo:DesktopPropertiesDialog.chk_enable_log"),
-        "mo:DesktopPropertiesDialog.chk_encrypt": tr("mo:DesktopPropertiesDialog.chk_encrypt"),
-        "mo:DesktopPropertiesDialog.chk_esc": tr("mo:DesktopPropertiesDialog.chk_esc"),
-        "mo:DesktopPropertiesDialog.chk_exclusive": tr("mo:DesktopPropertiesDialog.chk_exclusive"),
-        "mo:DesktopPropertiesDialog.chk_ident": tr("mo:DesktopPropertiesDialog.chk_ident"),
-        "mo:DesktopPropertiesDialog.chk_lock": tr("mo:DesktopPropertiesDialog.chk_lock"),
-        "mo:DesktopPropertiesDialog.chk_mismatch": tr("mo:DesktopPropertiesDialog.chk_mismatch"),
-        "mo:DesktopPropertiesDialog.chk_prog_blank": tr("mo:DesktopPropertiesDialog.chk_prog_blank"),
-        "mo:DesktopPropertiesDialog.chk_prog_buildtime": tr("mo:DesktopPropertiesDialog.chk_prog_buildtime"),
-        "mo:DesktopPropertiesDialog.chk_prog_design": tr("mo:DesktopPropertiesDialog.chk_prog_design"),
-        "mo:DesktopPropertiesDialog.chk_prog_fieldnames": tr("mo:DesktopPropertiesDialog.chk_prog_fieldnames"),
-        "mo:DesktopPropertiesDialog.chk_prog_fullpath": tr("mo:DesktopPropertiesDialog.chk_prog_fullpath"),
-        "mo:DesktopPropertiesDialog.chk_prog_fulltest": tr("mo:DesktopPropertiesDialog.chk_prog_fulltest"),
-        "mo:DesktopPropertiesDialog.chk_prog_high_precision": tr("mo:DesktopPropertiesDialog.chk_prog_high_precision"),
-        "mo:DesktopPropertiesDialog.chk_prog_protect": tr("mo:DesktopPropertiesDialog.chk_prog_protect"),
-        "mo:DesktopPropertiesDialog.chk_prog_trace": tr("mo:DesktopPropertiesDialog.chk_prog_trace"),
-        "mo:DesktopPropertiesDialog.chk_sessions": tr("mo:DesktopPropertiesDialog.chk_sessions"),
-        "mo:DesktopPropertiesDialog.chk_system_show": tr("mo:DesktopPropertiesDialog.chk_system_show"),
-        "mo:DesktopPropertiesDialog.ed_datesep": tr("mo:DesktopPropertiesDialog.ed_datesep"),
-        "mo:DesktopPropertiesDialog.ed_decimal": tr("mo:DesktopPropertiesDialog.ed_decimal"),
-        "mo:DesktopPropertiesDialog.ed_external_editor": tr("mo:DesktopPropertiesDialog.ed_external_editor"),
-        "mo:DesktopPropertiesDialog.ed_files_current_dir": tr("mo:DesktopPropertiesDialog.ed_files_current_dir"),
-        "mo:DesktopPropertiesDialog.ed_files_search_path": tr("mo:DesktopPropertiesDialog.ed_files_search_path"),
-        "mo:DesktopPropertiesDialog.ed_logfile": tr("mo:DesktopPropertiesDialog.ed_logfile"),
-        "mo:DesktopPropertiesDialog.ed_prog_error_log": tr("mo:DesktopPropertiesDialog.ed_prog_error_log"),
-        "mo:DesktopPropertiesDialog.ed_prog_html_template": tr("mo:DesktopPropertiesDialog.ed_prog_html_template"),
-        "mo:DesktopPropertiesDialog.ed_thousand": tr("mo:DesktopPropertiesDialog.ed_thousand"),
-        "mo:DesktopPropertiesDialog.lbl_currency_pattern": tr("mo:DesktopPropertiesDialog.lbl_currency_pattern"),
-        "mo:DesktopPropertiesDialog.lbl_date_pattern": tr("mo:DesktopPropertiesDialog.lbl_date_pattern"),
-        "mo:DesktopPropertiesDialog.lbl_num_pattern": tr("mo:DesktopPropertiesDialog.lbl_num_pattern"),
-        "mo:DesktopPropertiesDialog.rb_dbase": tr("mo:DesktopPropertiesDialog.rb_dbase"),
-        "mo:DesktopPropertiesDialog.rb_left": tr("mo:DesktopPropertiesDialog.rb_left"),
-        "mo:DesktopPropertiesDialog.rb_log_append": tr("mo:DesktopPropertiesDialog.rb_log_append"),
-        "mo:DesktopPropertiesDialog.rb_log_overwrite": tr("mo:DesktopPropertiesDialog.rb_log_overwrite"),
-        "mo:DesktopPropertiesDialog.rb_mysql": tr("mo:DesktopPropertiesDialog.rb_mysql"),
-        "mo:DesktopPropertiesDialog.rb_paradox": tr("mo:DesktopPropertiesDialog.rb_paradox"),
-        "mo:DesktopPropertiesDialog.rb_right": tr("mo:DesktopPropertiesDialog.rb_right"),
-        "mo:DesktopPropertiesDialog.rb_sqlite3": tr("mo:DesktopPropertiesDialog.rb_sqlite3"),
-        "mo:DesktopPropertiesDialog.scroll_area": tr("mo:DesktopPropertiesDialog.scroll_area"),
-        "mo:DesktopPropertiesDialog.scroll_widget": tr("mo:DesktopPropertiesDialog.scroll_widget"),
-        "mo:DesktopPropertiesDialog.source_aliases_tab": tr("mo:DesktopPropertiesDialog.source_aliases_tab"),
-        "mo:DesktopPropertiesDialog.sp_app_files": tr("mo:DesktopPropertiesDialog.sp_app_files"),
-        "mo:DesktopPropertiesDialog.sp_app_projects": tr("mo:DesktopPropertiesDialog.sp_app_projects"),
-        "mo:DesktopPropertiesDialog.sp_buf": tr("mo:DesktopPropertiesDialog.sp_buf"),
-        "mo:DesktopPropertiesDialog.sp_dur": tr("mo:DesktopPropertiesDialog.sp_dur"),
-        "mo:DesktopPropertiesDialog.sp_epoch": tr("mo:DesktopPropertiesDialog.sp_epoch"),
-        "mo:DesktopPropertiesDialog.sp_freq": tr("mo:DesktopPropertiesDialog.sp_freq"),
-        "mo:DesktopPropertiesDialog.sp_prog_decimals": tr("mo:DesktopPropertiesDialog.sp_prog_decimals"),
-        "mo:DesktopPropertiesDialog.sp_prog_margin": tr("mo:DesktopPropertiesDialog.sp_prog_margin"),
-        "mo:DesktopPropertiesDialog.sp_prog_max_size": tr("mo:DesktopPropertiesDialog.sp_prog_max_size"),
-        "mo:DesktopPropertiesDialog.sp_prog_precision": tr("mo:DesktopPropertiesDialog.sp_prog_precision"),
-        "mo:DesktopPropertiesDialog.spin_indexblock": tr("mo:DesktopPropertiesDialog.spin_indexblock"),
-        "mo:DesktopPropertiesDialog.spin_memoblock": tr("mo:DesktopPropertiesDialog.spin_memoblock"),
-        "mo:DesktopPropertiesDialog.spin_refresh": tr("mo:DesktopPropertiesDialog.spin_refresh"),
-        "mo:DesktopPropertiesDialog.spin_retry": tr("mo:DesktopPropertiesDialog.spin_retry"),
-        "mo:DesktopPropertiesDialog.tabs": tr("mo:DesktopPropertiesDialog.tabs"),
-        "mo:DesktopPropertiesDialog.user_bde_aliases_tab": tr("mo:DesktopPropertiesDialog.user_bde_aliases_tab"),
-        "mo:directory_tree": tr("mo:directory_tree"),
-        "mo:dism_start_content_list": tr("mo:dism_start_content_list"),
-        "mo:dism_start_information_tab": tr("mo:dism_start_information_tab"),
-        "mo:dism_start_menu": tr("mo:dism_start_menu"),
-        "mo:dism_start_summary": tr("mo:dism_start_summary"),
-        "mo:dock_title_close_button": tr("mo:dock_title_close_button"),
-        "mo:dock_title_extra_button": tr("mo:dock_title_extra_button"),
-        "mo:dock_title_float_button": tr("mo:dock_title_float_button"),
-        "mo:DockTitleBar.close_button": tr("mo:DockTitleBar.close_button"),
-        "mo:DockTitleBar.extra_button": tr("mo:DockTitleBar.extra_button"),
-        "mo:DockTitleBar.float_button": tr("mo:DockTitleBar.float_button"),
-        "mo:DockTitleBar.title_label": tr("mo:DockTitleBar.title_label"),
-        "mo:document_tab_close_button": tr("mo:document_tab_close_button"),
-        "mo:document_tabs": tr("mo:document_tabs"),
-        "mo:DocumentEditor.amiga_cpu_combo": tr("mo:DocumentEditor.amiga_cpu_combo"),
-        "mo:DocumentEditor.amiga_fpu_combo": tr("mo:DocumentEditor.amiga_fpu_combo"),
-        "mo:DocumentEditor.assemble_button": tr("mo:DocumentEditor.assemble_button"),
-        "mo:DocumentEditor.assemble_generated_button": tr("mo:DocumentEditor.assemble_generated_button"),
-        "mo:DocumentEditor.assembler_panel": tr("mo:DocumentEditor.assembler_panel"),
-        "mo:DocumentEditor.basic_line_control_panel": tr("mo:DocumentEditor.basic_line_control_panel"),
-        "mo:DocumentEditor.basic_line_update_button": tr("mo:DocumentEditor.basic_line_update_button"),
-        "mo:DocumentEditor.basic_editor_splitter": tr("mo:DocumentEditor.basic_editor_splitter"),
-        "mo:DocumentEditor.basic_screen_keyboard": tr("mo:DocumentEditor.basic_screen_keyboard"),
-        "mo:DocumentEditor.basic_screen_keyboard_scroll": tr("mo:DocumentEditor.basic_screen_keyboard_scroll"),
-        "mo:DocumentEditor.basic_keyboard_toggle_button": tr("mo:DocumentEditor.basic_keyboard_toggle_button"),
-        "mo:c64_basic_screen_keyboard": tr("mo:c64_basic_screen_keyboard"),
-        "mo:c64_basic_keyboard_space": tr("mo:c64_basic_keyboard_space"),
-        "mo:c64_basic_keyboard_petscii": tr("mo:c64_basic_keyboard_petscii"),
-        "mo:DocumentEditor.assembly_status_label": tr("mo:DocumentEditor.assembly_status_label"),
-        "mo:DocumentEditor.build_target_combo": tr("mo:DocumentEditor.build_target_combo"),
-        "mo:DocumentEditor.coff_object_button": tr("mo:DocumentEditor.coff_object_button"),
-        "mo:DocumentEditor.generated_amiga_cpu_combo": tr("mo:DocumentEditor.generated_amiga_cpu_combo"),
-        "mo:DocumentEditor.generated_amiga_fpu_combo": tr("mo:DocumentEditor.generated_amiga_fpu_combo"),
-        "mo:DocumentEditor.generated_assembly_editor_container": tr("mo:DocumentEditor.generated_assembly_editor_container"),
-        "mo:DocumentEditor.generated_assembly_page": tr("mo:DocumentEditor.generated_assembly_page"),
-        "mo:DocumentEditor.generated_assembly_panel": tr("mo:DocumentEditor.generated_assembly_panel"),
-        "mo:DocumentEditor.generated_assembly_status_label": tr("mo:DocumentEditor.generated_assembly_status_label"),
-        "mo:DocumentEditor.generated_build_target_combo": tr("mo:DocumentEditor.generated_build_target_combo"),
-        "mo:DocumentEditor.generated_prolog_verbose_checkbox": tr("mo:DocumentEditor.generated_prolog_verbose_checkbox"),
-        "mo:DocumentEditor.generated_windows_graphics_combo": tr("mo:DocumentEditor.generated_windows_graphics_combo"),
-        "mo:DocumentEditor.hex_editor": tr("mo:DocumentEditor.hex_editor"),
-        "mo:DocumentEditor.hints_editor": tr("mo:DocumentEditor.hints_editor"),
-        "mo:DocumentEditor.markdown_minimap": tr("mo:DocumentEditor.markdown_minimap"),
-        "mo:DocumentEditor.markdown_preview": tr("mo:DocumentEditor.markdown_preview"),
-        "mo:DocumentEditor.markdown_preview_page": tr("mo:DocumentEditor.markdown_preview_page"),
-        "mo:DocumentEditor.prolog_verbose_checkbox": tr("mo:DocumentEditor.prolog_verbose_checkbox"),
-        "mo:DocumentEditor.raw_editor_container": tr("mo:DocumentEditor.raw_editor_container"),
-        "mo:DocumentEditor.source_page": tr("mo:DocumentEditor.source_page"),
-        "mo:DocumentEditor.start_assembled_button": tr("mo:DocumentEditor.start_assembled_button"),
-        "mo:DocumentEditor.start_generated_button": tr("mo:DocumentEditor.start_generated_button"),
-        "mo:DocumentEditor.views": tr("mo:DocumentEditor.views"),
-        "mo:DocumentEditor.windows_graphics_combo": tr("mo:DocumentEditor.windows_graphics_combo"),
-        "mo:doxygen_documentation_dock": tr("mo:doxygen_documentation_dock"),
-        "mo:doxygen_documentation_tool": tr("mo:doxygen_documentation_tool"),
-        "mo:html_editor_dock": tr("mo:html_editor_dock"),
-        "mo:html_editor_widget": tr("mo:html_editor_widget"),
-        "mo:html_editor_menu_bar": tr("mo:html_editor_menu_bar"),
-        "mo:html_editor_toolbar": tr("mo:html_editor_toolbar"),
-        "mo:html_editor_toolbar_secondary": tr("mo:html_editor_toolbar_secondary"),
-        "mo:html_editor_text_edit": tr("mo:html_editor_text_edit"),
-        "mo:html_editor_format_combo": tr("mo:html_editor_format_combo"),
-        "mo:html_editor_status_widget": tr("mo:html_editor_status_widget"),
-        "mo:html_editor_status_left": tr("mo:html_editor_status_left"),
-        "mo:html_editor_status_right": tr("mo:html_editor_status_right"),
-        "mo:html_editor_table_resize_action": tr("mo:html_editor_table_resize_action"),
-        "mo:ErrorMessage.btn_close": tr("mo:ErrorMessage.btn_close"),
-        "mo:ErrorMessage.btn_delete_log": tr("mo:ErrorMessage.btn_delete_log"),
-        "mo:ErrorMessage.text_edit": tr("mo:ErrorMessage.text_edit"),
-        "mo:ExplorerWindow.about_action": tr("mo:ExplorerWindow.about_action"),
-        "mo:ExplorerWindow.archive_info_list": tr("mo:ExplorerWindow.archive_info_list"),
-        "mo:ExplorerWindow.archive_info_summary": tr("mo:ExplorerWindow.archive_info_summary"),
-        "mo:ExplorerWindow.archive_info_tab": tr("mo:ExplorerWindow.archive_info_tab"),
-        "mo:ExplorerWindow.bottom_dock": tr("mo:ExplorerWindow.bottom_dock"),
-        "mo:ExplorerWindow.browse_button": tr("mo:ExplorerWindow.browse_button"),
-        "mo:ExplorerWindow.caps_status_label": tr("mo:ExplorerWindow.caps_status_label"),
-        "mo:ExplorerWindow.character_editor_action": tr("mo:ExplorerWindow.character_editor_action"),
-        "mo:ExplorerWindow.chm_viewer_action": tr("mo:ExplorerWindow.chm_viewer_action"),
-        "mo:ExplorerWindow.choose_directory_action": tr("mo:ExplorerWindow.choose_directory_action"),
-        "mo:ExplorerWindow.close_document_action": tr("mo:ExplorerWindow.close_document_action"),
-        "mo:ExplorerWindow.coff32_archive_action": tr("mo:ExplorerWindow.coff32_archive_action"),
-        "mo:ExplorerWindow.coff64_archive_action": tr("mo:ExplorerWindow.coff64_archive_action"),
-        "mo:ExplorerWindow.content_list": tr("mo:ExplorerWindow.content_list"),
-        "mo:ExplorerWindow.cursor_status_label": tr("mo:ExplorerWindow.cursor_status_label"),
-        "mo:ExplorerWindow.cursor_status_panel": tr("mo:ExplorerWindow.cursor_status_panel"),
-        "mo:ExplorerWindow.d64_summary": tr("mo:ExplorerWindow.d64_summary"),
-        "mo:ExplorerWindow.directory_tree": tr("mo:ExplorerWindow.directory_tree"),
-        "mo:ExplorerWindow.dism_analyze_action": tr("mo:ExplorerWindow.dism_analyze_action"),
-        "mo:ExplorerWindow.dism_bam_action": tr("mo:ExplorerWindow.dism_bam_action"),
-        "mo:ExplorerWindow.dism_content_list": tr("mo:ExplorerWindow.dism_content_list"),
-        "mo:ExplorerWindow.dism_disassemble_action": tr("mo:ExplorerWindow.dism_disassemble_action"),
-        "mo:ExplorerWindow.dism_extract_action": tr("mo:ExplorerWindow.dism_extract_action"),
-        "mo:ExplorerWindow.dism_info_tab": tr("mo:ExplorerWindow.dism_info_tab"),
-        "mo:ExplorerWindow.dism_program_action": tr("mo:ExplorerWindow.dism_program_action"),
-        "mo:ExplorerWindow.dism_ram_image_action": tr("mo:ExplorerWindow.dism_ram_image_action"),
-        "mo:ExplorerWindow.dism_start_action": tr("mo:ExplorerWindow.dism_start_action"),
-        "mo:ExplorerWindow.dism_start_menu": tr("mo:ExplorerWindow.dism_start_menu"),
-        "mo:ExplorerWindow.dism_startup_action": tr("mo:ExplorerWindow.dism_startup_action"),
-        "mo:ExplorerWindow.dism_summary": tr("mo:ExplorerWindow.dism_summary"),
-        "mo:ExplorerWindow.dism_verbose_action": tr("mo:ExplorerWindow.dism_verbose_action"),
-        "mo:ExplorerWindow.dism_vice_action": tr("mo:ExplorerWindow.dism_vice_action"),
-        "mo:ExplorerWindow.document_tabs": tr("mo:ExplorerWindow.document_tabs"),
-        "mo:ExplorerWindow.doxygen_action": tr("mo:ExplorerWindow.doxygen_action"),
-        "mo:ExplorerWindow.html_editor_action": tr("mo:ExplorerWindow.html_editor_action"),
-        "mo:ExplorerWindow.file_info_tab": tr("mo:ExplorerWindow.file_info_tab"),
-        "mo:ExplorerWindow.file_list": tr("mo:ExplorerWindow.file_list"),
-        "mo:ExplorerWindow.file_size_status_label": tr("mo:ExplorerWindow.file_size_status_label"),
-        "mo:ExplorerWindow.file_status_panel": tr("mo:ExplorerWindow.file_status_panel"),
-        "mo:ExplorerWindow.information_panel_tab": tr("mo:ExplorerWindow.information_panel_tab"),
-        "mo:ExplorerWindow.insert_status_label": tr("mo:ExplorerWindow.insert_status_label"),
-        "mo:ExplorerWindow.keyboard_status_panel": tr("mo:ExplorerWindow.keyboard_status_panel"),
-        "mo:ExplorerWindow.left_dock": tr("mo:ExplorerWindow.left_dock"),
-        "mo:ExplorerWindow.localize_action": tr("mo:ExplorerWindow.localize_action"),
-        "mo:ExplorerWindow.log_edit": tr("mo:ExplorerWindow.log_edit"),
-        "mo:ExplorerWindow.main_menu_bar": tr("mo:ExplorerWindow.main_menu_bar"),
-        "mo:ExplorerWindow.main_title_bar": tr("mo:ExplorerWindow.main_title_bar"),
-        "mo:ExplorerWindow.main_top_chrome": tr("mo:ExplorerWindow.main_top_chrome"),
-        "mo:ExplorerWindow.math_learning_action": tr("mo:ExplorerWindow.math_learning_action"),
-        "mo:ExplorerWindow.unit_circle_action": tr("mo:ExplorerWindow.unit_circle_action"),
-        "mo:ExplorerWindow.math_numbers_wall_1000_action": tr("mo:ExplorerWindow.math_numbers_wall_1000_action"),
-        "mo:ExplorerWindow.math_numbers_wall_100_action": tr("mo:ExplorerWindow.math_numbers_wall_100_action"),
-        "mo:ExplorerWindow.new_amiga_project_action": tr("mo:ExplorerWindow.new_amiga_project_action"),
-        "mo:ExplorerWindow.new_assembler_action": tr("mo:ExplorerWindow.new_assembler_action"),
-        "mo:ExplorerWindow.new_basic_action": tr("mo:ExplorerWindow.new_basic_action"),
-        "mo:ExplorerWindow.new_c64_project_action": tr("mo:ExplorerWindow.new_c64_project_action"),
-        "mo:ExplorerWindow.new_c_action": tr("mo:ExplorerWindow.new_c_action"),
-        "mo:ExplorerWindow.new_character_map_action": tr("mo:ExplorerWindow.new_character_map_action"),
-        "mo:ExplorerWindow.new_dbase_action": tr("mo:ExplorerWindow.new_dbase_action"),
-        "mo:ExplorerWindow.new_dbase_project_action": tr("mo:ExplorerWindow.new_dbase_project_action"),
-        "mo:ExplorerWindow.new_file_action": tr("mo:ExplorerWindow.new_file_action"),
-        "mo:ExplorerWindow.new_lisp_action": tr("mo:ExplorerWindow.new_lisp_action"),
-        "mo:ExplorerWindow.new_logo_action": tr("mo:ExplorerWindow.new_logo_action"),
-        "mo:ExplorerWindow.new_logo_project_action": tr("mo:ExplorerWindow.new_logo_project_action"),
-        "mo:ExplorerWindow.new_pascal_action": tr("mo:ExplorerWindow.new_pascal_action"),
-        "mo:ExplorerWindow.new_pixel_screen_action": tr("mo:ExplorerWindow.new_pixel_screen_action"),
-        "mo:ExplorerWindow.new_prolog_action": tr("mo:ExplorerWindow.new_prolog_action"),
-        "mo:ExplorerWindow.new_prolog_project_action": tr("mo:ExplorerWindow.new_prolog_project_action"),
-        "mo:ExplorerWindow.new_text_screen_action": tr("mo:ExplorerWindow.new_text_screen_action"),
-        "mo:ExplorerWindow.new_windows_project_action": tr("mo:ExplorerWindow.new_windows_project_action"),
-        "mo:ExplorerWindow.num_status_label": tr("mo:ExplorerWindow.num_status_label"),
-        "mo:ExplorerWindow.object_info_list": tr("mo:ExplorerWindow.object_info_list"),
-        "mo:ExplorerWindow.object_info_summary": tr("mo:ExplorerWindow.object_info_summary"),
-        "mo:ExplorerWindow.object_info_tab": tr("mo:ExplorerWindow.object_info_tab"),
-        "mo:ExplorerWindow.open_file_action": tr("mo:ExplorerWindow.open_file_action"),
-        "mo:ExplorerWindow.palette_editor_action": tr("mo:ExplorerWindow.palette_editor_action"),
-        "mo:ExplorerWindow.parent_action": tr("mo:ExplorerWindow.parent_action"),
-        "mo:ExplorerWindow.path_edit": tr("mo:ExplorerWindow.path_edit"),
-        "mo:ExplorerWindow.pe32_linker_action": tr("mo:ExplorerWindow.pe32_linker_action"),
-        "mo:ExplorerWindow.pe64_linker_action": tr("mo:ExplorerWindow.pe64_linker_action"),
-        "mo:ExplorerWindow.pixel_screen_editor_action": tr("mo:ExplorerWindow.pixel_screen_editor_action"),
-        "mo:ExplorerWindow.project_new_button": tr("mo:ExplorerWindow.project_new_button"),
-        "mo:ExplorerWindow.project_open_button": tr("mo:ExplorerWindow.project_open_button"),
-        "mo:ExplorerWindow.project_path_edit": tr("mo:ExplorerWindow.project_path_edit"),
-        "mo:ExplorerWindow.project_save_as_button": tr("mo:ExplorerWindow.project_save_as_button"),
-        "mo:ExplorerWindow.project_save_button": tr("mo:ExplorerWindow.project_save_button"),
-        "mo:ExplorerWindow.project_tree": tr("mo:ExplorerWindow.project_tree"),
-        "mo:ExplorerWindow.quit_action": tr("mo:ExplorerWindow.quit_action"),
-        "mo:ExplorerWindow.refresh_action": tr("mo:ExplorerWindow.refresh_action"),
-        "mo:ExplorerWindow.resource_action": tr("mo:ExplorerWindow.resource_action"),
-        "mo:ExplorerWindow.right_dock": tr("mo:ExplorerWindow.right_dock"),
-        "mo:ExplorerWindow.right_info_tabs": tr("mo:ExplorerWindow.right_info_tabs"),
-        "mo:ExplorerWindow.right_panel_tabs": tr("mo:ExplorerWindow.right_panel_tabs"),
-        "mo:ExplorerWindow.save_as_action": tr("mo:ExplorerWindow.save_as_action"),
-        "mo:ExplorerWindow.save_file_action": tr("mo:ExplorerWindow.save_file_action"),
-        "mo:ExplorerWindow.settings_action": tr("mo:ExplorerWindow.settings_action"),
-        "mo:ExplorerWindow.text_screen_editor_action": tr("mo:ExplorerWindow.text_screen_editor_action"),
-        "mo:ExplorerWindow.theme_action": tr("mo:ExplorerWindow.theme_action"),
-        "mo:ExplorerWindow.toolbar": tr("mo:ExplorerWindow.toolbar"),
-        "mo:ExplorerWindow.windows_graphics_build_action": tr("mo:ExplorerWindow.windows_graphics_build_action"),
-        "mo:ExplorerWindow.windows_graphics_header_action": tr("mo:ExplorerWindow.windows_graphics_header_action"),
-        "mo:ExplorerWindow.winuae_action": tr("mo:ExplorerWindow.winuae_action"),
-        "mo:ExplorerWindow.zoom_in_action": tr("mo:ExplorerWindow.zoom_in_action"),
-        "mo:ExplorerWindow.zoom_out_action": tr("mo:ExplorerWindow.zoom_out_action"),
-        "mo:fibonacci_binet_calculate_button": tr("mo:fibonacci_binet_calculate_button"),
-        "mo:fibonacci_binet_index_spin": tr("mo:fibonacci_binet_index_spin"),
-        "mo:fibonacci_binet_result": tr("mo:fibonacci_binet_result"),
-        "mo:fibonacci_graphics_scene": tr("mo:fibonacci_graphics_scene"),
-        "mo:fibonacci_graphics_view": tr("mo:fibonacci_graphics_view"),
-        "mo:fibonacci_pascal_qpainter_canvas": tr("mo:fibonacci_pascal_qpainter_canvas"),
-        "mo:FibonacciSpiralFactWidget.calculate_button": tr("mo:FibonacciSpiralFactWidget.calculate_button"),
-        "mo:FibonacciSpiralFactWidget.canvas": tr("mo:FibonacciSpiralFactWidget.canvas"),
-        "mo:FibonacciSpiralFactWidget.description_label": tr("mo:FibonacciSpiralFactWidget.description_label"),
-        "mo:FibonacciSpiralFactWidget.formula_label": tr("mo:FibonacciSpiralFactWidget.formula_label"),
-        "mo:FibonacciSpiralFactWidget.graphics_view": tr("mo:FibonacciSpiralFactWidget.graphics_view"),
-        "mo:FibonacciSpiralFactWidget.index_spin": tr("mo:FibonacciSpiralFactWidget.index_spin"),
-        "mo:FibonacciSpiralFactWidget.result_edit": tr("mo:FibonacciSpiralFactWidget.result_edit"),
-        "mo:FibonacciSpiralFactWidget.status_label": tr("mo:FibonacciSpiralFactWidget.status_label"),
-        "mo:FibonacciSpiralFactWidget.title_label": tr("mo:FibonacciSpiralFactWidget.title_label"),
-        "mo:file_icon_list": tr("mo:file_icon_list"),
-        "mo:file_information_tab": tr("mo:file_information_tab"),
-        "mo:filesystem_dock": tr("mo:filesystem_dock"),
-        "mo:generated_amiga_cpu_combo": tr("mo:generated_amiga_cpu_combo"),
-        "mo:generated_amiga_fpu_combo": tr("mo:generated_amiga_fpu_combo"),
-        "mo:generated_assembler_action_panel": tr("mo:generated_assembler_action_panel"),
-        "mo:generated_assembly_editor": tr("mo:generated_assembly_editor"),
-        "mo:generated_assembly_status_label": tr("mo:generated_assembly_status_label"),
-        "mo:generated_build_target_combo": tr("mo:generated_build_target_combo"),
-        "mo:generated_prolog_verbose_checkbox": tr("mo:generated_prolog_verbose_checkbox"),
-        "mo:generated_windows_graphics_combo": tr("mo:generated_windows_graphics_combo"),
-        "mo:gorilla_parabola_math_view": tr("mo:gorilla_parabola_math_view"),
-        "mo:GorillaParabolaMathGameWidget.new_game_button": tr("mo:GorillaParabolaMathGameWidget.new_game_button"),
-        "mo:GorillaParabolaMathGameWidget.status_label": tr("mo:GorillaParabolaMathGameWidget.status_label"),
-        "mo:GorillaParabolaMathGameWidget.title_label": tr("mo:GorillaParabolaMathGameWidget.title_label"),
-        "mo:GorillaParabolaMathGameWidget.turn_label": tr("mo:GorillaParabolaMathGameWidget.turn_label"),
-        "mo:GorillaParabolaMathGameWidget.view": tr("mo:GorillaParabolaMathGameWidget.view"),
-        "mo:GorillaParabolaMathGameWidget.wind_label": tr("mo:GorillaParabolaMathGameWidget.wind_label"),
-        "mo:green_beige_menu_bar": tr("mo:green_beige_menu_bar"),
-        "mo:green_beige_popup_menu": tr("mo:green_beige_popup_menu"),
-        "mo:green_beige_title_bar": tr("mo:green_beige_title_bar"),
-        "mo:green_beige_title_icon": tr("mo:green_beige_title_icon"),
-        "mo:green_beige_top_chrome": tr("mo:green_beige_top_chrome"),
-        "mo:GreenBeigeTitleBar.icon_label": tr("mo:GreenBeigeTitleBar.icon_label"),
-        "mo:hex_editor": tr("mo:hex_editor"),
-        "mo:hints_editor": tr("mo:hints_editor"),
-        "mo:information_panel_tab": tr("mo:information_panel_tab"),
-        "mo:iso_math_bank_answer": tr("mo:iso_math_bank_answer"),
-        "mo:iso_math_task_answer": tr("mo:iso_math_task_answer"),
-        "mo:iso_metric_math_view": tr("mo:iso_metric_math_view"),
-        "mo:IsoMetricMathGameWidget.bank_amount_spin": tr("mo:IsoMetricMathGameWidget.bank_amount_spin"),
-        "mo:IsoMetricMathGameWidget.bank_answer_edit": tr("mo:IsoMetricMathGameWidget.bank_answer_edit"),
-        "mo:IsoMetricMathGameWidget.bank_audit_button": tr("mo:IsoMetricMathGameWidget.bank_audit_button"),
-        "mo:IsoMetricMathGameWidget.bank_audit_label": tr("mo:IsoMetricMathGameWidget.bank_audit_label"),
-        "mo:IsoMetricMathGameWidget.bank_group": tr("mo:IsoMetricMathGameWidget.bank_group"),
-        "mo:IsoMetricMathGameWidget.bank_info_label": tr("mo:IsoMetricMathGameWidget.bank_info_label"),
-        "mo:IsoMetricMathGameWidget.bank_label": tr("mo:IsoMetricMathGameWidget.bank_label"),
-        "mo:IsoMetricMathGameWidget.budget_label": tr("mo:IsoMetricMathGameWidget.budget_label"),
-        "mo:IsoMetricMathGameWidget.build_button": tr("mo:IsoMetricMathGameWidget.build_button"),
-        "mo:IsoMetricMathGameWidget.build_group": tr("mo:IsoMetricMathGameWidget.build_group"),
-        "mo:IsoMetricMathGameWidget.build_info_label": tr("mo:IsoMetricMathGameWidget.build_info_label"),
-        "mo:IsoMetricMathGameWidget.demolish_button": tr("mo:IsoMetricMathGameWidget.demolish_button"),
-        "mo:IsoMetricMathGameWidget.deposit_button": tr("mo:IsoMetricMathGameWidget.deposit_button"),
-        "mo:IsoMetricMathGameWidget.new_map_button": tr("mo:IsoMetricMathGameWidget.new_map_button"),
-        "mo:IsoMetricMathGameWidget.position_label": tr("mo:IsoMetricMathGameWidget.position_label"),
-        "mo:IsoMetricMathGameWidget.solve_task_button": tr("mo:IsoMetricMathGameWidget.solve_task_button"),
-        "mo:IsoMetricMathGameWidget.status_label": tr("mo:IsoMetricMathGameWidget.status_label"),
-        "mo:IsoMetricMathGameWidget.task_answer_edit": tr("mo:IsoMetricMathGameWidget.task_answer_edit"),
-        "mo:IsoMetricMathGameWidget.task_group": tr("mo:IsoMetricMathGameWidget.task_group"),
-        "mo:IsoMetricMathGameWidget.task_question_label": tr("mo:IsoMetricMathGameWidget.task_question_label"),
-        "mo:IsoMetricMathGameWidget.title_label": tr("mo:IsoMetricMathGameWidget.title_label"),
-        "mo:IsoMetricMathGameWidget.view": tr("mo:IsoMetricMathGameWidget.view"),
-        "mo:IsoMetricMathGameWidget.withdraw_button": tr("mo:IsoMetricMathGameWidget.withdraw_button"),
-        "mo:KnowledgeAlternativeDialog.cancel_button": tr("mo:KnowledgeAlternativeDialog.cancel_button"),
-        "mo:KnowledgeAlternativeDialog.info_label": tr("mo:KnowledgeAlternativeDialog.info_label"),
-        "mo:KnowledgeAlternativeDialog.list_widget": tr("mo:KnowledgeAlternativeDialog.list_widget"),
-        "mo:KnowledgeAlternativeDialog.ok_button": tr("mo:KnowledgeAlternativeDialog.ok_button"),
-        "mo:KnowledgeAlternativeDialog.search_edit": tr("mo:KnowledgeAlternativeDialog.search_edit"),
-        "mo:KnowledgeLevelButton.alternative_host": tr("mo:KnowledgeLevelButton.alternative_host"),
-        "mo:KnowledgeLevelButton.arrow_button": tr("mo:KnowledgeLevelButton.arrow_button"),
-        "mo:KnowledgeLevelButton.embedded_alternative_check_button": tr("mo:KnowledgeLevelButton.embedded_alternative_check_button"),
-        "mo:KnowledgeLevelButton.embedded_alternative_combo": tr("mo:KnowledgeLevelButton.embedded_alternative_combo"),
-        "mo:KnowledgeLevelButton.embedded_alternative_label": tr("mo:KnowledgeLevelButton.embedded_alternative_label"),
-        "mo:KnowledgeLevelButton.main_button": tr("mo:KnowledgeLevelButton.main_button"),
-        "mo:KnowledgeQueryLane.add_lane_button": tr("mo:KnowledgeQueryLane.add_lane_button"),
-        "mo:KnowledgeQueryLane.add_level_button": tr("mo:KnowledgeQueryLane.add_level_button"),
-        "mo:KnowledgeQueryLane.alternative_check_button": tr("mo:KnowledgeQueryLane.alternative_check_button"),
-        "mo:KnowledgeQueryLane.alternative_combo": tr("mo:KnowledgeQueryLane.alternative_combo"),
-        "mo:KnowledgeQueryLane.alternative_label": tr("mo:KnowledgeQueryLane.alternative_label"),
-        "mo:KnowledgeQueryLane.alternative_overlay": tr("mo:KnowledgeQueryLane.alternative_overlay"),
-        "mo:KnowledgeQueryLane.alternative_status_label": tr("mo:KnowledgeQueryLane.alternative_status_label"),
-        "mo:KnowledgeQueryLane.command_host": tr("mo:KnowledgeQueryLane.command_host"),
-        "mo:KnowledgeQueryLane.delete_lane_button": tr("mo:KnowledgeQueryLane.delete_lane_button"),
-        "mo:KnowledgeQueryLane.level_button_host": tr("mo:KnowledgeQueryLane.level_button_host"),
-        "mo:KnowledgeQueryLane.level_container": tr("mo:KnowledgeQueryLane.level_container"),
-        "mo:KnowledgeQueryLane.level_scroll": tr("mo:KnowledgeQueryLane.level_scroll"),
-        "mo:KnowledgeQueryLane.query_edit": tr("mo:KnowledgeQueryLane.query_edit"),
-        "mo:KnowledgeQueryLane.query_status": tr("mo:KnowledgeQueryLane.query_status"),
-        "mo:LanguageRadioFlag.flag": tr("mo:LanguageRadioFlag.flag"),
-        "mo:LanguageRadioFlag.radio": tr("mo:LanguageRadioFlag.radio"),
-        "mo:learning_content_stack": tr("mo:learning_content_stack"),
-        "mo:learning_facts_tree": tr("mo:learning_facts_tree"),
-        "mo:learning_games_tree": tr("mo:learning_games_tree"),
-        "mo:learning_left_tabs": tr("mo:learning_left_tabs"),
-        "mo:line_number_area": tr("mo:line_number_area"),
-        "mo:localize_po_mo_dock": tr("mo:localize_po_mo_dock"),
-        "mo:localize_po_mo_tool": tr("mo:localize_po_mo_tool"),
-        "mo:localize_themed_message_box": tr("mo:localize_themed_message_box"),
-        "mo:LocalizeCodeEditor._line_number_area": tr("mo:LocalizeCodeEditor._line_number_area"),
-        "mo:LocalizeToolWindow.btn_apply": tr("mo:LocalizeToolWindow.btn_apply"),
-        "mo:LocalizeToolWindow.btn_cancel": tr("mo:LocalizeToolWindow.btn_cancel"),
-        "mo:LocalizeToolWindow.btn_create": tr("mo:LocalizeToolWindow.btn_create"),
-        "mo:LocalizeToolWindow.btn_cut": tr("mo:LocalizeToolWindow.btn_cut"),
-        "mo:LocalizeToolWindow.btn_delete": tr("mo:LocalizeToolWindow.btn_delete"),
-        "mo:LocalizeToolWindow.btn_delete_text": tr("mo:LocalizeToolWindow.btn_delete_text"),
-        "mo:LocalizeToolWindow.btn_insert": tr("mo:LocalizeToolWindow.btn_insert"),
-        "mo:LocalizeToolWindow.btn_load_mo_path": tr("mo:LocalizeToolWindow.btn_load_mo_path"),
-        "mo:LocalizeToolWindow.btn_load_po_path": tr("mo:LocalizeToolWindow.btn_load_po_path"),
-        "mo:LocalizeToolWindow.btn_open_po": tr("mo:LocalizeToolWindow.btn_open_po"),
-        "mo:LocalizeToolWindow.btn_paste": tr("mo:LocalizeToolWindow.btn_paste"),
-        "mo:LocalizeToolWindow.btn_save_as_po": tr("mo:LocalizeToolWindow.btn_save_as_po"),
-        "mo:LocalizeToolWindow.btn_save_po": tr("mo:LocalizeToolWindow.btn_save_po"),
-        "mo:LocalizeToolWindow.ed_mo_path": tr("mo:LocalizeToolWindow.ed_mo_path"),
-        "mo:LocalizeToolWindow.ed_msgid": tr("mo:LocalizeToolWindow.ed_msgid"),
-        "mo:LocalizeToolWindow.ed_po_path": tr("mo:LocalizeToolWindow.ed_po_path"),
-        "mo:LocalizeToolWindow.gb_dest": tr("mo:LocalizeToolWindow.gb_dest"),
-        "mo:LocalizeToolWindow.gb_source": tr("mo:LocalizeToolWindow.gb_source"),
-        "mo:LocalizeToolWindow.msgid_list": tr("mo:LocalizeToolWindow.msgid_list"),
-        "mo:LocalizeToolWindow.tabs": tr("mo:LocalizeToolWindow.tabs"),
-        "mo:LocalizeToolWindow.text_msgstr": tr("mo:LocalizeToolWindow.text_msgstr"),
-        "mo:LocalizeToolWindow.ws1": tr("mo:LocalizeToolWindow.ws1"),
-        "mo:log_dock": tr("mo:log_dock"),
-        "mo:main_help_action": tr("mo:main_help_action"),
-        "mo:main_toolbar": tr("mo:main_toolbar"),
-        "mo:markdown_preview": tr("mo:markdown_preview"),
-        "mo:math_learning_dock": tr("mo:math_learning_dock"),
-        "mo:math_numbers_wall_view": tr("mo:math_numbers_wall_view"),
-        "mo:math_task_card": tr("mo:math_task_card"),
-        "mo:MathematicsLearningDockWidget.arithmetic_widget": tr("mo:MathematicsLearningDockWidget.arithmetic_widget"),
-        "mo:MathematicsLearningDockWidget.cantor_diagonal_widget": tr("mo:MathematicsLearningDockWidget.cantor_diagonal_widget"),
-        "mo:MathematicsLearningDockWidget.content_stack": tr("mo:MathematicsLearningDockWidget.content_stack"),
-        "mo:MathematicsLearningDockWidget.facts_hint": tr("mo:MathematicsLearningDockWidget.facts_hint"),
-        "mo:MathematicsLearningDockWidget.facts_tree": tr("mo:MathematicsLearningDockWidget.facts_tree"),
-        "mo:MathematicsLearningDockWidget.fibonacci_spiral_widget": tr("mo:MathematicsLearningDockWidget.fibonacci_spiral_widget"),
-        "mo:MathematicsLearningDockWidget.games_hint": tr("mo:MathematicsLearningDockWidget.games_hint"),
-        "mo:MathematicsLearningDockWidget.games_tree": tr("mo:MathematicsLearningDockWidget.games_tree"),
-        "mo:MathematicsLearningDockWidget.gorilla_parabola_widget": tr("mo:MathematicsLearningDockWidget.gorilla_parabola_widget"),
-        "mo:MathematicsLearningDockWidget.info_browser": tr("mo:MathematicsLearningDockWidget.info_browser"),
-        "mo:MathematicsLearningDockWidget.iso_metric_widget": tr("mo:MathematicsLearningDockWidget.iso_metric_widget"),
-        "mo:MathematicsLearningDockWidget.left_tabs": tr("mo:MathematicsLearningDockWidget.left_tabs"),
-        "mo:MathematicsLearningDockWidget.numbers_wall_widget": tr("mo:MathematicsLearningDockWidget.numbers_wall_widget"),
-        "mo:MathematicsLearningDockWidget.pascal_triangle_widget": tr("mo:MathematicsLearningDockWidget.pascal_triangle_widget"),
-        "mo:MathematicsLearningDockWidget.placeholder": tr("mo:MathematicsLearningDockWidget.placeholder"),
-        "mo:MathematicsLearningDockWidget.sudoku_widget": tr("mo:MathematicsLearningDockWidget.sudoku_widget"),
-        "mo:NumberCalculatorDialog.backspace_button": tr("mo:NumberCalculatorDialog.backspace_button"),
-        "mo:NumberCalculatorDialog.calculate_button": tr("mo:NumberCalculatorDialog.calculate_button"),
-        "mo:NumberCalculatorDialog.change_button": tr("mo:NumberCalculatorDialog.change_button"),
-        "mo:NumberCalculatorDialog.clear_button": tr("mo:NumberCalculatorDialog.clear_button"),
-        "mo:NumberCalculatorDialog.close_button": tr("mo:NumberCalculatorDialog.close_button"),
-        "mo:NumberCalculatorDialog.equals_button": tr("mo:NumberCalculatorDialog.equals_button"),
-        "mo:NumberCalculatorDialog.error_label": tr("mo:NumberCalculatorDialog.error_label"),
-        "mo:NumberCalculatorDialog.expression_display": tr("mo:NumberCalculatorDialog.expression_display"),
-        "mo:NumberCalculatorDialog.memory_label": tr("mo:NumberCalculatorDialog.memory_label"),
-        "mo:NumberCalculatorDialog.recall_button": tr("mo:NumberCalculatorDialog.recall_button"),
-        "mo:NumberCalculatorDialog.store_button": tr("mo:NumberCalculatorDialog.store_button"),
-        "mo:NumberPyramidTrainerWidget.check_button": tr("mo:NumberPyramidTrainerWidget.check_button"),
-        "mo:NumberPyramidTrainerWidget.graphics_view": tr("mo:NumberPyramidTrainerWidget.graphics_view"),
-        "mo:NumberPyramidTrainerWidget.status_label": tr("mo:NumberPyramidTrainerWidget.status_label"),
-        "mo:NumberPyramidTrainerWidget.title_label": tr("mo:NumberPyramidTrainerWidget.title_label"),
-        "mo:numbers_wall_input": tr("mo:numbers_wall_input"),
-        "mo:object_information_list": tr("mo:object_information_list"),
-        "mo:object_information_tab": tr("mo:object_information_tab"),
-        "mo:open_back_button": tr("mo:open_back_button"),
-        "mo:open_dialog_cancel_button": tr("mo:open_dialog_cancel_button"),
-        "mo:open_dialog_open_button": tr("mo:open_dialog_open_button"),
-        "mo:open_directory_tree": tr("mo:open_directory_tree"),
-        "mo:open_extension_check_list": tr("mo:open_extension_check_list"),
-        "mo:open_file_view": tr("mo:open_file_view"),
-        "mo:open_forward_button": tr("mo:open_forward_button"),
-        "mo:open_full_path_combo": tr("mo:open_full_path_combo"),
-        "mo:open_main_splitter": tr("mo:open_main_splitter"),
-        "mo:open_path_combo": tr("mo:open_path_combo"),
-        "mo:open_path_stack": tr("mo:open_path_stack"),
-        "mo:open_search_edit": tr("mo:open_search_edit"),
-        "mo:open_up_button": tr("mo:open_up_button"),
-        "mo:palette_editor_list": tr("mo:palette_editor_list"),
-        "mo:pascal_triangle_depth_spin": tr("mo:pascal_triangle_depth_spin"),
-        "mo:pascal_triangle_view": tr("mo:pascal_triangle_view"),
-        "mo:PascalTriangleFactWidget.depth_spin": tr("mo:PascalTriangleFactWidget.depth_spin"),
-        "mo:PascalTriangleFactWidget.description_label": tr("mo:PascalTriangleFactWidget.description_label"),
-        "mo:PascalTriangleFactWidget.level_label": tr("mo:PascalTriangleFactWidget.level_label"),
-        "mo:PascalTriangleFactWidget.title_label": tr("mo:PascalTriangleFactWidget.title_label"),
-        "mo:PascalTriangleFactWidget.view": tr("mo:PascalTriangleFactWidget.view"),
-        "mo:petscii_character_dialog": tr("mo:petscii_character_dialog"),
-        "mo:petscii_character_scroll_area": tr("mo:petscii_character_scroll_area"),
-        "mo:petscii_character_table": tr("mo:petscii_character_table"),
-        "mo:petscii_dialog_close_button": tr("mo:petscii_dialog_close_button"),
-        "mo:petscii_dialog_heading": tr("mo:petscii_dialog_heading"),
-        "mo:project_open_button": tr("mo:project_open_button"),
-        "mo:project_open_file_dialog": tr("mo:project_open_file_dialog"),
-        "mo:project_panel_tab": tr("mo:project_panel_tab"),
-        "mo:project_path_edit": tr("mo:project_path_edit"),
-        "mo:project_tree": tr("mo:project_tree"),
-        "mo:ProjectOpenFileDialog.back_button": tr("mo:ProjectOpenFileDialog.back_button"),
-        "mo:ProjectOpenFileDialog.breadcrumb_buttons_widget": tr("mo:ProjectOpenFileDialog.breadcrumb_buttons_widget"),
-        "mo:ProjectOpenFileDialog.breadcrumb_folder_button": tr("mo:ProjectOpenFileDialog.breadcrumb_folder_button"),
-        "mo:ProjectOpenFileDialog.breadcrumb_widget": tr("mo:ProjectOpenFileDialog.breadcrumb_widget"),
-        "mo:ProjectOpenFileDialog.cancel_button": tr("mo:ProjectOpenFileDialog.cancel_button"),
-        "mo:ProjectOpenFileDialog.directory_tree": tr("mo:ProjectOpenFileDialog.directory_tree"),
-        "mo:ProjectOpenFileDialog.extension_list": tr("mo:ProjectOpenFileDialog.extension_list"),
-        "mo:ProjectOpenFileDialog.file_combo": tr("mo:ProjectOpenFileDialog.file_combo"),
-        "mo:ProjectOpenFileDialog.file_view": tr("mo:ProjectOpenFileDialog.file_view"),
-        "mo:ProjectOpenFileDialog.forward_button": tr("mo:ProjectOpenFileDialog.forward_button"),
-        "mo:ProjectOpenFileDialog.main_splitter": tr("mo:ProjectOpenFileDialog.main_splitter"),
-        "mo:ProjectOpenFileDialog.open_button": tr("mo:ProjectOpenFileDialog.open_button"),
-        "mo:ProjectOpenFileDialog.path_combo": tr("mo:ProjectOpenFileDialog.path_combo"),
-        "mo:ProjectOpenFileDialog.path_stack": tr("mo:ProjectOpenFileDialog.path_stack"),
-        "mo:ProjectOpenFileDialog.search_edit": tr("mo:ProjectOpenFileDialog.search_edit"),
-        "mo:ProjectOpenFileDialog.subdir_button": tr("mo:ProjectOpenFileDialog.subdir_button"),
-        "mo:ProjectOpenFileDialog.up_button": tr("mo:ProjectOpenFileDialog.up_button"),
-        "mo:prolog_knowledge_alternative_check_button": tr("mo:prolog_knowledge_alternative_check_button"),
-        "mo:prolog_knowledge_alternative_combo": tr("mo:prolog_knowledge_alternative_combo"),
-        "mo:prolog_knowledge_alternative_label": tr("mo:prolog_knowledge_alternative_label"),
-        "mo:prolog_knowledge_alternative_overlay": tr("mo:prolog_knowledge_alternative_overlay"),
-        "mo:prolog_knowledge_alternative_status": tr("mo:prolog_knowledge_alternative_status"),
-        "mo:prolog_knowledge_close_button": tr("mo:prolog_knowledge_close_button"),
-        "mo:prolog_knowledge_database_combo": tr("mo:prolog_knowledge_database_combo"),
-        "mo:prolog_knowledge_database_label": tr("mo:prolog_knowledge_database_label"),
-        "mo:prolog_knowledge_database_status": tr("mo:prolog_knowledge_database_status"),
-        "mo:prolog_knowledge_dialog": tr("mo:prolog_knowledge_dialog"),
-        "mo:prolog_knowledge_directory_button": tr("mo:prolog_knowledge_directory_button"),
-        "mo:prolog_knowledge_directory_edit": tr("mo:prolog_knowledge_directory_edit"),
-        "mo:prolog_knowledge_directory_label": tr("mo:prolog_knowledge_directory_label"),
-        "mo:prolog_knowledge_dock": tr("mo:prolog_knowledge_dock"),
-        "mo:prolog_knowledge_embedded_alternative_check_button": tr("mo:prolog_knowledge_embedded_alternative_check_button"),
-        "mo:prolog_knowledge_embedded_alternative_combo": tr("mo:prolog_knowledge_embedded_alternative_combo"),
-        "mo:prolog_knowledge_embedded_alternative_label": tr("mo:prolog_knowledge_embedded_alternative_label"),
-        "mo:prolog_knowledge_fact_arity_combo": tr("mo:prolog_knowledge_fact_arity_combo"),
-        "mo:prolog_knowledge_fact_filter_button": tr("mo:prolog_knowledge_fact_filter_button"),
-        "mo:prolog_knowledge_fact_filter_edit": tr("mo:prolog_knowledge_fact_filter_edit"),
-        "mo:prolog_knowledge_fact_tree": tr("mo:prolog_knowledge_fact_tree"),
-        "mo:prolog_knowledge_facts_caption": tr("mo:prolog_knowledge_facts_caption"),
-        "mo:prolog_knowledge_lane_add": tr("mo:prolog_knowledge_lane_add"),
-        "mo:prolog_knowledge_lane_commands": tr("mo:prolog_knowledge_lane_commands"),
-        "mo:prolog_knowledge_lane_delete": tr("mo:prolog_knowledge_lane_delete"),
-        "mo:prolog_knowledge_level_alternative_host": tr("mo:prolog_knowledge_level_alternative_host"),
-        "mo:prolog_knowledge_level_arrow": tr("mo:prolog_knowledge_level_arrow"),
-        "mo:prolog_knowledge_level_button_host": tr("mo:prolog_knowledge_level_button_host"),
-        "mo:prolog_knowledge_level_container": tr("mo:prolog_knowledge_level_container"),
-        "mo:prolog_knowledge_level_main": tr("mo:prolog_knowledge_level_main"),
-        "mo:prolog_knowledge_level_scroll": tr("mo:prolog_knowledge_level_scroll"),
-        "mo:prolog_knowledge_main_container": tr("mo:prolog_knowledge_main_container"),
-        "mo:prolog_knowledge_main_scroll": tr("mo:prolog_knowledge_main_scroll"),
-        "mo:prolog_knowledge_open_button": tr("mo:prolog_knowledge_open_button"),
-        "mo:prolog_knowledge_query_check_add": tr("mo:prolog_knowledge_query_check_add"),
-        "mo:prolog_knowledge_query_edit": tr("mo:prolog_knowledge_query_edit"),
-        "mo:prolog_knowledge_query_lane": tr("mo:prolog_knowledge_query_lane"),
-        "mo:prolog_knowledge_query_status": tr("mo:prolog_knowledge_query_status"),
-        "mo:prolog_verbose_checkbox": tr("mo:prolog_verbose_checkbox"),
-        "mo:PrologKnowledgeDialog.database_combo": tr("mo:PrologKnowledgeDialog.database_combo"),
-        "mo:PrologKnowledgeDialog.database_label": tr("mo:PrologKnowledgeDialog.database_label"),
-        "mo:PrologKnowledgeDialog.directory_button": tr("mo:PrologKnowledgeDialog.directory_button"),
-        "mo:PrologKnowledgeDialog.directory_edit": tr("mo:PrologKnowledgeDialog.directory_edit"),
-        "mo:PrologKnowledgeDialog.fact_arity_combo": tr("mo:PrologKnowledgeDialog.fact_arity_combo"),
-        "mo:PrologKnowledgeDialog.fact_filter_button": tr("mo:PrologKnowledgeDialog.fact_filter_button"),
-        "mo:PrologKnowledgeDialog.fact_filter_edit": tr("mo:PrologKnowledgeDialog.fact_filter_edit"),
-        "mo:PrologKnowledgeDialog.fact_tree": tr("mo:PrologKnowledgeDialog.fact_tree"),
-        "mo:PrologKnowledgeDialog.main_splitter": tr("mo:PrologKnowledgeDialog.main_splitter"),
-        "mo:PrologKnowledgeDialog.open_button": tr("mo:PrologKnowledgeDialog.open_button"),
-        "mo:PrologKnowledgeDialog.query_main_container": tr("mo:PrologKnowledgeDialog.query_main_container"),
-        "mo:PrologKnowledgeDialog.query_main_scroll": tr("mo:PrologKnowledgeDialog.query_main_scroll"),
-        "mo:raw_data_editor": tr("mo:raw_data_editor"),
-        "mo:recent_program_files_menu": tr("mo:recent_program_files_menu"),
-        "mo:recent_files_and_projects_menu": tr("mo:recent_files_and_projects_menu"),
-        "mo:ResourceBuilderToolWindow.alias_host": tr("mo:ResourceBuilderToolWindow.alias_host"),
-        "mo:ResourceBuilderToolWindow.alias_scroll": tr("mo:ResourceBuilderToolWindow.alias_scroll"),
-        "mo:ResourceBuilderToolWindow.btn_apply": tr("mo:ResourceBuilderToolWindow.btn_apply"),
-        "mo:ResourceBuilderToolWindow.btn_clear_all": tr("mo:ResourceBuilderToolWindow.btn_clear_all"),
-        "mo:ResourceBuilderToolWindow.btn_delete": tr("mo:ResourceBuilderToolWindow.btn_delete"),
-        "mo:ResourceBuilderToolWindow.btn_py": tr("mo:ResourceBuilderToolWindow.btn_py"),
-        "mo:ResourceBuilderToolWindow.btn_xml": tr("mo:ResourceBuilderToolWindow.btn_xml"),
-        "mo:ResourceBuilderToolWindow.button_view_a": tr("mo:ResourceBuilderToolWindow.button_view_a"),
-        "mo:ResourceBuilderToolWindow.button_view_b": tr("mo:ResourceBuilderToolWindow.button_view_b"),
-        "mo:ResourceBuilderToolWindow.button_view_c": tr("mo:ResourceBuilderToolWindow.button_view_c"),
-        "mo:ResourceBuilderToolWindow.chk_root_only": tr("mo:ResourceBuilderToolWindow.chk_root_only"),
-        "mo:ResourceBuilderToolWindow.detail_view": tr("mo:ResourceBuilderToolWindow.detail_view"),
-        "mo:ResourceBuilderToolWindow.dir_edit": tr("mo:ResourceBuilderToolWindow.dir_edit"),
-        "mo:ResourceBuilderToolWindow.icon_view": tr("mo:ResourceBuilderToolWindow.icon_view"),
-        "mo:ResourceBuilderToolWindow.left_tabs": tr("mo:ResourceBuilderToolWindow.left_tabs"),
-        "mo:ResourceBuilderToolWindow.middle_widget": tr("mo:ResourceBuilderToolWindow.middle_widget"),
-        "mo:ResourceBuilderToolWindow.right_tabs": tr("mo:ResourceBuilderToolWindow.right_tabs"),
-        "mo:ResourceBuilderToolWindow.view_stack": tr("mo:ResourceBuilderToolWindow.view_stack"),
-        "mo:ResourceBuilderToolWindow.xml_edit": tr("mo:ResourceBuilderToolWindow.xml_edit"),
-        "mo:right_information_tabs": tr("mo:right_information_tabs"),
-        "mo:right_panel_tabs": tr("mo:right_panel_tabs"),
-        "mo:showException.btn": tr("mo:showException.btn"),
-        "mo:showException.text": tr("mo:showException.text"),
-        "mo:source_editor_with_minimap": tr("mo:source_editor_with_minimap"),
-        "mo:source_minimap": tr("mo:source_minimap"),
-        "mo:SourceAliasesTab.btn_add": tr("mo:SourceAliasesTab.btn_add"),
-        "mo:SourceAliasesTab.btn_browse": tr("mo:SourceAliasesTab.btn_browse"),
-        "mo:SourceAliasesTab.btn_remove": tr("mo:SourceAliasesTab.btn_remove"),
-        "mo:SourceAliasesTab.ed_alias": tr("mo:SourceAliasesTab.ed_alias"),
-        "mo:SourceAliasesTab.ed_path": tr("mo:SourceAliasesTab.ed_path"),
-        "mo:SourceAliasesTab.lst": tr("mo:SourceAliasesTab.lst"),
-        "mo:SourceEditorWithMiniMap.editor": tr("mo:SourceEditorWithMiniMap.editor"),
-        "mo:SourceEditorWithMiniMap.minimap": tr("mo:SourceEditorWithMiniMap.minimap"),
-        "mo:SourceTextEdit.completion_description": tr("mo:SourceTextEdit.completion_description"),
-        "mo:SourceTextEdit.completion_frame": tr("mo:SourceTextEdit.completion_frame"),
-        "mo:SourceTextEdit.completion_ghost": tr("mo:SourceTextEdit.completion_ghost"),
-        "mo:SourceTextEdit.completion_header": tr("mo:SourceTextEdit.completion_header"),
-        "mo:SourceTextEdit.instruction_help_current": tr("mo:SourceTextEdit.instruction_help_current"),
-        "mo:SourceTextEdit.instruction_help_description": tr("mo:SourceTextEdit.instruction_help_description"),
-        "mo:SourceTextEdit.instruction_help_frame": tr("mo:SourceTextEdit.instruction_help_frame"),
-        "mo:SourceTextEdit.instruction_help_header": tr("mo:SourceTextEdit.instruction_help_header"),
-        "mo:SourceTextEdit.line_number_area": tr("mo:SourceTextEdit.line_number_area"),
-        "mo:start_assembled_button": tr("mo:start_assembled_button"),
-        "mo:start_generated_button": tr("mo:start_generated_button"),
-        "mo:status_cursor_panel": tr("mo:status_cursor_panel"),
-        "mo:status_file_panel": tr("mo:status_file_panel"),
-        "mo:status_keyboard_panel": tr("mo:status_keyboard_panel"),
-        "mo:sudoku_board_frame": tr("mo:sudoku_board_frame"),
-        "mo:sudoku_cell": tr("mo:sudoku_cell"),
-        "mo:SudokuTrainerWidget.board_frame": tr("mo:SudokuTrainerWidget.board_frame"),
-        "mo:SudokuTrainerWidget.check_button": tr("mo:SudokuTrainerWidget.check_button"),
-        "mo:SudokuTrainerWidget.clear_button": tr("mo:SudokuTrainerWidget.clear_button"),
-        "mo:SudokuTrainerWidget.help_label": tr("mo:SudokuTrainerWidget.help_label"),
-        "mo:SudokuTrainerWidget.new_button": tr("mo:SudokuTrainerWidget.new_button"),
-        "mo:SudokuTrainerWidget.status_label": tr("mo:SudokuTrainerWidget.status_label"),
-        "mo:SudokuTrainerWidget.title_label": tr("mo:SudokuTrainerWidget.title_label"),
-        "mo:theme_action": tr("mo:theme_action"),
-        "mo:themed_message_box": tr("mo:themed_message_box"),
-        "mo:toolbar_right_spacer": tr("mo:toolbar_right_spacer"),
-        "mo:UserBdeAliasesTab.btn_add": tr("mo:UserBdeAliasesTab.btn_add"),
-        "mo:UserBdeAliasesTab.btn_options": tr("mo:UserBdeAliasesTab.btn_options"),
-        "mo:UserBdeAliasesTab.btn_remove": tr("mo:UserBdeAliasesTab.btn_remove"),
-        "mo:UserBdeAliasesTab.cb_driver": tr("mo:UserBdeAliasesTab.cb_driver"),
-        "mo:UserBdeAliasesTab.ed_alias": tr("mo:UserBdeAliasesTab.ed_alias"),
-        "mo:UserBdeAliasesTab.ed_options": tr("mo:UserBdeAliasesTab.ed_options"),
-        "mo:UserBdeAliasesTab.lst": tr("mo:UserBdeAliasesTab.lst"),
-        "mo:windows_graphics_combo": tr("mo:windows_graphics_combo"),
-        "mo:zoom_in_action": tr("mo:zoom_in_action"),
-        "mo:zoom_out_action": tr("mo:zoom_out_action"),
-    }
+    MO_COMPONENT_NAMES = {}
+    
+    def SWITCH_APP_LANG(lang: str):
+        pass
 
     class AliasRow(QWidget):
         def __init__(self, file_path: Path, base_dir: Path, parent=None):
@@ -60003,6 +59006,7 @@ def run_gui(
         def _radio_toggled(self, checked: bool) -> None:
             if checked:
                 self.selected.emit(self.code)
+                SWITCH_APP_LANG(self.code)
 
         def mouseReleaseEvent(self, event) -> None:
             if event.button() == Qt.LeftButton:
@@ -60176,21 +59180,18 @@ def run_gui(
 QMessageBox { color: #ffffff; background-color: #202630; }
 QMessageBox QLabel { color: #ffffff; background-color: transparent; }
 QMessageBox QPushButton {
-    min-width: 78px; color: #ffffff; background-color: #343e4d;
-    border: 1px solid #596779; border-radius: 3px; padding: 5px 10px;
+min-width: 78px; color: #ffffff; background-color: #343e4d;
+border: 1px solid #596779; border-radius: 3px; padding: 5px 10px;
 }
-QMessageBox QPushButton:hover { background-color: #414d5f; }
-""")
+QMessageBox QPushButton:hover { background-color: #414d5f; }""")
             else:
                 box.setStyleSheet("""
 QMessageBox { color: #000000; background-color: #f0f0f0; }
 QMessageBox QLabel { color: #000000; background-color: transparent; }
 QMessageBox QPushButton {
-    min-width: 78px; color: #000000; background-color: #f5f5f5;
-    border: 1px solid #9b9b9b; border-radius: 3px; padding: 5px 10px;
-}
-QMessageBox QPushButton:hover { background-color: #e4f1fb; }
-""")
+min-width: 78px; color: #000000; background-color: #f5f5f5;
+border: 1px solid #9b9b9b; border-radius: 3px; padding: 5px 10px;}
+QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
             return box
 
         def _localize_warning(self, title: str, message: str):
@@ -61450,14 +60451,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             for match in self.MARKDOWN_CODE_PATTERN.finditer(text):
                 self.setFormat(match.start(), match.end() - match.start(), self.markdown_code_format)
 
+        # -----------------------------------------------------------------------
+        # Syntaxfarben für exakt dieselbe Kommentar-Lexik wie d64dbase.
+        #
+        # Der Blockzustand wird über QSyntaxHighlighter-BlockStates erhalten,
+        # damit /* ... */ über beliebig viele Editorzeilen korrekt bleibt.
+        # Kommentarmarker innerhalb von einfachen/doppelten Strings werden
+        # nicht hervorgehoben.
+        # -----------------------------------------------------------------------
         def _highlight_dbase_block(self, text: str) -> None:
-            """Syntaxfarben für exakt dieselbe Kommentar-Lexik wie d64dbase.
-
-            Der Blockzustand wird über QSyntaxHighlighter-BlockStates erhalten,
-            damit /* ... */ über beliebig viele Editorzeilen korrekt bleibt.
-            Kommentarmarker innerhalb von einfachen/doppelten Strings werden
-            nicht hervorgehoben.
-            """
             self.setCurrentBlockState(0)
             for match in self.DBASE_KEYWORD_PATTERN.finditer(text):
                 self.setFormat(
@@ -63698,9 +62700,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             instruction_help_layout.addWidget(self.instruction_help_description)
             self._instruction_help_mnemonic = ""
             self._instruction_help_operands = ""
+            # -----------------------------------------------------------------------
             # Stage ASM 3: Maus-Hilfe und Cursor-Hilfe benutzen dasselbe
             # Overlay, besitzen aber getrennte Trigger.  Ein Hover darf nur
             # auf den tatsaechlich gezeichneten Mnemonic-Zeichen ausloesen.
+            # -----------------------------------------------------------------------
             self._instruction_help_hover_active = False
             self._instruction_help_anchor_rect = None
             self.instruction_help_current.hide()
@@ -63853,16 +62857,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 newline=newline,
             )
 
+        # -----------------------------------------------------------------------
+        # Stage ASM 58: BASIC-Gutter komplett neu nummerieren.
+        #
+        # Der sichtbare Editor enthaelt weiterhin nur BASIC-Code. Die neue
+        # Nummernfolge wird als QTextBlock-Metadaten gesetzt; direkte
+        # GOTO/GOSUB/THEN/RESTORE-Ziele werden auf die neuen Nummern
+        # umgeschrieben. Stage ASM 72 entfernt zusaetzlich ueberfluessige
+        # Leerzeichen an Ausdrucksoperatoren. Strings sowie REM-/Apostroph-
+        # Kommentare bleiben dabei unangetastet.
+        # -----------------------------------------------------------------------
         def renumber_basic_lines(self, preferred_step: int = 10):
-            """Stage ASM 58: BASIC-Gutter komplett neu nummerieren.
-
-            Der sichtbare Editor enthaelt weiterhin nur BASIC-Code. Die neue
-            Nummernfolge wird als QTextBlock-Metadaten gesetzt; direkte
-            GOTO/GOSUB/THEN/RESTORE-Ziele werden auf die neuen Nummern
-            umgeschrieben. Stage ASM 72 entfernt zusaetzlich ueberfluessige
-            Leerzeichen an Ausdrucksoperatoren. Strings sowie REM-/Apostroph-
-            Kommentare bleiben dabei unangetastet.
-            """
             if not self._basic_line_number_mode:
                 raise ValueError("Der Editor befindet sich nicht im C64-BASIC-Modus.")
 
@@ -64416,13 +63421,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
 
         def _assembler_instruction_info_at_point(self, point: QPoint):
-            """Stage ASM 3: pixelgenaue Mnemonic-Hitbox fuer Maus-Hilfe.
-
-            ``cursorForPosition`` allein reicht nicht, weil Qt rechts neben dem
-            Zeilenende weiterhin den naechsten Text-Cursor liefern kann.  Die
-            X-Koordinate muss deshalb zusaetzlich innerhalb des gezeichneten
-            Opcode-Rechtecks liegen.
-            """
+        # ---------------------------------------------------------------------------
+        # Stage ASM 3: pixelgenaue Mnemonic-Hitbox fuer Maus-Hilfe.
+        #
+        # "cursorForPosition"" allein reicht nicht, weil Qt rechts neben dem
+        # Zeilenende weiterhin den naechsten Text-Cursor liefern kann.  Die
+        # X-Koordinate muss deshalb zusaetzlich innerhalb des gezeichneten
+        # Opcode-Rechtecks liegen.
+        # ---------------------------------------------------------------------------
             if not self._assembler_navigation_enabled:
                 return None
 
@@ -64779,18 +63785,20 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return tail.group(1).upper()
             return ""
 
+        # -----------------------------------------------------------------------
+        # Liefert Schluesselwort/Funktionsname am aktuellen Cursor.
+        #
+        # Neben dem normalen Bezeichner unter dem Cursor wird auch der
+        # Funktionsname direkt vor einer oeffnenden Klammer erkannt. Damit
+        # funktioniert F1 z. B. auf "WriteLn(", "printf(" oder
+        # "CreateWindowExA(" auch dann, wenn der Cursor bereits hinter dem
+        # Namen beziehungsweise auf der Klammer steht.
+        #
+        # Stage 79 erweitert den C64-BASIC-Modus um Stringfunktionen wie
+        # "CHR$"/"LEFT$", Kanalbefehle wie "PRINT#" sowie Operatoren.
+        # -----------------------------------------------------------------------
         def help_word_at_cursor(self) -> str:
-            """Liefert Schluesselwort/Funktionsname am aktuellen Cursor.
-
-            Neben dem normalen Bezeichner unter dem Cursor wird auch der
-            Funktionsname direkt vor einer oeffnenden Klammer erkannt. Damit
-            funktioniert F1 z. B. auf ``WriteLn(``, ``printf(`` oder
-            ``CreateWindowExA(`` auch dann, wenn der Cursor bereits hinter dem
-            Namen beziehungsweise auf der Klammer steht.
-
-            Stage 79 erweitert den C64-BASIC-Modus um Stringfunktionen wie
-            ``CHR$``/``LEFT$``, Kanalbefehle wie ``PRINT#`` sowie Operatoren.
-            """
+            
             if self._basic_line_number_mode:
                 return self._basic_help_word_at_cursor()
 
@@ -65747,11 +64755,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             layout.addWidget(self.editor, 1)
             layout.addWidget(self.minimap)
 
+    # -----------------------------------------------------------------------
     # Stage 180: SourceEditorWithMiniMap is the existing Pascal/source editor
     # implementation.  ApacheServerPanel is defined at module level, while
     # these editor classes deliberately live inside run_gui().  Expose the
     # exact class after its definition so server panels can reuse it instead
     # of maintaining a second editor implementation.
+    # -----------------------------------------------------------------------
     globals()["_D64_SOURCE_TEXT_EDIT_CLASS"] = SourceTextEdit
     globals()["_D64_SOURCE_MINIMAP_CLASS"] = SourceMiniMap
     globals()["_D64_SOURCE_EDITOR_WITH_MINIMAP_CLASS"] = SourceEditorWithMiniMap
@@ -65988,9 +64998,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                             cell,
                         )
 
-
+    # -----------------------------------------------------------------------
     # Stage 396: dockbarer VIC-II-Sprite-Builder mit 16-Farben-Palette.
     # C64-Rohsprites bleiben hardwarekonform 63/64 Bytes pro 24x21 Bitmap.
+    # -----------------------------------------------------------------------
     class C64SpriteCanvas(QWidget):
         pixelsChanged = pyqtSignal()
 
@@ -66027,13 +65038,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.palette_entries = normalize_palette(palette)
             self.update()
 
+        # -----------------------------------------------------------------------
+        # Farben live übernehmen, ohne Bitmap oder Rastergröße zu verändern.
+        #
+        # set_data()/set_meta() normalisieren in eine *eigene* Metadatenkopie.
+        # Farbänderungen am Editor-Modell müssen deshalb ausdrücklich in die
+        # Zeichenfläche übertragen werden, sonst bleiben Pixel alte Farben.
+        # -----------------------------------------------------------------------
         def set_color_registers(self, meta):
-            """Farben live übernehmen, ohne Bitmap oder Rastergröße zu verändern.
-
-            set_data()/set_meta() normalisieren in eine *eigene* Metadatenkopie.
-            Farbänderungen am Editor-Modell müssen deshalb ausdrücklich in die
-            Zeichenfläche übertragen werden, sonst bleiben Pixel alte Farben.
-            """
             for key in ('sprite_color', 'multicolor_1', 'multicolor_2'):
                 self.meta[key] = int(meta[key])
             self.update()
@@ -66094,17 +65106,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                                      max(1, dx - 1), max(1, dy - 1), color)
             painter.end()
 
-
+    # -----------------------------------------------------------------------
+    # Stage 396: dockbarer C64-Sprite-Builder (HiRes/Multicolor).
+    #
+    # Die 16 Palettefarben sind waehbar, jedoch hat ein VIC-II-HiRes-Sprite
+    # nur EINE Deckfarbe und ein Multicolor-Sprite DREI Deckfarben.
+    # Neue Dokumente werden als originale VIC-II-Binaerdaten in .spr
+    # gespeichert (64 Bytes je Sprite, optionaler 63-Byte-Import/Export).
+    # Alte .c64sprite-JSON-Dateien bleiben als Importquelle lesbar,
+    # werden beim Speichern jedoch in .spr umgewandelt.
+    # -----------------------------------------------------------------------
     class C64SpriteEditorDialog(QWidget):
-        """Stage 396: dockbarer C64-Sprite-Builder (HiRes/Multicolor).
-
-        Die 16 Palettefarben sind waehbar, jedoch hat ein VIC-II-HiRes-Sprite
-        nur EINE Deckfarbe und ein Multicolor-Sprite DREI Deckfarben.
-        Neue Dokumente werden als originale VIC-II-Binaerdaten in .spr
-        gespeichert (64 Bytes je Sprite, optionaler 63-Byte-Import/Export).
-        Alte .c64sprite-JSON-Dateien bleiben als Importquelle lesbar,
-        werden beim Speichern jedoch in .spr umgewandelt.
-        """
         def __init__(self, parent, *, initial_directory: Path, initial_path=None):
             super().__init__(parent)
             self.setObjectName('c64_sprite_builder')
@@ -68889,20 +67901,26 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
         BYTES_PER_ROW = 8
         BYTES_PER_GROUP = 4
         C64_FONT_FAMILY = "C64 Pro Mono"
+        
+        # ------------------------------------------------------------------------
         # Stage 17: C64Pro wird mit 11 pt gerendert. Wichtig ist dabei,
         # dass die 8x8-C64-Glyphen NICHT in die teilweise sehr kleinen
         # horizontalAdvance()/height-Werte der TTF-Datei gequetscht werden.
         # Die Zeichenmatrix erhaelt deshalb zusaetzlich eine aus 11 pt und
         # der aktuellen DPI berechnete Mindest-Pixelzelle.
+        # ------------------------------------------------------------------------
         DEFAULT_HEX_POINT_SIZE = 11
         HEX_FONT_SCALE = 1.0
 
         dataChanged = pyqtSignal()
         modificationChanged = pyqtSignal(bool)
         saveRequested = pyqtSignal(bool)
+        
+        # ------------------------------------------------------------------------
         # Stage 261: F1 im Hex-Viewer fordert die feste C64-Hilfe an.
         # Der aktuelle Byteindex wird an DocumentEditor weitergereicht, damit
         # bei PRG-Dateien die zugehoerige C64-Speicheradresse berechnet wird.
+        # ------------------------------------------------------------------------
         contextHelpRequested = pyqtSignal(int)
 
         def __init__(self, parent: Optional[QWidget] = None):
@@ -68911,19 +67929,21 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.setFocusPolicy(Qt.StrongFocus)
             self.setMouseTracking(True)
 
-            self._data = bytearray()
-            self._modified = False
-            self._read_only = False  # Stage 393: erzeugtes Programm, keine Quelle
-            self._cursor_index = 0
-            self._active_nibble = 0
-            self._selection_anchor = None
-            self._selection_end = None
-            self._dragging = False
+            self._data              = bytearray()
+            self._modified          = False
+            self._read_only         = False  # Stage 393: erzeugtes Programm, keine Quelle
+            self._cursor_index      = 0
+            self._active_nibble     = 0
+            self._selection_anchor  = None
+            self._selection_end     = None
+            self._dragging          = False
 
+            # ------------------------------------------------------------------------
             # Stage 17: Der komplette Hex-Editor benutzt C64Pro.ttf.
             # _create_c64_font() kalibriert die tatsaechliche Glyphengroesse,
             # falls die TTF-internen 8x8-Outlines bei 11 pt nur wenige Pixel
             # hoch gezeichnet wuerden.
+            # ------------------------------------------------------------------------
             c64_font = self._create_c64_font(
                 self.DEFAULT_HEX_POINT_SIZE
             )
@@ -68966,16 +67986,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._update_scrollbars()
             self.viewport().update()
 
+        # ------------------------------------------------------------------------
+        # Erzeugt C64Pro mit einer *sichtbaren* 11-pt-Glyphengroesse.
+        #
+        # Einige C64Pro-TTF-Versionen besitzen Font-Metriken, bei denen die
+        # historischen 8x8-Outlines nur einen kleinen Teil des EM-Quadrats
+        # belegen. Ein normales QFont(..., 11) kann dann optisch wie 4-5 px
+        # aussehen. Wir messen deshalb die echte Tintenhoehe und vergroessern
+        # nur in diesem Sonderfall den internen Font-Scale, bis die Glyphen
+        # ungefaehr die Pixelhoehe von 11 pt erreichen.
+        # ------------------------------------------------------------------------
         def _create_c64_font(self, point_size: float) -> QFont:
-            """Erzeugt C64Pro mit einer *sichtbaren* 11-pt-Glyphengroesse.
-
-            Einige C64Pro-TTF-Versionen besitzen Font-Metriken, bei denen die
-            historischen 8x8-Outlines nur einen kleinen Teil des EM-Quadrats
-            belegen. Ein normales QFont(..., 11) kann dann optisch wie 4-5 px
-            aussehen. Wir messen deshalb die echte Tintenhoehe und vergroessern
-            nur in diesem Sonderfall den internen Font-Scale, bis die Glyphen
-            ungefaehr die Pixelhoehe von 11 pt erreichen.
-            """
+            
             requested_pt = max(
                 float(self.DEFAULT_HEX_POINT_SIZE),
                 float(point_size),
@@ -69041,6 +68063,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._set_modified(False)
 
         def _font_geometry(self):
+            # ------------------------------------------------------------------------
             # Stage 17: C64Pro ist ein C64-Zeichensatzfont. Die optische
             # 8x8-Glyphenmatrix darf nicht direkt mit einem eventuell sehr
             # kleinen TTF-Advance als Bildschirmzelle benutzt werden.
@@ -69052,6 +68075,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             # 0000  00 00 00 00  00 00 00 00  PETSCII8
             # ^     ^            ^             ^
             # addr  linke 4      rechte 4      8 C64Pro-Glyphen
+            # ------------------------------------------------------------------------
             hex_metrics = QFontMetricsF(self._hex_font)
             petscii_metrics = QFontMetricsF(self._petscii_font)
 
@@ -69061,9 +68085,11 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 self.DEFAULT_HEX_POINT_SIZE,
             ))
 
+            # ------------------------------------------------------------------------
             # Punkt -> Pixel. logicalDpiY() beruecksichtigt die aktuelle
             # Anzeige/Windows-DPI-Skalierung. Mindestens 11 Pixel, selbst
             # wenn ein fehlerhafter Font extrem kleine Metriken meldet.
+            # ------------------------------------------------------------------------
             dpi_y = max(72.0, float(self.logicalDpiY()))
             requested_pixel_height = max(
                 self.DEFAULT_HEX_POINT_SIZE,
@@ -69080,10 +68106,12 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 )
             )
 
+            # ------------------------------------------------------------------------
             # C64-Zeichen stammen aus einer quadratischen 8x8-Matrix.
             # Deshalb erzwingen wir mindestens eine quadratische Zelle in
             # der effektiven 11-pt-Pixelgroesse. Groessere echte Fontmetriken
             # bleiben erhalten.
+            # ------------------------------------------------------------------------
             glyph_cell_width = max(
                 1,
                 int(round(measured_hex_width)),
@@ -69737,14 +68765,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 return
             super().keyPressEvent(event)
 
+    # ------------------------------------------------------------------------
+    # Stage 257: lädt und disassembliert C64-Binärdateien im QThread.
+    #
+    # Die GUI erhält zuerst die Dateigröße. Danach meldet der eigentliche
+    # 6510-Disassembler den bereits verarbeiteten Bytebereich. 100 % wird
+    # ausschließlich nach vollständig erzeugtem Listing gesendet.
+    # ------------------------------------------------------------------------
     class C64DisassemblyWorker(QObject):
-        """Stage 257: lädt und disassembliert C64-Binärdateien im QThread.
-
-        Die GUI erhält zuerst die Dateigröße. Danach meldet der eigentliche
-        6510-Disassembler den bereits verarbeiteten Bytebereich. 100 % wird
-        ausschließlich nach vollständig erzeugtem Listing gesendet.
-        """
-
+        
         size_ready = pyqtSignal(int)
         progress = pyqtSignal(int, int, int)
         succeeded = pyqtSignal(object, str, int)
@@ -69791,16 +68820,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.progress.emit(100, len(raw_bytes), total_size)
             self.succeeded.emit(raw_bytes, text, int(load_address))
 
-
+    # ------------------------------------------------------------------------
+    # Stage 198: führt genau einen Pascal-Compilerlauf im QThread aus.
+    #
+    # Die Dateigewichtung erfolgt gleichmäßig pro Pascal-Quelldatei. Innerhalb
+    # einer Datei bestimmt die vom ANTLR-Visitor gemeldete Quellzeile den
+    # Fortschritt. 1..99 % sind Compile-Fortschritt; 100 % wird erst nach
+    # erfolgreicher Rückkehr aus dem Compiler gesetzt.
+    # ------------------------------------------------------------------------
     class PascalCompileWorker(QObject):
-        """Stage 198: führt genau einen Pascal-Compilerlauf im QThread aus.
-
-        Die Dateigewichtung erfolgt gleichmäßig pro Pascal-Quelldatei. Innerhalb
-        einer Datei bestimmt die vom ANTLR-Visitor gemeldete Quellzeile den
-        Fortschritt. 1..99 % sind Compile-Fortschritt; 100 % wird erst nach
-        erfolgreicher Rückkehr aus dem Compiler gesetzt.
-        """
-
+        
         progress = pyqtSignal(int)
         status = pyqtSignal(str)
         succeeded = pyqtSignal(object)
@@ -69911,18 +68940,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.status.emit("Pascal-Kompilierung abgeschlossen")
             self.succeeded.emit(result)
 
-
+    # ------------------------------------------------------------------------
+    # QPainter-Overlay fuer die Relocation-/Bootstrap-Erklaerung.
+    #
+    # Das Widget orientiert sich farblich am vorhandenen Drei-Befehle-Overlay,
+    # zeichnet seinen Inhalt jedoch vollstaendig selbst mit QPainter. Die
+    # Groesse haengt nur von der vorgegebenen Breite und den Textmetrikdaten
+    # ab; die Breite wird daher vom Editor vorgegeben und nicht automatisch
+    # inhaltlich verkleinert.
+    # ------------------------------------------------------------------------
     class C64RelocationSemanticOverlay(QWidget):
         help_requested = pyqtSignal(str, int)
-
-        """QPainter-Overlay fuer die Relocation-/Bootstrap-Erklaerung.
-
-        Das Widget orientiert sich farblich am vorhandenen Drei-Befehle-Overlay,
-        zeichnet seinen Inhalt jedoch vollstaendig selbst mit QPainter. Die
-        Groesse haengt nur von der vorgegebenen Breite und den Textmetrikdaten
-        ab; die Breite wird daher vom Editor vorgegeben und nicht automatisch
-        inhaltlich verkleinert.
-        """
 
         def __init__(self, parent: Optional[QWidget] = None):
             super().__init__(parent)
@@ -71033,14 +70061,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self.output_editor.setTextCursor(cursor)
             self.output_editor.ensureCursorVisible()
 
+        # ------------------------------------------------------------------------
+        # Faerbt reine Top-Level-Ergebnisse true./false. gesondert.
+        #
+        # Andere PROLOG-Loesungen behalten die gelbe/fette Darstellung.
+        # Da stdout in mehreren Pipe-Chunks eintreffen kann, wird nach jedem
+        # neuen Chunk das komplette Dokument nach alleinstehenden
+        # Ergebniszeilen durchsucht.
+        # ------------------------------------------------------------------------
         def _highlight_boolean_solutions(self) -> None:
-            """Faerbt reine Top-Level-Ergebnisse true./false. gesondert.
-
-            Andere PROLOG-Loesungen behalten die gelbe/fette Darstellung.
-            Da stdout in mehreren Pipe-Chunks eintreffen kann, wird nach jedem
-            neuen Chunk das komplette Dokument nach alleinstehenden
-            Ergebniszeilen durchsucht.
-            """
             plain_text = self.output_editor.toPlainText()
             for match in re.finditer(r"(?m)^(true|false)\.$", plain_text):
                 word = match.group(1)
@@ -71077,13 +70106,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 cursor.mergeCharFormat(char_format)
                 start = end
 
+        # ------------------------------------------------------------------------
+        # Faerbt die aktuelle 'weitere Loesung'-Zeile grau/nicht fett.
+        #
+        # stdout kommt ueber eine Pipe und kann den Prompt auf mehrere Chunks
+        # verteilen. Deshalb wird nach jedem Chunk vom Prompt-Anfang bis zum
+        # aktuellen Zeilenende neu formatiert.
+        # ------------------------------------------------------------------------
         def _highlight_more_prompt(self) -> None:
-            """Faerbt die aktuelle 'weitere Loesung'-Zeile grau/nicht fett.
-
-            stdout kommt ueber eine Pipe und kann den Prompt auf mehrere Chunks
-            verteilen. Deshalb wird nach jedem Chunk vom Prompt-Anfang bis zum
-            aktuellen Zeilenende neu formatiert.
-            """
             plain_text = self.output_editor.toPlainText()
             start = plain_text.rfind(self.MORE_PROMPT)
             if start < 0:
@@ -71225,16 +70255,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             self._set_history_text(str(text))
             self.input_edit.setFocus(Qt.MouseFocusReason)
 
+        # ------------------------------------------------------------------------
+        # Return an arithmetic expression eligible for direct eval.
+        #
+        # This intentionally recognizes only arithmetic syntax already
+        # supported by the native PROLOG evaluator (+, -, *, /, mod,
+        # parentheses, numeric literals and float/1). Normal predicates,
+        # variables and comparisons therefore cannot be rewritten by
+        # accident.
+        # ------------------------------------------------------------------------
         @staticmethod
         def _direct_arithmetic_expression(line: str) -> Optional[str]:
-            """Return an arithmetic expression eligible for direct eval.
-
-            This intentionally recognizes only arithmetic syntax already
-            supported by the native PROLOG evaluator (+, -, *, /, mod,
-            parentheses, numeric literals and float/1). Normal predicates,
-            variables and comparisons therefore cannot be rewritten by
-            accident.
-            """
             text = str(line).strip()
             if text.startswith("?-"):
                 text = text[2:].strip()
@@ -72322,20 +71353,21 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
                 current = current.next()
             return count
 
+        # ------------------------------------------------------------------------
+        # Reserviert unter den drei Befehlen genug vertikalen Platz.
+        #
+        # Das Overlay selbst bleibt rechts hinter den Kommentaren und beginnt
+        # auf Hoehe von LDX #$00. Ist es hoeher als die drei Quelltextzeilen,
+        # werden direkt nach STX $01 so viele Leerzeilen eingefuegt, dass der
+        # nachfolgende Assembler-Code garantiert erst unterhalb des Overlays
+        # beginnt. Bereits vorhandene Leerzeilen werden angerechnet.
+        # ------------------------------------------------------------------------
         def _ensure_c64_code_overlay_padding(
             self,
             blocks,
             overlay_height: int,
             three_line_height: int,
         ) -> bool:
-            """Reserviert unter den drei Befehlen genug vertikalen Platz.
-
-            Das Overlay selbst bleibt rechts hinter den Kommentaren und beginnt
-            auf Hoehe von LDX #$00. Ist es hoeher als die drei Quelltextzeilen,
-            werden direkt nach STX $01 so viele Leerzeilen eingefuegt, dass der
-            nachfolgende Assembler-Code garantiert erst unterhalb des Overlays
-            beginnt. Bereits vorhandene Leerzeilen werden angerechnet.
-            """
             if getattr(self, "_c64_overlay_padding_adjusting", False):
                 return False
 
@@ -72606,14 +71638,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             context_id = int(help_py.get(topic, 0))
             self.c64_help_topic_requested.emit(self, topic, context_id)
 
+        # ------------------------------------------------------------------------
+        # Zeigt den C64-Fortschritt *vor* dem Workerstart sichtbar an.
+        #
+        # Stage 259: Ein direkt nach show() gestarteter schneller Worker konnte
+        # fertig sein, bevor Qt den ersten Paint-Event der ProgressBar ausfuehrte.
+        # Deshalb erzwingen wir hier einmal Layout + Paint. Der Worker selbst
+        # wird zusaetzlich erst ueber QTimer im naechsten GUI-Zyklus gestartet.
+        # ------------------------------------------------------------------------
         def begin_c64_disassembly(self) -> None:
-            """Zeigt den C64-Fortschritt *vor* dem Workerstart sichtbar an.
-
-            Stage 259: Ein direkt nach show() gestarteter schneller Worker konnte
-            fertig sein, bevor Qt den ersten Paint-Event der ProgressBar ausfuehrte.
-            Deshalb erzwingen wir hier einmal Layout + Paint. Der Worker selbst
-            wird zusaetzlich erst ueber QTimer im naechsten GUI-Zyklus gestartet.
-            """
             self._c64_disassembly_running = True
             self._c64_disassembly_total_size = 0
             self._c64_disassembly_started_at = time.monotonic()
@@ -72726,15 +71759,16 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             if not self._c64_disassembly_running:
                 self.c64_disassembly_progress.hide()
 
+        # ------------------------------------------------------------------------
+        # Stage 235: stabile Obergrenze fuer das sichtbare BASIC-Panel.
+        #
+        # Die Bildschirmtastatur sitzt absichtlich in einer horizontal
+        # scrollbaren QScrollArea. Ihr natuerlicher Layout-Width ist damit die
+        # einzige erlaubte maximale Breite des BASIC-Dokuments, solange die
+        # Tastatur sichtbar ist. Gespeicherte, versehentlich aufgeblasene
+        # Keyboard-Geometrien duerfen diese Grenze nicht wieder vergroessern.
+        # ------------------------------------------------------------------------
         def _basic_keyboard_natural_width(self) -> int:
-            """Stage 235: stabile Obergrenze fuer das sichtbare BASIC-Panel.
-
-            Die Bildschirmtastatur sitzt absichtlich in einer horizontal
-            scrollbaren QScrollArea. Ihr natuerlicher Layout-Width ist damit die
-            einzige erlaubte maximale Breite des BASIC-Dokuments, solange die
-            Tastatur sichtbar ist. Gespeicherte, versehentlich aufgeblasene
-            Keyboard-Geometrien duerfen diese Grenze nicht wieder vergroessern.
-            """
             keyboard = getattr(self, "basic_screen_keyboard", None)
             if keyboard is None:
                 return 0
@@ -72754,23 +71788,24 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             candidates = [value for value in candidates if value > 0]
             return max(candidates) if candidates else max(1, int(keyboard.width()))
 
+        # ------------------------------------------------------------------------
+        # Stage 236: Tastaturbreite an den sichtbaren BASIC-Bereich koppeln.
+        #
+        # Der QMainWindow-Dockseparator rechts neben dem Editor ist jetzt die
+        # autoritative horizontale Begrenzung. Wird er verschoben, darf der
+        # BASIC-Editor kleiner oder groesser werden. Die Bildschirmtastatur
+        # folgt dieser Breite:
+        #
+        # * Panel >= natuerliche Tastaturbreite: Tastatur auf Viewportbreite
+        #   strecken, so dass rechts kein ungenutzter Leerraum entsteht.
+        # * Panel < natuerliche Tastaturbreite: Tastatur behaelt ihre
+        #   natuerliche Breite und die vorhandene QScrollArea scrollt.
+        #
+        # Damit gilt weiterhin: Der BASIC-Bereich ist niemals breiter als die
+        # sichtbare Tastaturflaeche, aber der Benutzer kann die aeussere
+        # Trennlinie zum Projekt-/Informationsdock frei verschieben.
+        # ------------------------------------------------------------------------
         def _sync_basic_keyboard_to_panel_width(self) -> None:
-            """Stage 236: Tastaturbreite an den sichtbaren BASIC-Bereich koppeln.
-
-            Der QMainWindow-Dockseparator rechts neben dem Editor ist jetzt die
-            autoritative horizontale Begrenzung. Wird er verschoben, darf der
-            BASIC-Editor kleiner oder groesser werden. Die Bildschirmtastatur
-            folgt dieser Breite:
-
-            * Panel >= natuerliche Tastaturbreite: Tastatur auf Viewportbreite
-              strecken, so dass rechts kein ungenutzter Leerraum entsteht.
-            * Panel < natuerliche Tastaturbreite: Tastatur behaelt ihre
-              natuerliche Breite und die vorhandene QScrollArea scrollt.
-
-            Damit gilt weiterhin: Der BASIC-Bereich ist niemals breiter als die
-            sichtbare Tastaturflaeche, aber der Benutzer kann die aeussere
-            Trennlinie zum Projekt-/Informationsdock frei verschieben.
-            """
             if not self.basic_screen_keyboard_visible():
                 return
 
@@ -74763,7 +73798,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }
             )
 
         def create_menu(self) -> None:
+            global APP_MENU_BAR
             self.menu_bar = QMenuBar(self)
+            APP_MENU_BAR = self.main_menu_bar
+            
             self.menu_bar.setNativeMenuBar(False)
             file_menu = self.menu_bar.addMenu("Datei")
             file_menu.addAction(self.open_action)
@@ -94679,15 +93717,14 @@ QFileDialog QComboBox QAbstractItemView {{
                 self._restart_decision()
                 self._store_active_query_lane()
 
-
+    # ---------------------------------------------------------------------
+    # Eigener Green-&-Beige-Titelbalken fuer das Hauptfenster.
+    #
+    # Die Referenzpalette stammt aus dem vom Benutzer gelieferten Muster:
+    # links Gruen (#2E7D32), rechts warmes Beige/Gold und darunter das
+    # helle Beige (#F5F0E6) fuer die Menueleiste.
+    # ---------------------------------------------------------------------
     class GreenBeigeTitleBar(QWidget):
-        """Eigener Green-&-Beige-Titelbalken fuer das Hauptfenster.
-
-        Die Referenzpalette stammt aus dem vom Benutzer gelieferten Muster:
-        links Gruen (#2E7D32), rechts warmes Beige/Gold und darunter das
-        helle Beige (#F5F0E6) fuer die Menueleiste.
-        """
-
         TITLE_HEIGHT = 46
         CORNER_RADIUS = 14.0
 
@@ -110753,35 +109790,64 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             action.triggered.connect(slot)
             return action
 
+        def _build_menu_html(self, menuobj, lang_menu, lang_status=""):
+            self.menuobj = self.menu_bar.addMenu  ( APP_LANGUAGE[lang_menu]  )
+            self.menuobj.setProperty( APP_LANG_ID ,              lang_menu   )
+            self.menuobj.setProperty( APP_STAT_ID ,              lang_status )
+            self.menuobj.menuAction().setStatusTip( APP_LANGUAGE[lang_status])
+            
+            if   menuobj == 1: self.file_menu   = self.menuobj
+            elif menuobj == 2: self.edit_menu   = self.menuobj
+            elif menuobj == 3: self.view_menu   = self.menuobj
+            
+            elif menuobj == 4: self.insert_menu = self.menuobj
+            elif menuobj == 5: self.format_menu = self.menuobj
+            
+            elif menuobj == 6: self.table_menu  = self.menuobj
+            elif menuobj == 7: self.tools_menu  = self.menuobj
+        
         def _build_ui(self) -> None:
             outer = QVBoxLayout(self)
             outer.setContentsMargins(0, 0, 0, 0)
             outer.setSpacing(0)
 
+            # ----------------------------------------------------------------
             # The reference visual editor exposes the familiar menu row
             # File/Edit/Insert/View/Format/Table/Tools above two compact
             # formatting rows.  We keep that hierarchy, but implement every
             # command natively with Qt widgets/actions.
+            # ----------------------------------------------------------------
+            global APP_MENU_BAR
             self.menu_bar = QMenuBar(self)
+            APP_MENU_BAR  = self.menu_bar
+            
             self.menu_bar.setObjectName("html_editor_menu_bar")
             self.menu_bar.setNativeMenuBar(False)
             outer.addWidget(self.menu_bar)
-
-            self.file_menu = self.menu_bar.addMenu("Datei")
-            self.edit_menu = self.menu_bar.addMenu("Bearbeiten")
-            self.insert_menu = self.menu_bar.addMenu("Einfügen")
-            self.view_menu = self.menu_bar.addMenu("Ansicht")
-            self.format_menu = self.menu_bar.addMenu("Format")
-            self.table_menu = self.menu_bar.addMenu("Tabelle")
-            self.tools_menu = self.menu_bar.addMenu("Werkzeuge")
-
+            
+            self._build_menu_html(1, APP_LANG_ID__file_menu  , APP_LANG_ID__file_menu_statustext  ) # &Datei
+            self._build_menu_html(2, APP_LANG_ID__edit_menu  , APP_LANG_ID__edit_menu_statustext  ) # &Bearbeiten
+            self._build_menu_html(3, APP_LANG_ID__view_menu  , APP_LANG_ID__view_menu_statustext  ) # &Ansicht
+            
+            self._build_menu_html(4, APP_LANG_ID__insert_menu, APP_LANG_ID__insert_menu_statustext) # &Einfügen
+            self._build_menu_html(5, APP_LANG_ID__format_menu, APP_LANG_ID__format_menu_statustext) # &Format
+            
+            self._build_menu_html(6, APP_LANG_ID__table_menu , APP_LANG_ID__table_menu_statustext ) # &Table
+            self._build_menu_html(7, APP_LANG_ID__tools_menu , APP_LANG_ID__tools_menu_statustext ) # &Werkzeuge
+            
             self.new_action = self._make_action(
-                "Neu", "Neue HTML-Seite", self.new_document,
-                shortcut=QKeySequence.New, object_name="html_editor_new_action",
+                "Neu",
+                "Neue HTML-Seite",
+                self.new_document,
+                shortcut=QKeySequence.New,
+                object_name="html_editor_new_action",
             )
             self.open_action = self._make_action(
-                "Öffnen ...", "HTML-Datei öffnen", self.open_document,
-                shortcut=QKeySequence.Open, object_name="html_editor_open_action",
+                "Öffnen ...",
+                "HTML-Datei öffnen",
+                self.open_document,
+                shortcut=QKeySequence.Open,
+                object_name="html_editor_open_action",
             )
             self.save_action = self._make_action(
                 "Speichern", "HTML-Datei speichern", self.save_document,
@@ -110797,6 +109863,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 shortcut=QKeySequence.Print, object_name="html_editor_print_action",
             )
             for action in (self.new_action, self.open_action, self.save_action, self.save_as_action):
+                print("==>", self.file_menu)
                 self.file_menu.addAction(action)
             self.file_menu.addSeparator()
             self.file_menu.addAction(self.print_action)
@@ -112536,13 +111603,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 self.resizeDocks([self.bottom_dock], [190], Qt.Vertical)
 
         # ----- Aufbau ------------------------------------------------------
-
+        # Use Windows custom titlebar, Linux native titlebar, shared menu.
+        #
+        # Only the Qt menu row belongs to the client area on Linux: no
+        # invisible titlebar widget, blank spacer or custom window buttons.
+        # -------------------------------------------------------------------
         def _create_green_beige_window_chrome(self) -> None:
-            """Use Windows custom titlebar, Linux native titlebar, shared menu.
-
-            Only the Qt menu row belongs to the client area on Linux: no
-            invisible titlebar widget, blank spacer or custom window buttons.
-            """
             self.main_top_chrome = QWidget(self)
             self.main_top_chrome.setObjectName("green_beige_top_chrome")
             self.main_top_chrome.setSizePolicy(
@@ -112558,7 +111624,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 )
                 chrome_layout.addWidget(self.main_title_bar)
 
+            global APP_MENU_BAR
             self.main_menu_bar = QMenuBar(self.main_top_chrome)
+            APP_MENU_BAR = self.main_menu_bar
+            
             self.main_menu_bar.setObjectName("green_beige_menu_bar")
             self.main_menu_bar.setNativeMenuBar(False)
             self.main_menu_bar.setFixedHeight(31)
@@ -113146,27 +112215,25 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             # Kompatibilitaetsalias fuer Code, der den bisherigen Namen nutzt.
             self.new_project_action = self.new_windows_project_action
 
+            # ------------------------------------------------------------------
             # Stage ASM 106: eigenstaendiges Hauptmenue "Projekt".
             # Die Aktionen verwenden die bereits vorhandene Projektverwaltung;
             # es wird bewusst kein zweiter Open-/Save-Pfad eingefuehrt.
-            self.project_open_action = QAction("Projekt öffnen", self)
+            # ------------------------------------------------------------------
+            self.project_open_action = QAction   (              APP_LANGUAGE[APP_LANG_ID__project_open_action], self)
+            self.project_open_action.setProperty ( APP_LANG_ID,              APP_LANG_ID__project_open_action)
+            self.project_open_action.setProperty ( APP_STAT_ID,              APP_LANG_ID__project_open_action_statustext)
+            self.project_open_action.setStatusTip(              APP_LANGUAGE[APP_LANG_ID__project_open_action_statustext])
             self.project_open_action.setObjectName("project_open_action")
-            self.project_open_action.setStatusTip(
-                "Eine vorhandene dBase2Many-Projektdatei (*.pro) öffnen"
-            )
-            self.project_open_action.triggered.connect(
-                self.open_project_from_main_menu
-            )
-
-            self.project_close_action = QAction("Projekt schließen", self)
-            self.project_close_action.setObjectName("project_close_action")
-            self.project_close_action.setStatusTip(
-                "Das aktuelle Projekt schließen und alle Docking-Fenster schließen"
-            )
-            self.project_close_action.triggered.connect(
-                self.close_project_from_main_menu
-            )
-
+            self.project_open_action.triggered.connect(self.open_project_from_main_menu)
+            
+            self.project_clos_action = QAction   (              APP_LANGUAGE[APP_LANG_ID__project_clos_action], self)
+            self.project_clos_action.setProperty ( APP_LANG_ID,              APP_LANG_ID__project_clos_action)
+            self.project_clos_action.setProperty ( APP_STAT_ID,              APP_LANG_ID__project_clos_action_statustext)
+            self.project_clos_action.setStatusTip(              APP_LANGUAGE[APP_LANG_ID__project_clos_action_statustext])
+            self.project_clos_action.setObjectName("project_close_action")
+            self.project_clos_action.triggered.connect(self.close_project_from_main_menu)
+            
             self.new_file_action = QAction(
                 self.style().standardIcon(QStyle.SP_FileIcon),
                 "Textdatei",
@@ -113354,19 +112421,22 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             # Stage 185: dieselbe Desktop-Settings-Logik wird nur an eine neue
             # Menüposition verschoben: Ansicht -> Einstellungen -> Desktop.
-            self.settings_action = QAction("Desktop", self)
-            self.settings_action.setObjectName("desktop_settings_action")
+            self.settings_action = QAction("Arbeitsbereich", self)
+            self.settings_action_text = "Einstellungen für den Arbeitsbereich ändern."
+            self.settings_action.setProperty( APP_LANG_ID, self.settings_action.text())
+            self.settings_action.setProperty( APP_STAT_ID, self.settings_action_text  )
             self.settings_action.setShortcut(QKeySequence("Ctrl+Alt+S"))
             self.settings_action.setStatusTip("Desktop-, Tabellen-, Datei- und Alias-Einstellungen öffnen")
             self.settings_action.triggered.connect(self.show_settings_dock)
 
             # Stage 229: Projekt-Einstellungen liegen im Hauptmenü
             # Projekt -> Einstellungen statt Ansicht -> Einstellungen -> Projekt.
+            statusText = "Projektbezogene Compiler-, Assembler- und Linker-Einstellungen öffnen."
             self.project_settings_action = QAction("Einstellungen", self)
-            self.project_settings_action.setObjectName("project_settings_action")
-            self.project_settings_action.setStatusTip(
-                "Projektbezogene Compiler-, Assembler- und Linker-Einstellungen öffnen"
-            )
+            self.project_settings_action.setProperty(APP_LANG_ID, "Einstellungen")
+            self.project_settings_action.setProperty(APP_STAT_ID, statusText)
+            self.project_settings_action.setStatusTip(statusText)
+            
             self.project_settings_action.triggered.connect(
                 self.show_project_settings_dock
             )
@@ -126974,8 +126044,11 @@ QMenu#green_beige_popup_menu::indicator:checked {{
         def _create_language_menu(self) -> None:
             """Stage 167: Ansicht->Sprache mit 68 Einträgen in 4 Spalten."""
             self.language_menu = self.view_menu.addMenu("Sprache")
-            self.language_menu.setObjectName("language_menu")
-
+            self.language_menu_text = "Wechselt die Anwendungssprache."
+            self.language_menu.setProperty(APP_LANG_ID,  self.language_menu.title())
+            self.language_menu.setProperty(APP_STAT_ID,  self.language_menu_text)
+            self.language_menu.menuAction().setStatusTip(self.language_menu_text)
+            
             host = QWidget(self.language_menu)
             host.setObjectName("language_menu_grid")
             grid = QGridLayout(host)
@@ -127031,7 +126104,57 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             entry = self.language_menu_entries.get(normalized)
             if entry is None:
                 return
+                
+            #print(code)
+            try:
+                set_language(code)
+            except LanguageValueError as ex:
+                dlg = ErrorMessage("Language Error", f"{ex.message}")
+                dlg.exec_()
+                return
 
+            # ---------------------------------------------
+            # set menu language
+            # ---------------------------------------------
+            if APP_MENU_BAR is not None:
+                for action in APP_MENU_BAR.actions():
+                    menu = action.menu()
+                    if menu is not None:
+                        prop = menu.property( APP_LANG_ID )
+                        stat = menu.property( APP_STAT_ID )
+                        
+                        if prop is not None: prop = APP_LANGUAGE[prop]
+                        if stat is not None: stat = APP_LANGUAGE[stat]
+                        print("prop: ",prop)
+                        if prop is not None: menu.setTitle(prop)
+                        if stat is not None: menu.menuAction().setStatusTip(stat)
+            # ---------------------------------------------
+            # set widget language
+            # ---------------------------------------------
+            for widget in QApplication.allWidgets():
+                try:
+                    prop = widget.property( APP_LANG_ID )
+                    stat = widget.property( APP_STAT_ID )
+
+                    if prop is not None: prop = APP_LANGUAGE[prop]
+                    if stat is not None: stat = APP_LANGUAGE[stat]
+                    
+                    if prop is not None:
+                        if isinstance(widget, QMenu):
+                            widget.setTitle(prop)
+                            widget.menuAction().setStatusTip(stat)
+                            
+                        #elif isinstance(widget, QAction): widget.setText (prop)
+                        #elif isinstance(widget, QLabel ): widget.setText (item)"""
+                except KeyError as ex:
+                    print(f"key error: {ex}")
+                    continue
+                except Exception as ex:
+                    pass
+                            
+            # ---------------------------------------------
+            # save settings for next run ...
+            # ---------------------------------------------
             self.ui_language_code = normalized
             self.settings.setValue("view/language_code", normalized)
             self.settings.sync()
@@ -127048,7 +126171,13 @@ QMenu#green_beige_popup_menu::indicator:checked {{
                 self.view_menu.close()
 
         def _create_menu(self) -> None:
-            file_menu = self.main_menu_bar.addMenu("&Datei")
+            # &Datei
+            file_menu = self.main_menu_bar.addMenu(APP_LANGUAGE[APP_LANG_ID__file_menu])
+            file_menu.setProperty( APP_LANG_ID,              APP_LANG_ID__file_menu)
+            file_menu.setProperty( APP_STAT_ID,              APP_LANG_ID__file_menu_statustext)
+            file_menu.menuAction().setStatusTip(APP_LANGUAGE[APP_LANG_ID__file_menu_statustext])
+            
+            
             self.new_document_menu = file_menu.addMenu(
                 self.style().standardIcon(QStyle.SP_FileIcon),
                 "Neu",
@@ -127056,7 +126185,7 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self._populate_new_document_menu(self.new_document_menu)
             file_menu.addAction(self.open_file_action)
             self.recent_menu = file_menu.addMenu("Zuletzt verwendet")
-            self.recent_menu.setObjectName("recent_files_and_projects_menu")
+            self.recent_menu.setProperty(APP_LANG_ID, self.recent_menu.title())
             self.recent_program_menu = self.recent_menu
             self._refresh_recent_menu()
             file_menu.addAction(self.save_file_action)
@@ -127068,22 +126197,42 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             file_menu.addAction(self.refresh_action)
             file_menu.addSeparator()
             file_menu.addAction(self.quit_action)
-
+            
+            # ------------------------------------------------------------------
             # Stage 166/523: Bei aktiver dBASE-Datenansicht stehen die beiden
             # Datensatzaktionen ganz oben. Außerhalb des Tabellen-Designers
             # werden beide Aktionen und ihr Separator vollständig versteckt;
             # die ursprünglichen Textaktionen beginnen dann wieder bei Undo.
-            self.edit_menu = self.main_menu_bar.addMenu("&Bearbeiten")
-            self.edit_menu.setObjectName("edit_menu")
-            self.table_record_menu_add = self.edit_menu.addAction(tr("Datensatz hinzufügen ..."))
+            # ------------------------------------------------------------------
+            self.edit_menu = self.main_menu_bar.addMenu(APP_LANGUAGE[APP_LANG_ID__edit_menu])
+            self.edit_menu.setProperty( APP_LANG_ID ,                APP_LANG_ID__edit_menu)
+            self.edit_menu.setProperty( APP_STAT_ID ,                APP_LANG_ID__edit_menu_statustext)
+            self.edit_menu.menuAction().setStatusTip(   APP_LANGUAGE[APP_LANG_ID__edit_menu_statustext])
+            
+            # Datensatz hinzufügen
+            self.table_record_menu_add = self.edit_menu.addAction(APP_LANGUAGE[APP_LANG_ID__table_record_menu_add])
+            self.table_record_menu_add.setProperty(APP_LANG_ID,                APP_LANG_ID__table_record_menu_add )
+            self.table_record_menu_add.setProperty(APP_STAT_ID,                APP_LANG_ID__table_record_menu_add_statustext )
+            self.table_record_menu_add.setStatusTip( APP_LANGUAGE[APP_LANG_ID__table_record_menu_add_statustext])
+            #
             self.table_record_menu_add.triggered.connect(self._table_edit_menu_add_record)
-            self.table_record_menu_delete = self.edit_menu.addAction(tr("Datensatz löschen"))
-            self.table_record_menu_delete.triggered.connect(self._table_edit_menu_delete_records)
+            
+            # Datensatz löschen
+            self.table_record_menu_del = self.edit_menu.addAction(APP_LANGUAGE[APP_LANG_ID__table_record_menu_del])
+            self.table_record_menu_del.setProperty(APP_LANG_ID,                APP_LANG_ID__table_record_menu_del )
+            self.table_record_menu_add.setProperty(APP_STAT_ID,                APP_LANG_ID__table_record_menu_del_statustext )
+            self.table_record_menu_add.setStatusTip( APP_LANGUAGE[APP_LANG_ID__table_record_menu_del_statustext])
+            #
+            self.table_record_menu_del.triggered.connect(self._table_edit_menu_delete_records)
+            
             self.table_record_menu_separator_after = self.edit_menu.addSeparator()
-            for item in (self.table_record_menu_add,
-                         self.table_record_menu_delete,
-                         self.table_record_menu_separator_after):
+            for item in (
+                self.table_record_menu_add,
+                self.table_record_menu_del,
+                self.table_record_menu_separator_after):
+                
                 item.setVisible(False)
+                
             self.edit_menu.addAction(self.undo_action)
             self.edit_menu.addAction(self.redo_action)
             self.edit_menu.addSeparator()
@@ -127091,26 +126240,34 @@ QMenu#green_beige_popup_menu::indicator:checked {{
             self.edit_menu.addAction(self.paste_action)
             self.edit_menu.addAction(self.cut_action)
             self.edit_menu.aboutToShow.connect(self._update_edit_actions)
-
-            self.view_menu = self.main_menu_bar.addMenu("&Ansicht")
+            
+            # &Ansicht
+            self.view_menu = self.main_menu_bar.addMenu(APP_LANGUAGE[APP_LANG_ID__view_menu])
+            self.view_menu.setProperty( APP_LANG_ID ,                APP_LANG_ID__view_menu)
+            self.view_menu.setProperty( APP_STAT_ID ,                APP_LANG_ID__view_menu_statustext)
+            self.view_menu.menuAction().setStatusTip(   APP_LANGUAGE[APP_LANG_ID__view_menu_statustext])
+            
             self._create_language_menu()
+            
             self.view_settings_menu = self.view_menu.addMenu("Einstellungen")
-            self.view_settings_menu.setObjectName("view_settings_menu")
+            self.view_settings_menu.setProperty(APP_LANG_ID, self.view_settings_menu.title())
             self.view_settings_menu.addAction(self.settings_action)
 
             # Stage ASM 92: Baukasten-Steuerungen als normale QAction-
             # Untermenues. QMenu enthaelt bewusst keine QWidgetAction/SpinBox.
             self.view_menu.addSeparator()
-            self.e_baukasten_zoom_menu = self.view_menu.addMenu("Zoom")
-            self.e_baukasten_xpos_menu = self.view_menu.addMenu("XPos")
-            self.e_baukasten_ypos_menu = self.view_menu.addMenu("YPos")
-            self.e_baukasten_zpos_menu = self.view_menu.addMenu("ZPos")
+            self.e_baukasten_zoom_menu   = self.view_menu.addMenu("Zoom")
+            self.e_baukasten_xpos_menu   = self.view_menu.addMenu("XPos")
+            self.e_baukasten_ypos_menu   = self.view_menu.addMenu("YPos")
+            self.e_baukasten_zpos_menu   = self.view_menu.addMenu("ZPos")
+            
+            self.e_baukasten_zoom_menu.setProperty(APP_LANG_ID, self.e_baukasten_zoom_menu.title())
+            self.e_baukasten_xpos_menu.setProperty(APP_LANG_ID, self.e_baukasten_xpos_menu.title())
+            self.e_baukasten_ypos_menu.setProperty(APP_LANG_ID, self.e_baukasten_ypos_menu.title())
+            self.e_baukasten_zpos_menu.setProperty(APP_LANG_ID, self.e_baukasten_zpos_menu.title())
+            
             self.e_baukasten_raster_menu = self.view_menu.addMenu("Raster")
-            self.e_baukasten_zoom_menu.setObjectName("e_baukasten_view_zoom_menu")
-            self.e_baukasten_xpos_menu.setObjectName("e_baukasten_view_xpos_menu")
-            self.e_baukasten_ypos_menu.setObjectName("e_baukasten_view_ypos_menu")
-            self.e_baukasten_zpos_menu.setObjectName("e_baukasten_view_zpos_menu")
-            self.e_baukasten_raster_menu.setObjectName("e_baukasten_view_raster_menu")
+            self.e_baukasten_raster_menu.setProperty(APP_LANG_ID, self.e_baukasten_raster_menu.title())
 
             self.e_baukasten_zoom_actions = {}
             self.e_baukasten_zoom_group = QActionGroup(self)
@@ -127175,11 +126332,18 @@ QMenu#green_beige_popup_menu::indicator:checked {{
 
             # Stage ASM 106: "Projekt" steht unmittelbar rechts neben
             # "Ansicht" und damit vor Favoriten/DISM/Werkzeuge.
-            self.project_menu = self.main_menu_bar.addMenu("&Projekt")
+
+            # &Projekt
+            self.project_menu = self.main_menu_bar.addMenu(APP_LANGUAGE[APP_LANG_ID__project_menu])
+            self.project_menu.setProperty( APP_LANG_ID ,                APP_LANG_ID__project_menu)
+            self.project_menu.setProperty( APP_STAT_ID ,                APP_LANG_ID__project_menu_statustext)
+            self.project_menu.menuAction().setStatusTip(   APP_LANGUAGE[APP_LANG_ID__project_menu_statustext])
             self.project_menu.setObjectName("project_menu")
+            
             self.project_menu.addAction(self.project_open_action)
-            self.project_menu.addAction(self.project_close_action)
+            self.project_menu.addAction(self.project_clos_action)
             self.project_menu.addSeparator()
+            
             self.project_menu.addAction(self.project_settings_action)
 
             # Stage 480: zentraler Build-Einstieg neben Projekt. Alle Aktionen
@@ -129370,7 +128534,7 @@ border: 2px solid #2a69aa;
                 return
             table_page = self._active_table_edit_page()
             for action in (getattr(self, "table_record_menu_add", None),
-                           getattr(self, "table_record_menu_delete", None),
+                           getattr(self, "table_record_menu_del", None),
                            getattr(self, "table_record_menu_separator_after", None)):
                 if action is not None:
                     action.setVisible(table_page is not None)
@@ -129384,7 +128548,7 @@ border: 2px solid #2a69aa;
                 self.paste_action.setEnabled(bool(QApplication.clipboard().text())
                                              and grid.columnCount() > 0)
                 self.table_record_menu_add.setEnabled(grid.columnCount() > 0)
-                self.table_record_menu_delete.setEnabled(bool(grid._selected_record_rows()))
+                self.table_record_menu_del.setEnabled(bool(grid._selected_record_rows()))
                 return
             formula = self._active_formula_designer()
             if formula is not None:
@@ -142408,11 +141572,13 @@ QFileDialog QComboBox QAbstractItemView {
                         parent.takeChild(parent.indexOfChild(item))
                         self.set_project_modified(True)
                 return
-
+        
+        # ---------------------------------------------------------------------------
+        # Stage 431: dBASE-Blätter öffnen bereits bei Einfachklick.
+        # Doppelklick darf weder einen zweiten Designer starten noch
+        # einen zweiten Formular-Ladevorgang in die Queue stellen.
+        # ---------------------------------------------------------------------------
         def _on_project_item_double_clicked(self, item: QTreeWidgetItem, column: int = 0) -> None:
-            # Stage 431: dBASE-Blätter öffnen bereits bei Einfachklick.
-            # Doppelklick darf weder einen zweiten Designer starten noch
-            # einen zweiten Formular-Ladevorgang in die Queue stellen.
             kind = self._project_item_kind(item)
             if kind == PROJECT_NODE_DBASE_FILE or (
                 kind == PROJECT_NODE_RESOURCE_FILE
@@ -142421,25 +141587,29 @@ QFileDialog QComboBox QAbstractItemView {
                 return
             self.open_project_item(item, column)
 
+        # ---------------------------------------------------------------------------
+        # Stage 387: C64-Blaetter bereits per einfachem Linksklick oeffnen.
+        # Mehrfachauswahl mit Shift/Strg bleibt davon unberuehrt.
+        # ---------------------------------------------------------------------------
         def _on_project_c64_leaf_clicked(self, item: QTreeWidgetItem, _column: int = 0) -> None:
-            # Stage 387: C64-Blaetter bereits per einfachem Linksklick oeffnen.
-            # Mehrfachauswahl mit Shift/Strg bleibt davon unberuehrt.
             if QApplication.keyboardModifiers() & (Qt.ShiftModifier | Qt.ControlModifier):
                 return
+                
             if self._project_item_kind(item) == PROJECT_NODE_C64_SPRITE_FILE:
                 self.open_project_item(item)
                 return
+                
             if bool(item.data(0, Qt.UserRole + 307)):
                 self._activate_unsaved_c64_leaf(item)
                 return
+                
             kind = self._project_item_kind(item)
             if kind in {
                 PROJECT_NODE_C64_RESOURCE_FILE, PROJECT_NODE_C64_SOURCE_FILE,
                 PROJECT_NODE_DBASE_FILE,
-            } or (
+            }   or (
                 kind == PROJECT_NODE_RESOURCE_FILE
-                and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "dbase"
-            ):
+                and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "dbase"):
                 self.open_project_item(item)
 
         def _activate_unsaved_c64_leaf(self, item: QTreeWidgetItem) -> bool:
@@ -142584,30 +141754,37 @@ QFileDialog QComboBox QAbstractItemView {
                 elif selected is toggle_action:
                     item.setExpanded(not item.isExpanded())
                 return
+                
             if kind == PROJECT_NODE_RESOURCE_ROOT:
                 self._show_project_resource_root_menu(item, position)
                 return
+                
             if kind == PROJECT_NODE_RESOURCE_FILE:
                 self._show_project_resource_file_menu(item, position)
                 return
+                
             if kind == PROJECT_NODE_PASCAL_TARGET:
                 self._show_project_pascal_target_menu(item, position)
                 return
+                
             if kind in {
                 PROJECT_NODE_PASCAL_MODULE_ROOT,
-                PROJECT_NODE_PASCAL_UNIT_ROOT,
-            }:
+                PROJECT_NODE_PASCAL_UNIT_ROOT}:
                 self._show_project_pascal_group_menu(item, position)
                 return
+                
             if kind == PROJECT_NODE_PASCAL_TABLE_ROOT:
                 self._show_project_pascal_table_root_menu(item, position)
                 return
+                
             if kind == PROJECT_NODE_PASCAL_TABLE_FILE:
                 self._show_project_pascal_table_file_menu(item, position)
                 return
+                
             if kind == PROJECT_NODE_DBASE_GROUP:
                 self._show_project_dbase_group_menu(item, position)
                 return
+                
             if kind == PROJECT_NODE_DBASE_FILE:
                 self._show_project_dbase_file_menu(item, position)
                 return
@@ -145812,12 +144989,13 @@ QFileDialog QComboBox QAbstractItemView {
         QTimer.singleShot(0, _show_mdx_startup_warning)
     return app.exec_()
 
-
+# ---------------------------------------------------------------------------
+# Normalize a textual JSR target for C64 ROM documentation lookup.
+# ---------------------------------------------------------------------------
 def _c64_assembler_call_key(
     mnemonic: str,
-    operand: str,
-) -> Optional[Tuple[str, int]]:
-    """Normalize a textual JSR target for C64 ROM documentation lookup."""
+    operand : str) -> Optional[Tuple[str, int]]:
+    
     operation = str(mnemonic).strip().upper()
     text = str(operand).strip()
     if not operation or not text:
@@ -145832,7 +145010,9 @@ def _c64_assembler_call_key(
         elif text.lower().startswith("0x"):
             target = int(text[2:], 16)
         elif re.fullmatch(r"[0-9A-Fa-f]{4}", text):
+            # ---------------------------------------------------------------------------
             # A bare four-digit value is treated as the requested hexadecimal help alias.
+            # ---------------------------------------------------------------------------
             target = int(text, 16)
         else:
             return None
@@ -145841,17 +145021,18 @@ def _c64_assembler_call_key(
     return operation, target & 0xFFFF
 
 
+# ---------------------------------------------------------------------------
+# Resolve a documented C64 call from textual assembler input.
+#
+# Normal 6502 syntax uses addresses such as ``JSR $E544`` or ``JSR $FFD2``.
+# For the requested editor-help workflow we also recognise ``JSR #E544`` /
+# "JSR #$E544" as textual lookup aliases, without changing the assembler's
+# addressing rules.
+# ---------------------------------------------------------------------------
 def c64_assembler_call_description(
-    mnemonic: str,
-    operand: str,
+    mnemonic : str,
+    operand  : str,
 ) -> Optional[str]:
-    """Resolve a documented C64 call from textual assembler input.
-
-    Normal 6502 syntax uses addresses such as ``JSR $E544`` or ``JSR $FFD2``.
-    For the requested editor-help workflow we also recognise ``JSR #E544`` /
-    ``JSR #$E544`` as textual lookup aliases, without changing the assembler's
-    addressing rules.
-    """
     key = _c64_assembler_call_key(mnemonic, operand)
     if key is None:
         return None
@@ -145938,25 +145119,23 @@ def _c64_basic_sys_entry(data: bytes, load_address: int) -> Optional[int]:
         return entry
     return None
 
-
+# ---------------------------------------------------------------------------
+# Stage 257: verlustfreies 6510-Listing mit Byte-Fortschritt.
+# Die Logik entspricht dem eingebetteten d64info-Disassembler, meldet aber
+# nach jeder vollständig konsumierten Instruktion den absoluten Bytezähler.
+# ---------------------------------------------------------------------------
 def _c64_disassemble_mos6510_region_progressive(
     data: bytes,
     start_address: int,
     *,
     progress_callback=None,
     processed_base: int = 0,
-    total_size: Optional[int] = None,
-) -> List[str]:
-    """Stage 257: verlustfreies 6510-Listing mit Byte-Fortschritt.
-
-    Die Logik entspricht dem eingebetteten d64info-Disassembler, meldet aber
-    nach jeder vollständig konsumierten Instruktion den absoluten Bytezähler.
-    """
+    total_size: Optional[int] = None) -> List[str]:
     payload = bytes(data)
     records = []
-    offset = 0
-    total = max(1, int(total_size if total_size is not None else len(payload)))
-    base = max(0, int(processed_base or 0))
+    offset  = 0
+    total   = max(1, int(total_size if total_size is not None else len(payload)))
+    base    = max(0, int(processed_base or 0))
 
     while offset < len(payload):
         address = (int(start_address) + offset) & 0xFFFF
@@ -146032,19 +145211,21 @@ def _c64_disassemble_mos6510_region_progressive(
 
     return lines
 
-
+# ---------------------------------------------------------------------------
+# Konvertiert das bestehende d64info-Listing in ausrichtbare ASM-Zeilen.
+# ---------------------------------------------------------------------------
 def _c64_listing_records(
     code: bytes,
     start_address: int,
     *,
     progress_callback=None,
     processed_base: int = 0,
-    total_size: Optional[int] = None,
-) -> List[Tuple[str, str]]:
-    """Konvertiert das bestehende d64info-Listing in ausrichtbare ASM-Zeilen."""
+    total_size: Optional[int] = None) -> List[Tuple[str, str]]:
     records: List[Tuple[str, str]] = []
+    # ---------------------------------------------------------------------------
     # Index/mnemonic/bytes of the immediately preceding machine instruction.
     # Non-executable formatting lines do not become predecessors.
+    # ---------------------------------------------------------------------------
     previous_instruction: Optional[Tuple[int, str, bytes]] = None
     if callable(progress_callback):
         source_lines = _c64_disassemble_mos6510_region_progressive(
@@ -146078,11 +145259,13 @@ def _c64_listing_records(
         statement = statement_part.rstrip()
         address_text, _colon, rest = metadata.partition(":")
         byte_field = rest.strip().split("  ", 1)[0].strip()
-        comment = f"${address_text}: {byte_field}".rstrip()
-
+        comment    = f"${address_text}: {byte_field}".rstrip()
+        
+        # ---------------------------------------------------------------------------
         # Semantische Dokumentation wird aus den tatsaechlichen Opcode-Bytes
         # bestimmt und ist damit unabhaengig davon, ob das Operand im Listing
         # spaeter als $E544/$FFD2 oder als lokales Label ausgegeben wurde.
+        # ---------------------------------------------------------------------------
         try:
             byte_values = bytes(
                 int(piece, 16)
@@ -146102,7 +145285,7 @@ def _c64_listing_records(
                 # Interne ROM-Routinen sind in Stage 82 sichtbar als INTERN
                 # BASIC/KERNAL und damit als nicht portable API markiert.
                 comment = _c64_prefix_disassembly_comment(comment, semantic)
-
+        # ---------------------------------------------------------------------------
         # Stage 83: recognise the direct pair
         #
         #     LDA #$nn
@@ -146111,6 +145294,7 @@ def _c64_listing_records(
         # for standard screen RAM ($0400-$07E7) and color RAM
         # ($D800-$DBE7).  The LDA line receives the meaning of #$nn and the
         # STA line receives the addressed C64 screen/color position.
+        # ---------------------------------------------------------------------------
         if (
             mnemonic == "STA"
             and len(byte_values) >= 3
@@ -146178,19 +145362,18 @@ def _format_c64_disassembly_records(
         lines.append(code.ljust(comment_column) + "; " + comment)
     return lines
 
-
+# ---------------------------------------------------------------------------
+# Disassembliert C64-.prg/.bin als dokumentierbaren ASM-Quelltext.
+#
+# .prg benutzt seine zweibyte Ladeadresse.  Eine rohe .bin-Datei bekommt
+# mangels Header die klassische $0801-Standardadresse.
+# ---------------------------------------------------------------------------
 def format_c64_program_disassembly(
     payload: bytes,
     *,
     suffix: str = ".prg",
     source_name: str = "",
-    progress_callback=None,
-) -> Tuple[str, int]:
-    """Disassembliert C64-.prg/.bin als dokumentierbaren ASM-Quelltext.
-
-    .prg benutzt seine zweibyte Ladeadresse.  Eine rohe .bin-Datei bekommt
-    mangels Header die klassische $0801-Standardadresse.
-    """
+    progress_callback=None) -> Tuple[str, int]:
     raw = bytes(payload)
     ext = str(suffix).casefold()
     total_size = max(1, len(raw))
@@ -146226,9 +145409,11 @@ def format_c64_program_disassembly(
         stub = program[:stub_size]
         values = ", ".join(f"${value:02X}" for value in stub)
         if stub:
+            # ---------------------------------------------------------------------------
             # BASIC-SYS-Startstub als eigener Kommentarblock.  Die Kennzeichnung
             # steht bewusst oberhalb der Bytes, damit das Listing wie eine
             # dokumentierte Assemblerquelle gelesen werden kann.
+            # ---------------------------------------------------------------------------
             output.append("; BASIC SYS-Startstub")
             output.append(f"    .byte {values}")
             output.extend(("", f".org ${entry_address:04X}"))
@@ -147052,7 +146237,7 @@ def _layout_assembler(
                 opcode_map,
                 final=final,
             )
-
+            # ---------------------------------------------------------------------------
             # Stage 255: Long-Branch-Relaxation.
             #
             # Ein normaler 6502-Branch ist zwei Bytes lang und erreicht nur
@@ -147065,6 +146250,7 @@ def _layout_assembler(
             # Da die Layoutberechnung ohnehin bis zur Stabilität iteriert,
             # werden dadurch verschobene Labels in den Folgedurchläufen
             # automatisch neu berechnet.
+            # ---------------------------------------------------------------------------
             if mode == "rel":
                 expression = _assembler_operand_expression(
                     mode,
@@ -147188,12 +146374,13 @@ def assemble_mos6510_source(
                 line,
             )
         memory[address] = value & 0xFF
-
+    # ---------------------------------------------------------------------------
     # .cbss ist eine C64-spezifische Compiler-/Assembler-Konvention:
     # Der Bereich erhält Adressen, erzeugt aber keine Bytes im PRG. Da ein
     # C64-PRG physisch zusammenhängend geladen wird, darf nach dem ersten
     # .cbss-Block kein weiterer Code bzw. keine weiteren geladenen Daten mehr
     # folgen. Labels/Konstanten am Ende bleiben erlaubt.
+    # ---------------------------------------------------------------------------
     seen_cbss = False
     for item in layout.items:
         kind = item.statement.kind
@@ -147314,7 +146501,7 @@ def assemble_mos6510_source(
 
         if first_instruction is None:
             first_instruction = item.address
-
+        # ---------------------------------------------------------------------------
         # Stage 255: Ein zu weiter bedingter Branch wird als zwei echte
         # Maschineninstruktionen ausgegeben:
         #
@@ -147323,6 +146510,7 @@ def assemble_mos6510_source(
         #
         # Das Ziel des kurzen inversen Branches liegt dadurch immer direkt
         # hinter dem drei Byte langen JMP.
+        # ---------------------------------------------------------------------------
         if item.mode == "rel_long":
             instruction_count += 2
             expression = _assembler_operand_expression(
@@ -147415,8 +146603,10 @@ def assemble_mos6510_source(
     if not memory:
         raise AssemblerError("Der Quelltext erzeugt keine Programmdaten.")
 
+    # ---------------------------------------------------------------------------
     # Ein CBSS-Bereich darf niemals bereits geladene Bytes überdecken. Das
     # schützt auch handgeschriebenen ASM-Code mit rückwärts gesetztem .org.
+    # ---------------------------------------------------------------------------
     for cbss_start, cbss_end, cbss_line in cbss_ranges:
         if cbss_start < 0 or cbss_end > 0xFFFF:
             raise AssemblerError(
@@ -147433,11 +146623,14 @@ def assemble_mos6510_source(
                 f"überschneidet geladene Programmdaten bei ${collision:04X}.",
                 cbss_line,
             )
-
+    
+    # ---------------------------------------------------------------------------
     # Zielmodule können einen exklusiven VIC-II-Speicherbereich markieren.
     # Das ist bei der C64-HiRes-Grafik notwendig: Programmcode oder statische
     # Daten im vom Zielmodul markierten VIC-II-Bankbereich würden beim Laden
-    # bzw. Zeichnen gegenseitig überschrieben und als zufällige farbige 8x8-Blöcke sichtbar werden.
+    # bzw. Zeichnen gegenseitig überschrieben und als zufällige farbige
+    # 8x8-Blöcke sichtbar werden.
+    # ---------------------------------------------------------------------------
     reserve_start = layout.symbols.get(
         "__d64_graphics_reserve_start"
     )
@@ -147526,17 +146719,17 @@ def assemble_mos6510_source(
     prg = bytes((load_address & 0xFF, load_address >> 8)) + payload
     return AssembledProgram(
         prg=prg,
-        load_address=load_address,
-        entry_address=entry_address,
-        end_address=end_address,
-        instruction_count=instruction_count,
-        has_basic_stub=add_basic_stub,
-        symbols=dict(layout.symbols),
+        load_address        = load_address,
+        entry_address       = entry_address,
+        end_address         = end_address,
+        instruction_count   = instruction_count,
+        has_basic_stub      = add_basic_stub,
+        symbols             = dict(layout.symbols),
     )
 
 def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="D64-DISM GUI und BASIC-/C-/Pascal-/LISP-/PROLOG-/LOGO-/dBase-Kommandozeilencompiler"
+        description = "D64-DISM GUI und BASIC-/C-/Pascal-/LISP-/PROLOG-/LOGO-/dBase-Kommandozeilencompiler"
     )
     parser.add_argument(
         "directory",
@@ -147638,34 +146831,34 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "-D",
         "--define",
-        action="append",
-        default=[],
-        metavar="NAME[=WERT]",
-        help="vordefiniertes C-/Pascal-Makro; wiederholbar",
+        action  = "append",
+        default = [],
+        metavar = "NAME[=WERT]",
+        help    = "vordefiniertes C-/Pascal-Makro; wiederholbar",
     )
     parser.add_argument(
         "--amiga-cpu",
-        choices=AMIGA_CPU_MODELS,
-        default="mk68000",
-        help="Amiga-CPU-Profil für Compiler und 68k-Assembler",
+        choices = AMIGA_CPU_MODELS,
+        default = "mk68000",
+        help    = "Amiga-CPU-Profil für Compiler und 68k-Assembler",
     )
     parser.add_argument(
         "--amiga-fpu",
-        choices=AMIGA_FPU_MODELS,
-        default="FPU: None",
-        help="optionales 68881/68882-FPU-Profil",
+        choices = AMIGA_FPU_MODELS,
+        default = "FPU: None",
+        help    = "optionales 68881/68882-FPU-Profil",
     )
     parser.add_argument(
         "--windows-graphics",
-        choices=WINDOWS_GRAPHICS_BACKENDS,
-        default="Direct2D",
-        help="Grafikbackend für Windows PE32/PE64",
+        choices = WINDOWS_GRAPHICS_BACKENDS,
+        default = "Direct2D",
+        help    = "Grafikbackend für Windows PE32/PE64",
     )
     parser.add_argument(
         "--windows-mode",
-        choices=("console", "gui"),
-        default="console",
-        help=(
+        choices = ("console", "gui"),
+        default = "console",
+        help    = (
             "Windows-Anwendungsmodus für LOGO/dBase: 'console' erzeugt ein "
             "Windows-CUI-Programm, 'gui' ein Windows-GUI-Programm. "
             "LOGO verwendet im GUI-Modus zusätzlich seine 320x200-Grafikfläche."
@@ -147673,35 +146866,35 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--c64-packer",
-        choices=PROJECT_C64_PACKER_MODES,
-        default="none",
-        help=(
+        choices = PROJECT_C64_PACKER_MODES,
+        default = "none",
+        help    = (
             "C64-PRG Image Packer: none, rle, lz oder auto. "
             "RLE/LZ werden explizit erzwungen; nur auto darf das Original beibehalten."
         ),
     )
     parser.add_argument(
         "--c64-pack-search",
-        choices=PROJECT_C64_PACKER_SEARCH_MODES,
-        default="balanced",
-        help="LZ-Packsuche im Compiler: fast, balanced oder maximum",
+        choices = PROJECT_C64_PACKER_SEARCH_MODES,
+        default = "balanced",
+        help    = "LZ-Packsuche im Compiler: fast, balanced oder maximum",
     )
     parser.add_argument(
         "--verbose", "--prolog-verbose",
-        dest="prolog_verbose",
-        action="store_true",
-        help=(
+        dest    = "prolog_verbose",
+        action  = "store_true",
+        help    = (
             "PROLOG: automatische Top-Level-Lösungsanzeige unterdrücken; "
             "write/writeln bleiben sichtbar"
         ),
     )
     parser.add_argument(
         "--object",
-        action="append",
-        default=[],
-        type=Path,
-        metavar="DATEI",
-        help="COFF32/COFF64-.o/.obj oder .a/.lib; für Archiv/Linker wiederholbar",
+        action  = "append",
+        default = [],
+        type    = Path,
+        metavar = "DATEI",
+        help    = "COFF32/COFF64-.o/.obj oder .a/.lib; für Archiv/Linker wiederholbar",
     )
     return parser.parse_args(argv)
 
@@ -147733,8 +146926,6 @@ def _write_cli_file(path: Path, data: bytes) -> None:
         except OSError:
             pass
         raise
-
-
 
 # ---------------------------------------------------------------------------
 # Stage 171: Pascal-UNIT COFF32/COFF64 object naming and reuse.
@@ -148613,3 +147804,7 @@ def main(
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    
+# ---------------------------------------------------------------------------
+# EOF - End Of File.
+# ---------------------------------------------------------------------------
