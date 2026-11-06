@@ -84,6 +84,7 @@ var
     Foo: TFoo;
     Application: TApplication;
 begin
+WriteLn('xxxxxxx');
     Foo := TFoo.Create(42);
     try
         Foo.Show;
@@ -94,6 +95,7 @@ begin
     Application := TApplication.Create;
     Application.Free;
     
+    ReadLn;
     ExitProcess(0)
 end.
 

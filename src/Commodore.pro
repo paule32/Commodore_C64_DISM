@@ -7,7 +7,7 @@ ViewState = AAAA/wAAAAD9AAAABAAAAAAAAAEDAAACm/wCAAAAEvwAAABtAAABKgAAAAAA/////AEA
 
 [Session.Geometry]
 Version = 2
-MainWindow = {"x":29,"y":38,"width":1037,"height":800,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAAAdAAAAJgAABCkAAANFAAAAHQAAACYAAAQpAAADRQAAAAAAAAAAB4AAAAAdAAAAJgAABCkAAANF"}
+MainWindow = {"x":245,"y":168,"width":1037,"height":800,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAAD1AAAAqAAABQEAAAPHAAAA9QAAAKgAAAUBAAADxwAAAAAAAAAAB4AAAAD1AAAAqAAABQEAAAPH"}
 CentralArea = {"x":266,"y":110,"width":768,"height":667}
 FileSystemDock = {"visible":false,"floating":false,"area":1,"x":0,"y":0,"width":320,"height":296}
 ProjectDock = {"visible":true,"floating":false,"area":1,"x":3,"y":110,"width":259,"height":667}
@@ -128,6 +128,7 @@ Title = Windows PE32 Module
 
 [Category.pascal.pe32.units]
 Title = Windows PE32 Units
+Item0001 = {"title":"Unbenannt_4.pas","path":"Unbenannt_4.pas"}
 
 [Category.pascal.pe64.modules]
 Title = Windows PE32+ Module
@@ -218,6 +219,10 @@ DebugThemeWorkstation = default
 DBaseRuntimeDLLDirectory = 
 DBaseRuntimeDLLPack = false
 DBaseRuntimeConstPool = false
+ResourceASCIINativeUTF16Copy = false
+ResourceUTF8NativeUTF16Copy = false
+ResourceDLLCompressEnabled = false
+ResourceDLLCompressMode = transparent
 
 [Settings.Windows.32Bit.Linker]
 Title = Windows 32-Bit Linker
@@ -291,6 +296,10 @@ DebugThemeWorkstation = default
 DBaseRuntimeDLLDirectory = 
 DBaseRuntimeDLLPack = false
 DBaseRuntimeConstPool = false
+ResourceASCIINativeUTF16Copy = false
+ResourceUTF8NativeUTF16Copy = false
+ResourceDLLCompressEnabled = false
+ResourceDLLCompressMode = transparent
 
 [Settings.Windows.64Bit.Linker]
 Title = Windows 64-Bit Linker

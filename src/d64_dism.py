@@ -73833,7 +73833,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
         def create_menu(self) -> None:
             global APP_MENU_BAR
             self.menu_bar = QMenuBar(self)
-            APP_MENU_BAR = self.main_menu_bar
+            APP_MENU_BAR = self.menu_bar
             
             self.menu_bar.setNativeMenuBar(False)
             file_menu = self.menu_bar.addMenu("Datei")
@@ -126583,6 +126583,16 @@ border-radius: 7px;}}"""
             math_menu.addAction(self.math_numbers_wall_100_action)
             math_menu.addAction(self.math_numbers_wall_1000_action)
             
+            # Agent 0001: deutscher Grammatikparser (modulares Dock).
+            self.agent_menu = self.main_menu_bar.addMenu("&Agent")
+            self.agent_menu.setObjectName("agent_menu")
+            self.agent_0001_action = QAction("0001", self)
+            self.agent_0001_action.setObjectName("agent_0001_action")
+            self.agent_0001_action.setStatusTip(
+                "Deutschen Grammatikparser öffnen (Syntax, Kongruenz, Intent)")
+            self.agent_0001_action.triggered.connect(self.show_agent_0001_dock)
+            self.agent_menu.addAction(self.agent_0001_action)
+
             help_menu = self.main_menu_bar.addMenu("&Hilfe")
             help_menu.addAction(self.chm_viewer_action)
             help_menu.addSeparator()
@@ -126596,6 +126606,34 @@ border-radius: 7px;}}"""
             # Stage 75: popup menus inherit the same Green-&-Beige palette.
             self._sync_green_beige_menu_objects()
             self._apply_green_beige_chrome_style()
+
+        def show_agent_0001_dock(self):
+            """Agent -> 0001: Parser im bestehenden exklusiven Dock-Workspace."""
+            from agent_0001 import GermanGrammarWidget
+
+            dock = getattr(self, "agent_0001_dock", None)
+            if dock is None:
+                dock = QDockWidget("Agent 0001 – Deutscher Grammatikparser", self)
+                dock.setObjectName("agent_0001_grammar_dock")
+                dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+                dock.setWidget(GermanGrammarWidget(dock))
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+                dock.visibilityChanged.connect(
+                    lambda visible, current=dock:
+                    self._exclusive_tool_workspace_visibility_changed(
+                        bool(visible), current)
+                )
+                self.agent_0001_dock = dock
+
+            self._activate_exclusive_tool_workspace(dock)
+            dock.show()
+            dock.raise_()
+            self._expand_exclusive_tool_workspace(dock)
+            QTimer.singleShot(
+                0, lambda current=dock:
+                self._expand_exclusive_tool_workspace(current)
+            )
+            self.statusBar().showMessage("Agent 0001: Grammatikparser geöffnet")
 
         def _sync_formula_zoom_control_checks(self, _value=None):
             controller = getattr(self, "_math_formula_designer_controller", None)
@@ -139887,6 +139925,31 @@ border: 2px solid #2a69aa;
             )
             return match.group(1).casefold() if match else ""
 
+        def _project_activate_document_tab(
+            self, document: Optional[DocumentEditor]
+        ) -> None:
+            """Select an existing document tab and focus its real editor widget."""
+            if not isinstance(document, DocumentEditor):
+                return
+            if self._document_index(document) < 0:
+                return
+            self.document_tabs.setCurrentWidget(document)
+            self._update_document_tab(document)
+            document.focus_preferred_editor()
+
+            def focus_after_tree_click(value=document):
+                try:
+                    if (
+                        self._document_index(value) >= 0
+                        and self.document_tabs.currentWidget() is value
+                    ):
+                        value.focus_preferred_editor()
+                except RuntimeError:
+                    # Tab/editor may have been closed before the queued callback.
+                    pass
+
+            QTimer.singleShot(0, focus_after_tree_click)
+
         def _project_pascal_document(
             self,
             path: Path,
@@ -141676,8 +141739,7 @@ QFileDialog QComboBox QAbstractItemView {
                 document = self.document_tabs.widget(index)
                 if (isinstance(document, DocumentEditor)
                         and getattr(document, "_c64_project_tree_item", None) is item):
-                    self.document_tabs.setCurrentWidget(document)
-                    document.focus_preferred_editor()
+                    self._project_activate_document_tab(document)
                     return True
             # Blatt eines bereits geschlossenen ungespeicherten Dokuments
             # ohne Phantomdatei aus dem Projektbaum entfernen.
@@ -143142,7 +143204,10 @@ QFileDialog QComboBox QAbstractItemView {
             if kind == PROJECT_NODE_C64_SOURCE_FILE:
                 path = Path(str(item.data(0, Qt.UserRole + 302) or ""))
                 if path.is_file():
-                    self.open_document(path)
+                    if self.open_document(path):
+                        self._project_activate_document_tab(
+                            self._find_open_document(path)
+                        )
                 else:
                     self.show_error("C64-Quellprogramm nicht gefunden", f"Datei nicht gefunden:\n{path}")
                 return
@@ -143192,6 +143257,9 @@ QFileDialog QComboBox QAbstractItemView {
                     return
                 if role == "programs":
                     if self.open_document(path, language_override="dbase"):
+                        self._project_activate_document_tab(
+                            self._find_open_document(path)
+                        )
                         self._remember_recent_file(path)
                         self.statusBar().showMessage(
                             f"{path.name}: dBase-Texteditor geöffnet", 6000
@@ -143260,6 +143328,7 @@ QFileDialog QComboBox QAbstractItemView {
                         ):
                             document = self._project_pascal_document(path, target)
                             if document is not None:
+                                self._project_activate_document_tab(document)
                                 target_name = (
                                     "Windows PE32"
                                     if target == "pe32"
@@ -143270,7 +143339,10 @@ QFileDialog QComboBox QAbstractItemView {
                                     5000,
                                 )
                         else:
-                            self.open_document(path)
+                            if self.open_document(path):
+                                self._project_activate_document_tab(
+                                    self._find_open_document(path)
+                                )
                     else:
                         self.show_error(
                             "Pascal-Projektdatei nicht gefunden",
@@ -143322,7 +143394,10 @@ QFileDialog QComboBox QAbstractItemView {
                 self.open_document(path)
                 return
             if path.suffix.casefold() in self.EDITOR_EXTENSIONS:
-                self.open_document(path)
+                if self.open_document(path):
+                    self._project_activate_document_tab(
+                        self._find_open_document(path)
+                    )
             else:
                 self.open_path(path)
 

@@ -17,7 +17,7 @@ extern SetConsoleMode
 extern WriteFile
 extern lstrlenA
 extern wsprintfA
-import _calloc, "msvcrt.dll", "calloc"
+import _jit_object_instance_new, "libd64_runtime.dll", "jit_object_instance_new"
 import _GetModuleHandleA@4, "kernel32.dll", "GetModuleHandleA"
 import _ExitProcess@4, "kernel32.dll", "ExitProcess"
 import _GetWindowLongA@8, "user32.dll", "GetWindowLongA"
@@ -39,7 +39,6 @@ import _DispatchMessageA@4, "user32.dll", "DispatchMessageA"
 import _DefWindowProcA@16, "user32.dll", "DefWindowProcA"
 import _MessageBoxA@16, "user32.dll", "MessageBoxA"
 import _PostQuitMessage@4, "user32.dll", "PostQuitMessage"
-import _jit_object_instance_new, "libd64_runtime.dll", "jit_object_instance_new"
 import _jit_object_instance_free, "libd64_runtime.dll", "jit_object_instance_free"
 import _jit_object_free, "libd64_runtime.dll", "jit_object_free"
 import _jit_object_class_type, "libd64_runtime.dll", "jit_object_class_type"
@@ -55,12 +54,17 @@ import _gcvt, "msvcrt.dll", "_gcvt"
 import _jit_raise, "libd64_runtime.dll", "_jit_raise"
 import _jit_exception_push, "libd64_runtime.dll", "_jit_exception_push"
 import _jit_exception_pop, "libd64_runtime.dll", "_jit_exception_pop"
+import _jit_read_string, "libd64_runtime.dll", "_jit_read_string"
+import _jit_read_int, "libd64_runtime.dll", "_jit_read_int"
+import _jit_free, "libd64_runtime.dll", "_jit_free"
 _start:
     call __pas_console_init
-    push 21
-    push 1
-    call _calloc
-    add esp, 8
+    mov eax, __pas_string_0
+    call __pas_print_string
+    call __pas_print_newline
+    push __pas_vmt_tfoo
+    call _jit_object_instance_new
+    add esp, 4
     push eax
     mov ecx, __pas_ctor_result__ctor_tfoo_0_33_33
     pop eax
@@ -112,10 +116,9 @@ __pas_try_handler_3:
     call _jit_raise
     add esp, 8
 __pas_try_end_4:
-    push 5
-    push 1
-    call _calloc
-    add esp, 8
+    push __pas_vmt_tapplication
+    call _jit_object_instance_new
+    add esp, 4
     push eax
     mov ecx, __pas_ctor_result__ctor_tapplication_4_34_34
     pop eax
@@ -134,6 +137,10 @@ __pas_try_end_4:
     mov eax, dword ptr [ecx]
     mov esi, eax
     call __pas_method_tobject_free
+    call _jit_read_string
+    push eax
+    call _jit_free
+    add esp, 4
     mov eax, 0
     push eax
     call _ExitProcess@4
@@ -282,7 +289,7 @@ __pas_global_globalwindowproc:
     push eax
     mov ecx, __pas_local_global_globalwindowproc_appform_10
     mov ecx, dword ptr [ecx]
-    add ecx, 9
+    add ecx, 12
     pop eax
     mov dword ptr [ecx], eax
     mov ecx, __pas_local_global_globalwindowproc_appform_10
@@ -372,7 +379,7 @@ __pas_if_end_6:
     push eax
     mov ecx, __pas_local_global_globalwindowproc_appform_10
     mov ecx, dword ptr [ecx]
-    add ecx, 9
+    add ecx, 12
     pop eax
     mov dword ptr [ecx], eax
     mov ecx, __pas_local_global_globalwindowproc_appform_10
@@ -775,7 +782,7 @@ __pas_method_exception_create:
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, esi
-    add ecx, 1
+    add ecx, 4
     pop eax
     mov dword ptr [ecx], eax
     mov esp, ebp
@@ -805,13 +812,13 @@ __pas_method_twindow_create:
     push esi
     call __pas_method_tobject_create
     pop esi
-    mov eax, __pas_string_0
+    mov eax, __pas_string_1
     call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_1
+    mov eax, __pas_string_2
     push eax
     mov ecx, esi
-    add ecx, 1
+    add ecx, 4
     pop eax
     mov dword ptr [ecx], eax
     xor eax, eax
@@ -819,7 +826,7 @@ __pas_method_twindow_create:
     call _GetModuleHandleA@4
     push eax
     mov ecx, esi
-    add ecx, 5
+    add ecx, 8
     pop eax
     mov dword ptr [ecx], eax
     mov eax, 3
@@ -846,7 +853,7 @@ __pas_method_twindow_create:
     pop eax
     mov dword ptr [ecx], eax
     mov ecx, esi
-    add ecx, 5
+    add ecx, 8
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, __pas_local_twindow_create_winclass_25
@@ -891,7 +898,7 @@ __pas_method_twindow_create:
     pop eax
     mov dword ptr [ecx], eax
     mov ecx, esi
-    add ecx, 1
+    add ecx, 4
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, __pas_local_twindow_create_winclass_25
@@ -923,9 +930,9 @@ __pas_method_twindow_create:
     pop eax
     add eax, edx
     push eax
-    mov eax, __pas_string_2
-    push eax
     mov eax, __pas_string_3
+    push eax
+    mov eax, __pas_string_4
     push eax
     mov eax, 0
     push eax
@@ -936,13 +943,13 @@ __pas_method_twindow_create:
     jmp __pas_if_end_24
 __pas_if_else_23:
 __pas_if_end_24:
-    mov eax, __pas_string_4
+    mov eax, __pas_string_5
     call __pas_print_string
     call __pas_print_newline
     mov eax, esi
     push eax
     mov ecx, esi
-    add ecx, 5
+    add ecx, 8
     mov eax, dword ptr [ecx]
     push eax
     mov eax, 0
@@ -960,11 +967,11 @@ __pas_if_end_24:
     mov eax, 13565952
     push eax
     mov ecx, esi
-    add ecx, 13
+    add ecx, 16
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, esi
-    add ecx, 1
+    add ecx, 4
     mov eax, dword ptr [ecx]
     push eax
     mov eax, 0
@@ -972,14 +979,14 @@ __pas_if_end_24:
     call _CreateWindowExA@48
     push eax
     mov ecx, esi
-    add ecx, 9
+    add ecx, 12
     pop eax
     mov dword ptr [ecx], eax
-    mov eax, __pas_string_5
+    mov eax, __pas_string_6
     call __pas_print_string
     call __pas_print_newline
     mov ecx, esi
-    add ecx, 9
+    add ecx, 12
     mov eax, dword ptr [ecx]
     push eax
     mov eax, 0
@@ -990,7 +997,7 @@ __pas_if_end_24:
     movzx eax, al
     test eax, eax
     jz __pas_if_else_25
-    mov eax, __pas_string_6
+    mov eax, __pas_string_7
     call __pas_print_string
     call __pas_print_newline
     mov eax, 0
@@ -1000,9 +1007,9 @@ __pas_if_end_24:
     pop eax
     add eax, edx
     push eax
-    mov eax, __pas_string_2
+    mov eax, __pas_string_3
     push eax
-    mov eax, __pas_string_7
+    mov eax, __pas_string_8
     push eax
     mov eax, 0
     push eax
@@ -1013,7 +1020,7 @@ __pas_if_end_24:
     jmp __pas_if_end_26
 __pas_if_else_25:
 __pas_if_end_26:
-    mov eax, __pas_string_8
+    mov eax, __pas_string_9
     call __pas_print_string
     call __pas_print_newline
     mov esp, ebp
@@ -1041,7 +1048,7 @@ __pas_method_twindow_gethandle:
     pop eax
     mov dword ptr [ecx], eax
     mov ecx, esi
-    add ecx, 9
+    add ecx, 12
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, __pas_result_twindow_gethandle_result_31
@@ -1092,13 +1099,13 @@ __pas_method_tform_create:
     push esi
     call __pas_method_twindow_create
     pop esi
-    mov eax, __pas_string_9
+    mov eax, __pas_string_10
     call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_10
+    mov eax, __pas_string_11
     push eax
     mov ecx, esi
-    add ecx, 33
+    add ecx, 36
     pop eax
     mov dword ptr [ecx], eax
     mov esp, ebp
@@ -1123,13 +1130,12 @@ __pas_method_tapplication_create:
     push esi
     call __pas_method_tobject_create
     pop esi
-    mov eax, __pas_string_11
+    mov eax, __pas_string_12
     call __pas_print_string
     call __pas_print_newline
-    push 37
-    push 1
-    call _calloc
-    add esp, 8
+    push __pas_vmt_tform
+    call _jit_object_instance_new
+    add esp, 4
     push eax
     mov ecx, __pas_ctor_result__ctor_tform_26_35_35
     pop eax
@@ -1144,22 +1150,22 @@ __pas_method_tapplication_create:
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, esi
-    add ecx, 1
+    add ecx, 4
     pop eax
     mov dword ptr [ecx], eax
     mov eax, 10
     push eax
     mov ecx, esi
-    add ecx, 1
+    add ecx, 4
     mov ecx, dword ptr [ecx]
-    add ecx, 9
+    add ecx, 12
     mov eax, dword ptr [ecx]
     push eax
     call _ShowWindow@8
     mov ecx, esi
-    add ecx, 1
+    add ecx, 4
     mov ecx, dword ptr [ecx]
-    add ecx, 9
+    add ecx, 12
     mov eax, dword ptr [ecx]
     push eax
     call _UpdateWindow@4
@@ -1174,7 +1180,7 @@ __pas_method_tapplication_destroy:
     mov ebp, esp
     push esi
     mov ecx, esi
-    add ecx, 1
+    add ecx, 4
     mov eax, dword ptr [ecx]
     mov esi, eax
     call __pas_method_tobject_free
@@ -1193,7 +1199,7 @@ __pas_method_tfaz_create:
     push esi
     call __pas_method_tobject_create
     pop esi
-    mov eax, __pas_string_12
+    mov eax, __pas_string_13
     call __pas_print_string
     call __pas_print_newline
     mov esp, ebp
@@ -1204,9 +1210,9 @@ __pas_method_tfaz_create:
 __pas_method_tfaz_destroy:
     push ebp
     mov ebp, esp
-    mov eax, __pas_string_13
-    call __pas_print_string
     mov eax, __pas_string_14
+    call __pas_print_string
+    mov eax, __pas_string_15
     call __pas_print_string
     call __pas_print_newline
     push esi
@@ -1220,24 +1226,24 @@ __pas_method_tfaz_destroy:
 __pas_method_tfaz_show:
     push ebp
     mov ebp, esp
+    mov eax, __pas_string_16
+    call __pas_print_string
     mov eax, __pas_string_15
     call __pas_print_string
-    mov eax, __pas_string_14
-    call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_16
+    mov eax, __pas_string_17
     call __pas_print_string
     push esi
     call __pas_method_tobject_classname
     pop esi
     call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_17
-    call __pas_print_string
     mov eax, __pas_string_18
     call __pas_print_string
-    call __pas_print_newline
     mov eax, __pas_string_19
+    call __pas_print_string
+    call __pas_print_newline
+    mov eax, __pas_string_20
     call __pas_print_string
     push esi
     call __pas_method_tobject_instancesize
@@ -1264,23 +1270,23 @@ __pas_method_tfoo_create:
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, esi
-    add ecx, 1
+    add ecx, 4
     pop eax
     mov dword ptr [ecx], eax
-    mov eax, __pas_string_20
+    mov eax, __pas_string_21
     push eax
     mov ecx, esi
-    add ecx, 5
+    add ecx, 8
     pop eax
     mov dword ptr [ecx], eax
     fld qword ptr [__pas_double_0]
     mov ecx, esi
-    add ecx, 9
+    add ecx, 12
     fstp qword ptr [ecx]
-    mov eax, __pas_string_21
+    mov eax, __pas_string_22
     push eax
     mov ecx, esi
-    add ecx, 17
+    add ecx, 20
     pop eax
     mov dword ptr [ecx], eax
     mov esp, ebp
@@ -1291,9 +1297,9 @@ __pas_method_tfoo_create:
 __pas_method_tfoo_destroy:
     push ebp
     mov ebp, esp
-    mov eax, __pas_string_22
+    mov eax, __pas_string_23
     call __pas_print_string
-    mov eax, __pas_string_14
+    mov eax, __pas_string_15
     call __pas_print_string
     call __pas_print_newline
     push esi
@@ -1307,24 +1313,24 @@ __pas_method_tfoo_destroy:
 __pas_method_tfoo_show:
     push ebp
     mov ebp, esp
-    mov eax, __pas_string_23
+    mov eax, __pas_string_24
     call __pas_print_string
-    mov eax, __pas_string_14
+    mov eax, __pas_string_15
     call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_16
+    mov eax, __pas_string_17
     call __pas_print_string
     push esi
     call __pas_method_tobject_classname
     pop esi
     call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_17
+    mov eax, __pas_string_18
     call __pas_print_string
-    mov eax, __pas_string_24
+    mov eax, __pas_string_25
     call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_19
+    mov eax, __pas_string_20
     call __pas_print_string
     push esi
     call __pas_method_tobject_instancesize
@@ -1338,6 +1344,90 @@ __pas_method_tfoo_show:
     call __pas_print_newline
     push esi
     call __pas_method_tfaz_show
+    pop esi
+    mov esp, ebp
+    pop ebp
+    ret
+
+; Stage 240: cdecl JitDestroyProc -> Exception.Destroy
+__pas_vmt_destroy_exception:
+    push ebp
+    mov ebp, esp
+    push esi
+    mov esi, dword ptr [ebp+8]
+    call __pas_method_tobject_destroy
+    pop esi
+    mov esp, ebp
+    pop ebp
+    ret
+
+; Stage 240: cdecl JitDestroyProc -> TApplication.Destroy
+__pas_vmt_destroy_tapplication:
+    push ebp
+    mov ebp, esp
+    push esi
+    mov esi, dword ptr [ebp+8]
+    call __pas_method_tapplication_destroy
+    pop esi
+    mov esp, ebp
+    pop ebp
+    ret
+
+; Stage 240: cdecl JitDestroyProc -> TFaz.Destroy
+__pas_vmt_destroy_tfaz:
+    push ebp
+    mov ebp, esp
+    push esi
+    mov esi, dword ptr [ebp+8]
+    call __pas_method_tfaz_destroy
+    pop esi
+    mov esp, ebp
+    pop ebp
+    ret
+
+; Stage 240: cdecl JitDestroyProc -> TFoo.Destroy
+__pas_vmt_destroy_tfoo:
+    push ebp
+    mov ebp, esp
+    push esi
+    mov esi, dword ptr [ebp+8]
+    call __pas_method_tfoo_destroy
+    pop esi
+    mov esp, ebp
+    pop ebp
+    ret
+
+; Stage 240: cdecl JitDestroyProc -> TForm.Destroy
+__pas_vmt_destroy_tform:
+    push ebp
+    mov ebp, esp
+    push esi
+    mov esi, dword ptr [ebp+8]
+    call __pas_method_tform_destroy
+    pop esi
+    mov esp, ebp
+    pop ebp
+    ret
+
+; Stage 240: cdecl JitDestroyProc -> TObject.Destroy
+__pas_vmt_destroy_tobject:
+    push ebp
+    mov ebp, esp
+    push esi
+    mov esi, dword ptr [ebp+8]
+    call __pas_method_tobject_destroy
+    pop esi
+    mov esp, ebp
+    pop ebp
+    ret
+
+; Stage 240: cdecl JitDestroyProc -> TWindow.Destroy
+__pas_vmt_destroy_twindow:
+    push ebp
+    mov ebp, esp
+    push esi
+    mov esi, dword ptr [ebp+8]
+    call __pas_method_twindow_destroy
     pop esi
     mov esp, ebp
     pop ebp
@@ -1429,6 +1519,65 @@ __pas_range_message: db 82, 97, 110, 103, 101, 32, 101, 114, 114, 111, 114, 13, 
 ; IEEE-754 Double-Literale
 __pas_double_0: dd 2061584302, 1074376212
 
+; Stage 240: Pascal class runtime metadata / JitVmt (PE32)
+__pas_classname_exception: db 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
+__pas_classname_tapplication: db 84, 65, 112, 112, 108, 105, 99, 97, 116, 105, 111, 110, 0
+__pas_classname_tfaz: db 84, 70, 97, 122, 0
+__pas_classname_tfoo: db 84, 70, 111, 111, 0
+__pas_classname_tform: db 84, 70, 111, 114, 109, 0
+__pas_classname_tobject: db 84, 79, 98, 106, 101, 99, 116, 0
+__pas_classname_twindow: db 84, 87, 105, 110, 100, 111, 119, 0
+align 4
+__pas_vmt_exception:
+    dd __pas_vmt_tobject
+    dd __pas_classname_exception
+    dd 8
+    dd 0
+    dd 0
+    dd __pas_vmt_destroy_exception
+__pas_vmt_tapplication:
+    dd __pas_vmt_tobject
+    dd __pas_classname_tapplication
+    dd 8
+    dd 0
+    dd 0
+    dd __pas_vmt_destroy_tapplication
+__pas_vmt_tfaz:
+    dd __pas_vmt_tobject
+    dd __pas_classname_tfaz
+    dd 4
+    dd 0
+    dd 0
+    dd __pas_vmt_destroy_tfaz
+__pas_vmt_tfoo:
+    dd __pas_vmt_tfaz
+    dd __pas_classname_tfoo
+    dd 24
+    dd 0
+    dd 0
+    dd __pas_vmt_destroy_tfoo
+__pas_vmt_tform:
+    dd __pas_vmt_twindow
+    dd __pas_classname_tform
+    dd 40
+    dd 0
+    dd 0
+    dd __pas_vmt_destroy_tform
+__pas_vmt_tobject:
+    dd 0
+    dd __pas_classname_tobject
+    dd 4
+    dd 0
+    dd 0
+    dd __pas_vmt_destroy_tobject
+__pas_vmt_twindow:
+    dd __pas_vmt_tobject
+    dd __pas_classname_twindow
+    dd 20
+    dd 0
+    dd 0
+    dd __pas_vmt_destroy_twindow
+
 ; Pascal-Variablen
 __pas_var_foo_0: dd 0 ; Foo: TFoo
 __pas_var_application_1: dd 0 ; Application: TApplication
@@ -1468,31 +1617,32 @@ __pas_ctor_result__ctor_tapplication_4_34_34: dd 0 ; intern: TApplication
 __pas_ctor_result__ctor_tform_26_35_35: dd 0 ; intern: TForm
 
 ; Nullterminierte Windows-Latin-1-Zeichenketten
-__pas_string_0: db 84, 87, 105, 110, 100, 111, 119, 58, 32, 67, 114, 101, 97, 116, 101, 0
-__pas_string_1: db 87, 105, 110, 51, 50, 71, 117, 105, 46, 87, 105, 110, 100, 111, 119, 0
-__pas_string_2: db 87, 105, 110, 51, 50, 45, 70, 101, 104, 108, 101, 114, 0
-__pas_string_3: db 68, 105, 101, 32, 70, 101, 110, 115, 116, 101, 114, 107, 108, 97, 115, 115, 101, 32, 107, 111, 110, 110, 116, 101, 32, 110, 105, 99, 104, 116, 32, 114, 101, 103, 105, 115, 116, 114, 105, 101, 114, 116, 32, 119, 101, 114, 100, 101, 110, 46, 0
-__pas_string_4: db 82, 101, 103, 105, 115, 116, 101, 114, 32, 111, 107, 0
-__pas_string_5: db 87, 105, 110, 67, 114, 101, 97, 116, 101, 32, 111, 107, 0
-__pas_string_6: db 72, 97, 110, 100, 108, 101, 32, 101, 114, 114, 111, 114, 0
-__pas_string_7: db 68, 97, 115, 32, 72, 97, 117, 112, 116, 102, 101, 110, 115, 116, 101, 114, 32, 107, 111, 110, 110, 116, 101, 32, 110, 105, 99, 104, 116, 32, 101, 114, 122, 101, 117, 103, 116, 32, 119, 101, 114, 100, 101, 110, 46, 0
-__pas_string_8: db 84, 87, 105, 110, 100, 111, 119, 58, 32, 119, 105, 110, 32, 104, 97, 110, 100, 108, 101, 32, 111, 107, 0
-__pas_string_9: db 84, 70, 111, 114, 109, 58, 32, 67, 114, 101, 97, 116, 101, 0
-__pas_string_10: db 84, 70, 111, 114, 109, 0
-__pas_string_11: db 84, 65, 112, 112, 58, 32, 67, 114, 101, 97, 116, 101, 0
-__pas_string_12: db 84, 70, 97, 122, 32, 67, 114, 101, 97, 116, 101, 0
-__pas_string_13: db 84, 70, 97, 122, 32, 68, 101, 115, 116, 114, 111, 121, 0
-__pas_string_14: db 0
-__pas_string_15: db 84, 70, 97, 122, 32, 83, 104, 111, 119, 0
-__pas_string_16: db 32, 32, 82, 117, 110, 116, 105, 109, 101, 32, 99, 108, 97, 115, 115, 58, 32, 0
-__pas_string_17: db 32, 32, 77, 101, 116, 104, 111, 100, 32, 32, 111, 119, 110, 101, 114, 58, 32, 0
-__pas_string_18: db 84, 70, 97, 122, 0
-__pas_string_19: db 32, 32, 83, 105, 122, 101, 32, 32, 32, 32, 32, 32, 32, 32, 32, 58, 32, 0
-__pas_string_20: db 72, 101, 108, 108, 111, 0
-__pas_string_21: db 87, 111, 114, 108, 100, 32, 33, 0
-__pas_string_22: db 84, 70, 111, 111, 32, 68, 101, 115, 116, 114, 111, 121, 0
-__pas_string_23: db 84, 70, 111, 111, 32, 83, 104, 111, 119, 0
-__pas_string_24: db 84, 70, 111, 111, 0
+__pas_string_0: db 120, 120, 120, 120, 120, 120, 120, 0
+__pas_string_1: db 84, 87, 105, 110, 100, 111, 119, 58, 32, 67, 114, 101, 97, 116, 101, 0
+__pas_string_2: db 87, 105, 110, 51, 50, 71, 117, 105, 46, 87, 105, 110, 100, 111, 119, 0
+__pas_string_3: db 87, 105, 110, 51, 50, 45, 70, 101, 104, 108, 101, 114, 0
+__pas_string_4: db 68, 105, 101, 32, 70, 101, 110, 115, 116, 101, 114, 107, 108, 97, 115, 115, 101, 32, 107, 111, 110, 110, 116, 101, 32, 110, 105, 99, 104, 116, 32, 114, 101, 103, 105, 115, 116, 114, 105, 101, 114, 116, 32, 119, 101, 114, 100, 101, 110, 46, 0
+__pas_string_5: db 82, 101, 103, 105, 115, 116, 101, 114, 32, 111, 107, 0
+__pas_string_6: db 87, 105, 110, 67, 114, 101, 97, 116, 101, 32, 111, 107, 0
+__pas_string_7: db 72, 97, 110, 100, 108, 101, 32, 101, 114, 114, 111, 114, 0
+__pas_string_8: db 68, 97, 115, 32, 72, 97, 117, 112, 116, 102, 101, 110, 115, 116, 101, 114, 32, 107, 111, 110, 110, 116, 101, 32, 110, 105, 99, 104, 116, 32, 101, 114, 122, 101, 117, 103, 116, 32, 119, 101, 114, 100, 101, 110, 46, 0
+__pas_string_9: db 84, 87, 105, 110, 100, 111, 119, 58, 32, 119, 105, 110, 32, 104, 97, 110, 100, 108, 101, 32, 111, 107, 0
+__pas_string_10: db 84, 70, 111, 114, 109, 58, 32, 67, 114, 101, 97, 116, 101, 0
+__pas_string_11: db 84, 70, 111, 114, 109, 0
+__pas_string_12: db 84, 65, 112, 112, 58, 32, 67, 114, 101, 97, 116, 101, 0
+__pas_string_13: db 84, 70, 97, 122, 32, 67, 114, 101, 97, 116, 101, 0
+__pas_string_14: db 84, 70, 97, 122, 32, 68, 101, 115, 116, 114, 111, 121, 0
+__pas_string_15: db 0
+__pas_string_16: db 84, 70, 97, 122, 32, 83, 104, 111, 119, 0
+__pas_string_17: db 32, 32, 82, 117, 110, 116, 105, 109, 101, 32, 99, 108, 97, 115, 115, 58, 32, 0
+__pas_string_18: db 32, 32, 77, 101, 116, 104, 111, 100, 32, 32, 111, 119, 110, 101, 114, 58, 32, 0
+__pas_string_19: db 84, 70, 97, 122, 0
+__pas_string_20: db 32, 32, 83, 105, 122, 101, 32, 32, 32, 32, 32, 32, 32, 32, 32, 58, 32, 0
+__pas_string_21: db 72, 101, 108, 108, 111, 0
+__pas_string_22: db 87, 111, 114, 108, 100, 32, 33, 0
+__pas_string_23: db 84, 70, 111, 111, 32, 68, 101, 115, 116, 114, 111, 121, 0
+__pas_string_24: db 84, 70, 111, 111, 32, 83, 104, 111, 119, 0
+__pas_string_25: db 84, 70, 111, 111, 0
 
 section .bss
 align 4
