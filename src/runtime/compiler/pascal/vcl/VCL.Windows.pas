@@ -106,8 +106,9 @@ begin
                 GWL_USERDATA,
                 0
             );
+            // TApplication owns the Pascal TForm instance. WM_NCDESTROY
+            // releases only the HWND association, never the object itself.
             AppForm.FWinHandle := 0;
-            AppForm.Free;
             Exit;
         end;
         

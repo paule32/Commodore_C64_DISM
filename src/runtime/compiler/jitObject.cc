@@ -7,6 +7,7 @@
 # include "stddef.h"
 # include "memory.h"
 # include "jitObject.h"
+# include "windows.h"
 
 # ifdef __cplusplus
 extern "C" {
@@ -16,6 +17,99 @@ typedef struct JitObjectHeader {
     JitVmt *vmt;
     
 }   JitObjectHeader;
+
+// Stage 534: allocation registry (no heap allocations inside the guard).
+// Guarding the lifetime *before* accessing the object VMT avoids dereferencing
+// stale pointers in the common double-Free path. Addresses may be reused by
+// malloc; a later allocation then creates a new live generation at that slot.
+// This is bounded diagnostic tracking, not a general-purpose heap verifier.
+#define D64_OBJECT_REGISTRY_CAPACITY 8192
+struct D64TrackedObject {
+    const void *address;
+    unsigned state;  // 0=empty, 1=live, 2=destroying, 3=freed, 4=finalizing
+    unsigned generation;
+};
+static D64TrackedObject g_tracked[D64_OBJECT_REGISTRY_CAPACITY];
+static volatile int g_registry_lock = 0;
+static unsigned g_generation = 0;
+
+static void d64_lock_objects()
+{
+    while (__sync_lock_test_and_set(&g_registry_lock, 1)) {
+        __asm__ volatile("pause");
+    }
+}
+static void d64_unlock_objects() { __sync_lock_release(&g_registry_lock); }
+
+// Returns: 1=accepted, 0=unknown, -1=already freeing/freed or full.
+// action=0 register, 1 begin destroying, 2 begin freeing, 3 validate.
+static int d64_object_transition(const void *ptr, unsigned action)
+{
+    if (!ptr) return 0;
+    d64_lock_objects();
+    unsigned index = (unsigned)(((uintptr_t)ptr >> 4) % D64_OBJECT_REGISTRY_CAPACITY);
+    unsigned empty_slot = D64_OBJECT_REGISTRY_CAPACITY;
+    unsigned freed_slot = D64_OBJECT_REGISTRY_CAPACITY;
+    for (unsigned count=0; count<D64_OBJECT_REGISTRY_CAPACITY; ++count) {
+        unsigned i = (index + count) % D64_OBJECT_REGISTRY_CAPACITY;
+        D64TrackedObject *slot = &g_tracked[i];
+        if (!slot->address) { empty_slot = i; break; }
+        if (slot->address == ptr) {
+            int result = 0;
+            if (action == 0) {
+                if (slot->state == 3) {
+                    slot->state = 1;
+                    slot->generation = ++g_generation;
+                    result = 1;
+                } else result = -1;
+            } else if (action == 1) {
+                if (slot->state == 1) { slot->state = 2; result = 1; }
+                else result = -1;
+            } else if (action == 2) {
+                if (slot->state == 1 || slot->state == 2) {
+                    slot->state = 4; // delay final free until finalizer returns
+                    result = 1;
+                } else result = -1;
+            } else if (action == 4) {
+                if (slot->state == 4) { slot->state = 3; result = 1; }
+                else result = -1;
+            } else result = (slot->state == 1 || slot->state == 2 || slot->state == 4) ? 1 : -1;
+            d64_unlock_objects();
+            return result;
+        }
+        if (slot->state == 3 && freed_slot == D64_OBJECT_REGISTRY_CAPACITY)
+            freed_slot = i;
+    }
+    int result = 0;
+    if (action == 0) {
+        unsigned i = empty_slot != D64_OBJECT_REGISTRY_CAPACITY ? empty_slot : freed_slot;
+        if (i != D64_OBJECT_REGISTRY_CAPACITY) {
+            g_tracked[i].address = ptr;
+            g_tracked[i].state = 1;
+            g_tracked[i].generation = ++g_generation;
+            result = 1;
+        } else result = -1;
+    }
+    d64_unlock_objects();
+    return result;
+}
+
+#ifdef D64_OBJECT_LIFETIME_TRACE
+static void d64_trace_object(const char *event, const void *instance)
+{
+    // Opt-in: compile the runtime with -DD64_OBJECT_LIFETIME_TRACE.
+    // Print outside the registry lock to avoid allocator recursion.
+    typedef DWORD (JIT_STDCALL *D64IdFn)(void);
+    HMODULE kernel = LoadLibraryA("kernel32.dll");
+    D64IdFn pid_fn = kernel ? (D64IdFn)GetProcAddress(kernel, "GetCurrentProcessId") : nullptr;
+    D64IdFn tid_fn = kernel ? (D64IdFn)GetProcAddress(kernel, "GetCurrentThreadId") : nullptr;
+    unsigned pid = pid_fn ? pid_fn() : 0;
+    unsigned tid = tid_fn ? tid_fn() : 0;
+    _jit_printf("[jit-object] %s pid=%u tid=%u ptr=%p\n", event, pid, tid, instance);
+}
+#else
+static void d64_trace_object(const char*, const void*) { }
+#endif
 
 static int                g_last_error         = JIT_OBJECT_ERROR_NONE;
 static const char *       g_last_error_message = "";
@@ -106,7 +200,13 @@ jit_object_instance_new(JitVmt *vmt)
         return nullptr;
     }
 
+    if (d64_object_transition(object_header, 0) != 1) {
+        _jit_free(object_header);
+        jit_set_error(JIT_OBJECT_ERROR_REGISTRY_FULL, "Object allocation registry exhausted");
+        return nullptr;
+    }
     object_header->vmt = vmt;
+    d64_trace_object("alloc", object_header);
 
     if (vmt->initialize_instance)
         vmt->initialize_instance(object_header);
@@ -125,6 +225,14 @@ jit_object_instance_free(void *instance)
     if (!instance)
         return;
 
+    // Mark the allocation as freed while its address is still valid.
+    // A concurrent or repeated Free now fails before the VMT dereference.
+    if (d64_object_transition(instance, 2) != 1) {
+        jit_set_error(JIT_OBJECT_ERROR_DOUBLE_FREE,
+                      "Object already freed, is being freed, or was never allocated here");
+        d64_trace_object("invalid-free", instance);
+        return;
+    }
     object_header = (JitObjectHeader *)instance;
     vmt = object_header->vmt;
 
@@ -141,6 +249,8 @@ jit_object_instance_free(void *instance)
         vmt->finalize_instance(instance);
 
     object_header->vmt = nullptr;
+    d64_trace_object("free", instance);
+    d64_object_transition(instance, 4); // state=freed before releasing heap
     _jit_free(instance);
 }
 
@@ -154,6 +264,12 @@ jit_object_free(void *instance)
     if (!instance)
         return;
 
+    if (d64_object_transition(instance, 1) != 1) {
+        jit_set_error(JIT_OBJECT_ERROR_DOUBLE_FREE,
+                      "Repeated or concurrent jit_object_free detected");
+        d64_trace_object("double-free", instance);
+        return;
+    }
     vmt = jit_object_class_type(instance);
 
     if (!vmt)
@@ -180,6 +296,11 @@ jit_object_class_type(void *instance)
     if (!instance)
         return nullptr;
 
+    if (d64_object_transition(instance, 3) != 1) {
+        jit_set_error(JIT_OBJECT_ERROR_UNTRACKED_OBJECT,
+                      "Object VMT requested for invalid or freed pointer");
+        return nullptr;
+    }
     object_header = (JitObjectHeader *)instance;
 
     if (!jit_valid_vmt(object_header->vmt))

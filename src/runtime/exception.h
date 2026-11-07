@@ -63,7 +63,9 @@ typedef struct JitExceptionFrame {
     
 }   JitExceptionFrame;
 
-extern JitExceptionFrame *gExceptionFrame;
+// Stage 534: frames are stored in Windows TLS, not a process-global pointer.
+// The frame itself is allocated by the Pascal caller on its own stack.
+VOID _jit_exception_tls_cleanup(void);
 
 // Stackverwaltung
 DLL_API VOID _jit_exception_push(JitExceptionFrame *frame);

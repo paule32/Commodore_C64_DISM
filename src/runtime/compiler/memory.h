@@ -22,7 +22,7 @@ struct DynArrayHeader {
 typedef void * (JIT_CDECL *malloc_fn)(size_t size);
 typedef void * (JIT_CDECL *calloc_fn)(uint32_t count, uint32_t size);
 typedef void * (JIT_CDECL *realloc_fn)(void *ptr, size_t size);
-typedef void   (JIT_CDECL *free_fn)(JitJumpBuffer *ptr);
+typedef void   (JIT_CDECL *free_fn)(void *ptr);
 
 typedef void * (JIT_CDECL *memcpy_fn )(void* dest, const void* src, size_t count);
 typedef void * (JIT_CDECL *memset_fn )(void* dest, int value, size_t count);

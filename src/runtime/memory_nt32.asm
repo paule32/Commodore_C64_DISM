@@ -120,16 +120,20 @@ load_and_resolve:
     ret
 
 ; ---------------------------------------------------------------------------
-; Resolve the CRT once.  This intentionally uses a simple non-thread-safe
-; guard, matching the original code and keeping the implementation small.
+; Stage 534: one-time atomic CRT resolver.
+; 0 = uninitialized, 1 = resolving, 2 = ready, 3 = failed.
+; Other threads cannot observe partially filled CRT import slots.
 ; ---------------------------------------------------------------------------
 init_runtime:
-    cmp dword [p_malloc], 0
-    je .initialize
-    cmp dword [p_free], 0
-    jne .already_ready
+    cmp dword [crt_init_state], 2
+    je .ready
+    cmp dword [crt_init_state], 3
+    je .failed
+    xor eax, eax
+    mov ecx, 1
+    lock cmpxchg dword [crt_init_state], ecx
+    jne .wait_for_initializer
 
-.initialize:
     push ebx
     push esi
     push edi
@@ -138,59 +142,65 @@ init_runtime:
     mov esi, crt_imports
     call load_and_resolve
     test eax, eax
-    jz .done
+    jz .finish
 
 %if JIT_RESOLVE_AUX
     mov edx, dll_kernel32
     mov esi, kernel32_imports
     call load_and_resolve
     test eax, eax
-    jz .done
+    jz .finish
 
     mov edx, dll_user32
     mov esi, user32_imports
     call load_and_resolve
     test eax, eax
-    jz .done
+    jz .finish
 
     mov edx, dll_mpr
     mov esi, mpr_imports
     call load_and_resolve
-    test eax, eax
-    jz .done
 %endif
-
+.finish:
+    test eax, eax
+    jz .publish_failure
+    mov dword [crt_init_state], 2
     mov eax, 1
-
-.done:
+    jmp .unlock
+.publish_failure:
+    mov dword [crt_init_state], 3
+    xor eax, eax
+.unlock:
     pop edi
     pop esi
     pop ebx
     ret
 
-.already_ready:
+.wait_for_initializer:
+    cmp dword [crt_init_state], 1
+    jne .check_ready
+    pause
+    jmp .wait_for_initializer
+.check_ready:
+    cmp dword [crt_init_state], 2
+    je .ready
+.failed:
+    xor eax, eax
+    ret
+.ready:
     mov eax, 1
     ret
 
-; ---------------------------------------------------------------------------
-; Small common dispatcher for the resolved CRT functions.
-; EAX points to the function-pointer slot.  The original arguments stay on
-; the stack, so the final JMP is a proper cdecl tail call.
-; ---------------------------------------------------------------------------
+; Always check global readiness, even when this particular function pointer
+; has already been written by a different initialization thread.
 dispatch_crt:
-    cmp dword [eax], 0
-    jne .jump
-
     push eax
     call init_runtime
     pop edx
     test eax, eax
     jz .failed
     mov eax, edx
-
-.jump:
     jmp [eax]
-
 .failed:
     xor eax, eax
     ret
@@ -938,6 +948,8 @@ debug_prompt:        db "[DEBUG BREAK] press Enter...", 0
 newline_text:        db 10, 0
 
 section .bss align=4
+
+crt_init_state: resd 1  ; Stage 534 atomic resolver state
 
 p_malloc:      resd 1
 p_calloc:      resd 1

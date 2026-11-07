@@ -7,6 +7,7 @@
 # include "windows.h"
 
 extern "C" int init_loader();
+extern "C" void _jit_exception_tls_cleanup(void);
 
 DLL_API BOOL JIT_STDCALL DllMain(
     HINSTANCE hinstDLL,
@@ -16,6 +17,8 @@ DLL_API BOOL JIT_STDCALL DllMain(
     if (fdwReason == DLL_PROCESS_ATTACH) {
         if (!init_loader())
             return FALSE;
+    } else if (fdwReason == DLL_PROCESS_DETACH) {
+        _jit_exception_tls_cleanup();
     }
     return TRUE;
 }

@@ -49,6 +49,13 @@ from collections  import defaultdict, deque
 from contextlib   import redirect_stderr, redirect_stdout
 
 from text_manager import translate_qt
+from debug_options import DebugOptions, DebugSettingsPage
+from pascal_parallel_build import (
+    PascalParallelBuildError,
+    effective_parallel_processes,
+    normalize_parallel_options,
+    run_parallel_units,
+)
 
 # ---------------------------------------------------------------------------
 # supported languages ...
@@ -37565,6 +37572,7 @@ def _build_pe32_mszip_loader(
 ) -> bytes:
     compatibility_values = dict(compatibility or _pe_import_packer_settings("pe32"))
     exact_runtime = bool(compatibility_values.get("exact_runtime_check", False))
+    ces_enabled = bool(stage527_debug_options().ces)
     required = (() if bool(peb_resolver) else (
         _pe_d64i_bootstrap_imports(exact_runtime)
         if int(d64i_rva)
@@ -37711,7 +37719,7 @@ def _build_pe32_mszip_loader(
             b.emit(b"\xFF\x15")
             b.u32(iat_va("__d64_loader_LoadLibraryA"))
         b.emit(b"\x85\xC0")
-        b.jcc(0x84, "fail")
+        b.jcc(0x84, "ces_dll_failed" if ces_enabled else "fail")
         b.emit(b"\x89\x45\xEC")
         b.emit(b"\xC7\x45\x94\x00\x00\x00\x00")  # fallback-name = false
 
@@ -37922,7 +37930,7 @@ def _build_pe32_mszip_loader(
             b.emit(b"\xFF\x15")
             b.u32(iat_va("__d64_loader_GetProcAddress"))
         b.emit(b"\x85\xC0")
-        b.jcc(0x84, "fail")
+        b.jcc(0x84, "ces_symbol_failed" if ces_enabled else "fail")
 
         b.emit(b"\x8B\x5D\xE0\x8B\x13\x81\xC2")
         b.u32(int(image_base))
@@ -37969,6 +37977,65 @@ def _build_pe32_mszip_loader(
     b.emit(b"\x8B\xE5\x5D\xB8")
     b.u32(oep_va)
     b.emit(b"\xFF\xE0")
+
+    if ces_enabled and int(d64i_rva):
+        # MessageBoxA via already-resolved LoadLibraryA/GetProcAddress.
+        # No additional startup imports; this path executes ONLY on error.
+        # The displayed message contains the actual missing DLL or export.
+        # Preserve the original loader failure exit code.
+        b.label("ces_dll_failed")
+        b.emit(b"\x8B\x07\x01\xF0")  # eax = D64I base + dll name offset
+        b.jmp("ces_display_dll")
+        b.label("ces_symbol_failed")
+        b.emit(b"\x8B\x5D\xE0\x8B\x43\x08\x85\xC0")
+        b.jcc(0x84, "ces_no_symbol")
+        b.emit(b"\x01\xF0")  # name offset -> full address
+        b.jmp("ces_display_symbol")
+        b.label("ces_no_symbol")
+        b.mov_eax_label_va("ces_ordinal_error")
+        b.label("ces_display_symbol")
+        b.push_label_va("ces_symbol_caption")
+        b.jmp("ces_message")
+        b.label("ces_display_dll")
+        b.push_label_va("ces_dll_caption")
+        b.label("ces_message")
+        # eax = text, stack top = caption
+        b.emit(b"\x50")
+        b.push_label_va("ces_user32")
+        if peb_resolver:
+            b.emit(b"\xFF\x55\xC4")
+        else:
+            b.emit(b"\xFF\x15")
+            b.u32(iat_va("__d64_loader_LoadLibraryA"))
+        b.emit(b"\x85\xC0")
+        b.jcc(0x84, "ces_message_end")
+        b.push_label_va("ces_messagebox")
+        b.emit(b"\x50")
+        if peb_resolver:
+            b.emit(b"\xFF\x55\xC0")
+        else:
+            b.emit(b"\xFF\x15")
+            b.u32(iat_va("__d64_loader_GetProcAddress"))
+        b.emit(b"\x85\xC0")
+        b.jcc(0x84, "ces_message_end")
+        b.emit(b"\x89\xC2")  # edx = MessageBoxA
+        b.emit(b"\x6A\x10")  # MB_ICONERROR
+        b.emit(b"\xFF\x74\x24\x08")  # caption from stack
+        b.emit(b"\xFF\x74\x24\x08")  # text from stack
+        b.emit(b"\x6A\x00\xFF\xD2")  # HWND 0; call edx
+        b.label("ces_message_end")
+        b.emit(b"\x83\xC4\x08")  # discard caption and text
+        b.jmp("fail")
+        b.label("ces_user32")
+        b.emit(b"user32.dll\x00")
+        b.label("ces_messagebox")
+        b.emit(b"MessageBoxA\x00")
+        b.label("ces_dll_caption")
+        b.emit(b"CES: LoadLibraryA failed (DLL)\x00")
+        b.label("ces_symbol_caption")
+        b.emit(b"CES: GetProcAddress failed (symbol)\x00")
+        b.label("ces_ordinal_error")
+        b.emit(b"Ordinal import failed\x00")
 
     b.label("fail")
     b.emit(b"\x68")
@@ -42500,6 +42567,71 @@ PE_IMPORT_PACKER_LAST_DECISION: Dict[str, object] = {}
 # ohne .loader/.ztext umgeschaltet werden, um typische heuristische AV-
 # Merkmale zu vermeiden. Eine Whitelist kann dadurch nicht garantiert werden.
 # -----------------------------------------------------------------------
+# Stage 530: project debug state is architecture-specific.  The existing PE32
+# CES loader queries the pe32 entry; pe64 is reserved for its own backend.
+def stage530_default_debug_options() -> Dict[str, DebugOptions]:
+    return {"pe32": DebugOptions(), "pe64": DebugOptions()}
+
+
+PE_STAGE527_DEBUG_OPTIONS = stage530_default_debug_options()
+
+
+def stage527_debug_options(target: str = "pe32") -> DebugOptions:
+    key = "pe64" if str(target).casefold() in ("pe64", "win64") else "pe32"
+    return PE_STAGE527_DEBUG_OPTIONS[key]
+
+
+def stage527_set_debug_options(options: DebugOptions, target: str = "pe32") -> None:
+    key = "pe64" if str(target).casefold() in ("pe64", "win64") else "pe32"
+    PE_STAGE527_DEBUG_OPTIONS[key] = DebugOptions(
+        bool(options.enable_debug), bool(options.ces),
+        bool(options.dwarf_enabled), int(options.dwarf_version),
+    )
+
+
+# Stage 531: Compiler -> Sicherheit -> Stack -> Protector Cookie.
+# Configuration only; code generation of stack canaries is a separate feature.
+# Stage 536: project-wide, architecture-specific compiler process settings.
+PROJECT_WINDOWS_COMPILER_PARALLEL_KEYS = {
+    "pe32": "__stage536_pascal_parallel_pe32__",
+    "pe64": "__stage536_pascal_parallel_pe64__",
+}
+
+
+# Stage 537: architecture-specific Pascal optimizer profiles.
+PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS = {
+    "pe32": "__stage537_pascal_optimization_pe32__",
+    "pe64": "__stage537_pascal_optimization_pe64__",
+}
+
+
+def stage537_default_pascal_optimization_options() -> Dict[str, dict]:
+    return {"pe32": {"level": 0}, "pe64": {"level": 0}}
+
+
+def _stage537_optimizer_level(options) -> int:
+    from pascal_optimizer import normalize_optimization_level
+    return normalize_optimization_level(
+        options.get("level", 0) if isinstance(options, dict) else options)
+
+
+def stage536_default_parallel_options() -> Dict[str, dict]:
+    return {target: normalize_parallel_options() for target in ("pe32", "pe64")}
+
+
+PROJECT_WINDOWS_COMPILER_SECURITY_KEYS = {
+    "pe32": "__stage531_compiler_security_pe32__",
+    "pe64": "__stage531_compiler_security_pe64__",
+}
+
+
+def stage531_default_compiler_security_options() -> Dict[str, Dict[str, bool]]:
+    return {
+        "pe32": {"protector_cookie": False},
+        "pe64": {"protector_cookie": False},
+    }
+
+
 PE_PACKING_DEFAULT = True
 PE_PACKING_RUNTIME_SETTINGS: Dict[str, bool] = {
     "pe32": PE_PACKING_DEFAULT,
@@ -51894,6 +52026,51 @@ def format_project_ini(
             "IncludeDecruncherSource": "true" if _include_decruncher_source else "false",
         }
 
+    # Stage 530 - save independent PE32/PE32+ debug settings in .pro.
+    # The old [Settings.Debug] input is accepted for migration but not written.
+    _legacy_debug = entries.get("__stage527_debug__", ())
+    _legacy_values = _legacy_debug[0] if _legacy_debug else {}
+    for _target, _suffix in (("pe32", "32Bit"), ("pe64", "64Bit")):
+        _debug = entries.get(f"__stage530_debug_{_target}__", ())
+        _values = _debug[0] if _debug else _legacy_values
+        parser[f"Settings.Windows.{_suffix}.Debug"] = {
+            "Title": f"Windows {_suffix} Debug",
+            "EnableDebug": "true" if _parse_project_bool(_values.get("enable_debug", False), False) else "false",
+            "CheckEarlyStart": "true" if _parse_project_bool(_values.get("ces", False), False) else "false",
+            "DwarfEnabled": "true" if _parse_project_bool(_values.get("dwarf_enabled", False), False) else "false",
+            "DwarfVersion": "2" if str(_values.get("dwarf_version", 3)) == "2" else "3",
+        }
+
+    # Stage 531: Separate Windows-Compiler-Sicherheitseinstellungen.
+    for _target, _suffix in (("pe32", "32Bit"), ("pe64", "64Bit")):
+        _security_rows = entries.get(PROJECT_WINDOWS_COMPILER_SECURITY_KEYS[_target], ())
+        _security = _security_rows[0] if _security_rows else {}
+        parser[f"Settings.Windows.{_suffix}.Compiler.Security"] = {
+            "Title": f"Windows {_suffix} Compiler Sicherheit",
+            "ProtectorCookie": "true" if _parse_project_bool(
+                _security.get("protector_cookie", False), False
+            ) else "false",
+        }
+
+    # Stage 537: the two Pascal optimization levels are independent.
+    for _target, _suffix in (("pe32", "32Bit"), ("pe64", "64Bit")):
+        _rows = entries.get(PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS[_target], ())
+        _level = _stage537_optimizer_level(_rows[0] if _rows else {})
+        parser[f"Settings.Windows.{_suffix}.Compiler.Pascal.Optimierung"] = {
+            "Title": f"Windows {_suffix} Pascal Optimierung",
+            "Level": f"O{_level}",
+        }
+
+    # Stage 536: independent PE32 and PE64 parallel compiler limits.
+    for _target, _suffix in (("pe32", "32Bit"), ("pe64", "64Bit")):
+        _rows = entries.get(PROJECT_WINDOWS_COMPILER_PARALLEL_KEYS[_target], ())
+        _values = normalize_parallel_options(_rows[0] if _rows else {})
+        parser[f"Settings.Windows.{_suffix}.Compiler.Parallelisierung"] = {
+            "Title": f"Windows {_suffix} Compiler Parallelisierung",
+            "AutomaticCpuDetection": "true" if _values["automatic_cpu_detection"] else "false",
+            "MaxCompilerProcesses": str(_values["max_compiler_processes"]),
+        }
+
     from io import StringIO
     stream = StringIO()
     parser.write(stream)
@@ -51905,6 +52082,47 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
     parser.optionxform = str
     parser.read_string(text)
     entries = empty_project_entries()
+
+    # Stage 530: legacy [Settings.Debug] is copied to each target only if
+    # that target has no architecture-specific section of its own.
+    for _target in ("pe32", "pe64"):
+        _d = DebugOptions.from_parser(parser, target=_target)
+        entries[f"__stage530_debug_{_target}__"] = [{
+            "enable_debug": _d.enable_debug,
+            "ces": _d.ces,
+            "dwarf_enabled": _d.dwarf_enabled,
+            "dwarf_version": _d.dwarf_version,
+        }]
+
+    # Stage 531: Alte Projekte ohne Security-Abschnitt starten sicher mit
+    # deaktiviertem Cookie. Beide Architekturen bleiben unabhaengig.
+    for _target, _suffix in (("pe32", "32Bit"), ("pe64", "64Bit")):
+        _section = f"Settings.Windows.{_suffix}.Compiler.Security"
+        entries[PROJECT_WINDOWS_COMPILER_SECURITY_KEYS[_target]] = [{
+            "protector_cookie": _parse_project_bool(
+                parser.get(_section, "ProtectorCookie", fallback="false"), False
+            ) if parser.has_section(_section) else False,
+        }]
+
+    # Stage 537: migrate projects without optimizer fields to O0 (legacy).
+    for _target, _suffix in (("pe32", "32Bit"), ("pe64", "64Bit")):
+        _section = f"Settings.Windows.{_suffix}.Compiler.Pascal.Optimierung"
+        entries[PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS[_target]] = [{
+            "level": _stage537_optimizer_level({"level": parser.get(
+                _section, "Level", fallback="O0")}) if parser.has_section(_section) else 0,
+        }]
+
+    # Stage 536: older .pro files get automatic CPU detection and max=2.
+    for _target, _suffix in (("pe32", "32Bit"), ("pe64", "64Bit")):
+        _section = f"Settings.Windows.{_suffix}.Compiler.Parallelisierung"
+        _values = {
+            "automatic_cpu_detection": parser.get(
+                _section, "AutomaticCpuDetection", fallback="true"),
+            "max_compiler_processes": parser.get(
+                _section, "MaxCompilerProcesses", fallback="2"),
+        } if parser.has_section(_section) else {}
+        entries[PROJECT_WINDOWS_COMPILER_PARALLEL_KEYS[_target]] = [
+            normalize_parallel_options(_values)]
 
     # Stage ASM 63: das sichtbare Arbeitsverzeichnis und die TreeList-Wurzel
     # getrennt wiederherstellen. Bei Stage-57-Projekten ohne WorkspaceRoot
@@ -68861,6 +69079,32 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
     # Fortschritt. 1..99 % sind Compile-Fortschritt; 100 % wird erst nach
     # erfolgreicher Rückkehr aus dem Compiler gesetzt.
     # ------------------------------------------------------------------------
+    class PascalParallelProjectWorker(QObject):
+        """Stage 536: dependency scheduler off the GUI thread.
+
+        Jobs are run in separate Python processes (not Qt threads); this Qt
+        wrapper only forwards progress and completion to the main window.
+        """
+        progress = pyqtSignal(str)
+        succeeded = pyqtSignal(object)
+        failed = pyqtSignal(object)
+
+        def __init__(self, jobs, process_count):
+            super().__init__()
+            self.jobs = tuple(jobs)
+            self.process_count = int(process_count)
+
+        def run(self):
+            try:
+                result = run_parallel_units(
+                    self.jobs, self.process_count,
+                    progress=self.progress.emit)
+            except Exception as exc:
+                self.failed.emit(exc)
+            else:
+                self.succeeded.emit(result)
+
+
     class PascalCompileWorker(QObject):
         
         progress = pyqtSignal(int)
@@ -105757,6 +106001,166 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 self.settingsChanged.emit(dict(self._data))
 
 
+    class WindowsCompilerSecuritySettingsPage(QScrollArea):
+        """Stage 531: Compiler-Sicherheit fuer genau ein Windows-Ziel."""
+
+        def __init__(self, target: str, parent=None):
+            super().__init__(parent)
+            self.target = "pe64" if str(target).casefold() == "pe64" else "pe32"
+            target_tag = "64" if self.target == "pe64" else "32"
+            self.setObjectName(f"project_windows_{target_tag}_compiler_security_page")
+            self.setWidgetResizable(True)
+            self.setFrameShape(QFrame.NoFrame)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+            body = QWidget(self)
+            layout = QVBoxLayout(body)
+            layout.setContentsMargins(10, 8, 10, 10)
+            layout.setSpacing(8)
+
+            self.stack_group = QGroupBox("Stack: ", body)
+            self.stack_group.setObjectName(
+                f"project_windows_{target_tag}_compiler_security_stack_group"
+            )
+            stack_layout = QVBoxLayout(self.stack_group)
+            self.protector_cookie_checkbox = QCheckBox(
+                "Protector Cookie", self.stack_group
+            )
+            self.protector_cookie_checkbox.setObjectName(
+                f"project_windows_{target_tag}_compiler_protector_cookie"
+            )
+            self.protector_cookie_checkbox.setChecked(False)
+            self.protector_cookie_checkbox.setToolTip(
+                "Schuetzt generierte Pascal-Funktionen unter Windows 32/64 Bit "
+                "mittels Stack-Cookie und Windows-Fail-Fast (optional)."
+            )
+            stack_layout.addWidget(self.protector_cookie_checkbox)
+            layout.addWidget(self.stack_group)
+            layout.addStretch(1)
+            self.setWidget(body)
+
+        def options(self) -> Dict[str, bool]:
+            return {"protector_cookie": self.protector_cookie_checkbox.isChecked()}
+
+        def set_options(self, options) -> None:
+            values = options if isinstance(options, dict) else {}
+            self.protector_cookie_checkbox.setChecked(
+                _parse_project_bool(values.get("protector_cookie", False), False)
+            )
+
+
+    class WindowsPascalOptimizationPage(QScrollArea):
+        """Stage 537: 32/64-bit independent Pascal optimization level."""
+        LEVELS = (
+            "O0  -  Bisheriger Code, keine Optimierung",
+            "O1  -  Redundante MOV/PUSH/POP, Konstantenfaltung, unerreichbarer Code",
+            "O2  -  Direkte bedingte Sprünge, Registeroptimierung, unnötige Initialisierungen entfernen",
+            "O3  -  Zusätzlich selektives Inlining und erweiterte Kontrollfluss-/Datenflussanalyse",
+        )
+
+        def __init__(self, target: str, parent=None):
+            super().__init__(parent)
+            self.target = "pe64" if str(target).casefold() == "pe64" else "pe32"
+            tag = "64" if self.target == "pe64" else "32"
+            self.setObjectName(f"project_windows_{tag}_pascal_optimization_page")
+            self.setWidgetResizable(True)
+            self.setFrameShape(QFrame.NoFrame)
+            body = QWidget(self)
+            layout = QVBoxLayout(body)
+            layout.setContentsMargins(10, 8, 10, 12)
+            self.level_group_box = QGroupBox("Optimierung-Stufen: ", body)
+            levels_layout = QVBoxLayout(self.level_group_box)
+            self.level_buttons = []
+            self.level_button_group = QButtonGroup(self.level_group_box)
+            self.level_button_group.setExclusive(True)
+            for index, caption in enumerate(self.LEVELS):
+                radio = QRadioButton(caption, self.level_group_box)
+                radio.setObjectName(f"project_windows_{tag}_pascal_optimization_O{index}")
+                radio.setToolTip(caption)
+                self.level_button_group.addButton(radio, index)
+                levels_layout.addWidget(radio)
+                self.level_buttons.append(radio)
+            self.level_buttons[0].setChecked(True)
+            layout.addWidget(self.level_group_box)
+            note = QLabel(
+                "Die gewählte Stufe gilt für Pascal-Programme und Units dieses "
+                "Windows-Ziels. O0 erhält den bisherigen Code (abgesehen von "
+                "notwendigen ABI-/Laufzeitkorrekturen).", body)
+            note.setWordWrap(True)
+            layout.addWidget(note)
+            layout.addStretch(1)
+            self.setWidget(body)
+
+        def options(self) -> dict:
+            level = self.level_button_group.checkedId()
+            return {"level": level if level in range(4) else 0}
+
+        def set_options(self, options) -> None:
+            self.level_buttons[_stage537_optimizer_level(options)].setChecked(True)
+
+
+    class WindowsCompilerParallelSettingsPage(QScrollArea):
+        """Stage 536: independent Pascal compiler process limits per Windows ABI."""
+
+        def __init__(self, target: str, parent=None):
+            super().__init__(parent)
+            self.target = "pe64" if str(target).casefold() == "pe64" else "pe32"
+            tag = "64" if self.target == "pe64" else "32"
+            self.setObjectName(f"project_windows_{tag}_compiler_parallel_page")
+            self.setWidgetResizable(True)
+            self.setFrameShape(QFrame.NoFrame)
+            body = QWidget(self)
+            layout = QVBoxLayout(body)
+            layout.setContentsMargins(10, 8, 10, 12)
+            group = QGroupBox("Parallele Kompilierung:", body)
+            group_layout = QVBoxLayout(group)
+            self.automatic_cpu_checkbox = QCheckBox(
+                "Automatische CPU-Erkennung", group)
+            self.automatic_cpu_checkbox.setObjectName(
+                f"project_windows_{tag}_automatic_cpu_detection")
+            self.automatic_cpu_checkbox.setChecked(True)
+            self.automatic_cpu_checkbox.setToolTip(
+                "Verwendet die verfuegbare Anzahl logischer Prozessoren, "
+                "hoechstens jedoch die in der ComboBox gewaehlte Grenze.")
+            group_layout.addWidget(self.automatic_cpu_checkbox)
+            choices = QHBoxLayout()
+            choices.addWidget(QLabel("Maximale Compiler-Prozesse:", group))
+            self.maximum_processes_combo = QComboBox(group)
+            self.maximum_processes_combo.setObjectName(
+                f"project_windows_{tag}_max_compiler_processes")
+            for count in range(1, 5):
+                self.maximum_processes_combo.addItem(
+                    f"{count} Prozess" if count == 1 else f"{count} Prozesse", count)
+            self.maximum_processes_combo.setCurrentIndex(1)
+            choices.addWidget(self.maximum_processes_combo)
+            choices.addStretch(1)
+            group_layout.addLayout(choices)
+            hint = QLabel(
+                "Unabhaengige Pascal-Units werden in getrennten Prozessen "
+                "kompiliert. Abhaengigkeiten (USES) werden beachtet. "
+                "Das Hauptprogramm und der abschliessende Linklauf warten "
+                "auf alle Units. Bei nur einem Prozess bleibt der bisherige "
+                "sequentielle Build erhalten.", group)
+            hint.setWordWrap(True)
+            group_layout.addWidget(hint)
+            layout.addWidget(group)
+            layout.addStretch(1)
+            self.setWidget(body)
+
+        def options(self) -> dict:
+            return normalize_parallel_options({
+                "automatic_cpu_detection": self.automatic_cpu_checkbox.isChecked(),
+                "max_compiler_processes": self.maximum_processes_combo.currentData(),
+            })
+
+        def set_options(self, options) -> None:
+            values = normalize_parallel_options(options)
+            self.automatic_cpu_checkbox.setChecked(values["automatic_cpu_detection"])
+            self.maximum_processes_combo.setCurrentIndex(
+                values["max_compiler_processes"] - 1)
+
+
     class WindowsCompilerDirectorySettingsPage(QWidget):
         """Stage 197: architekturspezifische Pfade mit relativer/absoluter Ansicht."""
 
@@ -105783,7 +106187,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.tree.setMaximumWidth(360)
             self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
             self.nodes = {}
-            for title in ("Umgebung", "Compiler", "Assembler", "Linker"):
+            # Stage 528: Debug gehört als Hauptknoten in die linke
+            # Windows-TreeList (PE32 und PE32+), nicht nur in die Tab-Leiste.
+            for title in ("Umgebung", "Compiler", "Assembler", "Linker", "Debug"):
                 item = QTreeWidgetItem(self.tree, [title])
                 item.setData(0, Qt.UserRole, title.casefold())
                 self.nodes[title.casefold()] = item
@@ -105841,6 +106247,15 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 0, Qt.UserRole, "compiler.dbase.optimization"
             )
             self.compiler_dbase_item.setExpanded(True)
+            # Stage 537: Compiler -> Pascal -> Optimierung.
+            self.compiler_pascal_item = QTreeWidgetItem(
+                self.nodes["compiler"], ["Pascal"])
+            self.compiler_pascal_item.setData(0, Qt.UserRole, "compiler.pascal")
+            self.compiler_pascal_optimization_item = QTreeWidgetItem(
+                self.compiler_pascal_item, ["Optimierung"])
+            self.compiler_pascal_optimization_item.setData(
+                0, Qt.UserRole, "compiler.pascal.optimization")
+            self.compiler_pascal_item.setExpanded(True)
             # Stage 287: Compiler -> Prolog -> Optimierung.
             self.compiler_prolog_item = QTreeWidgetItem(
                 self.nodes["compiler"], ["Prolog"]
@@ -105855,6 +106270,18 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 0, Qt.UserRole, "compiler.prolog.optimization"
             )
             self.compiler_prolog_item.setExpanded(True)
+            # Stage 536: parallel Pascal compilation, separate for each ABI.
+            self.compiler_parallel_item = QTreeWidgetItem(
+                self.nodes["compiler"], ["Parallelisierung"])
+            self.compiler_parallel_item.setData(
+                0, Qt.UserRole, "compiler.parallelization")
+            # Stage 531: Compiler -> Sicherheit, getrennt fuer PE32 und PE32+.
+            self.compiler_security_item = QTreeWidgetItem(
+                self.nodes["compiler"], ["Sicherheit"]
+            )
+            self.compiler_security_item.setData(
+                0, Qt.UserRole, "compiler.security"
+            )
             # Stage 226: allgemeine Linker-Optionen erhalten ein eigenes Blatt.
             self.linker_options_item = QTreeWidgetItem(
                 self.nodes["linker"], ["Optionen"]
@@ -105888,6 +106315,27 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             placeholder_layout.addStretch(1)
             self.stack.addWidget(self.placeholder)
+
+            # Stage 530: eigenes Debug-Blatt mit unabhaengigem Zustand pro ABI.
+            self.debug_page = DebugSettingsPage(DebugOptions(), self.stack)
+            self.debug_page.setObjectName(
+                f"project_settings_windows_{target_tag}_debug_page"
+            )
+            self.stack.addWidget(self.debug_page)
+
+            # Stage 531: eigenes Security-Blatt je Architektur.
+            self.security_page = WindowsCompilerSecuritySettingsPage(
+                self.target, self.stack
+            )
+            self.stack.addWidget(self.security_page)
+
+            self.pascal_optimization_page = WindowsPascalOptimizationPage(
+                self.target, self.stack)
+            self.stack.addWidget(self.pascal_optimization_page)
+
+            self.parallel_page = WindowsCompilerParallelSettingsPage(
+                self.target, self.stack)
+            self.stack.addWidget(self.parallel_page)
 
             # Stage 311: Umgebung -> Eingabe
             self.environment_input_scroll = QScrollArea(self.stack)
@@ -107643,6 +108091,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 page = self.input_directories_page
             elif key == "compiler.output_directory":
                 page = self.output_directory_page
+            elif key == "compiler.security":
+                page = self.security_page
+            elif key == "compiler.parallelization":
+                page = self.parallel_page
+            elif key in ("compiler.pascal", "compiler.pascal.optimization"):
+                page = self.pascal_optimization_page
             elif key == "assembler":
                 page = self.assembler_mode_page
             elif key == "compiler.dbase.optimization":
@@ -107663,6 +108117,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 page = self.signing_page
             elif key == "linker.manifest":
                 page = self.manifest_page
+            elif key == "debug":
+                page = self.debug_page
             else:
                 page = self.placeholder
             self.stack.setCurrentWidget(page)
@@ -109454,6 +109910,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.tabs.addTab(self.windows_tab, "Windows")
             self.tabs.addTab(self.amiga_tab, "AMIGA")
             self.tabs.addTab(self.c64_tab, "C= 64")
+            # Stage 529: Debug ist ausschliesslich in den Windows-TreeLists
+            # erreichbar. Kein zusaetzlicher Top-Level-Tab.
 
             windows_layout = QVBoxLayout(self.windows_tab)
             windows_layout.setContentsMargins(0, 0, 0, 0)
@@ -109473,6 +109931,60 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe32": self.windows_pe32_page,
                 "pe64": self.windows_pe64_page,
             }
+            # Stage 530: keine Synchronisierung zwischen 32 und 64 Bit.
+            self._debug_pages = {
+                "pe32": self.windows_pe32_page.debug_page,
+                "pe64": self.windows_pe64_page.debug_page,
+            }
+            for _debug_page in self._debug_pages.values():
+                # Checkboxen bei True und False übernehmen. Bei Radiobuttons
+                # jedoch erst beim *Aktivieren* lesen: beim Umschalten kann
+                # der exklusive QButtonGroup.checkedId() kurz -1 liefern.
+                for _widget in (
+                    _debug_page.enable_debug, _debug_page.ces,
+                    _debug_page.dwarf_enabled,
+                ):
+                    _widget.toggled.connect(
+                        lambda _checked, page=_debug_page:
+                            self._debug_options_changed(page)
+                    )
+                for _radio in (_debug_page.dwarf_v2, _debug_page.dwarf_v3):
+                    _radio.toggled.connect(
+                        lambda checked, page=_debug_page:
+                            self._debug_options_changed(page) if checked else None
+                    )
+
+            # Stage 531: PE32- und PE64-Sicherheitsoptionen nicht koppeln.
+            self._security_pages = {
+                "pe32": self.windows_pe32_page.security_page,
+                "pe64": self.windows_pe64_page.security_page,
+            }
+            for _target, _security_page in self._security_pages.items():
+                _security_page.protector_cookie_checkbox.toggled.connect(
+                    lambda _checked, target=_target: self._stack_cookie_changed(target)
+                )
+
+            # Stage 537: no cross-architecture optimizer synchronization.
+            self._pascal_optimization_pages = {
+                "pe32": self.windows_pe32_page.pascal_optimization_page,
+                "pe64": self.windows_pe64_page.pascal_optimization_page,
+            }
+            for _target, _page in self._pascal_optimization_pages.items():
+                for _radio in _page.level_buttons:
+                    _radio.toggled.connect(
+                        lambda checked, target=_target: self._pascal_optimization_changed(target)
+                        if checked else None)
+
+            # Stage 536: no cross-architecture synchronization.
+            self._parallel_pages = {
+                "pe32": self.windows_pe32_page.parallel_page,
+                "pe64": self.windows_pe64_page.parallel_page,
+            }
+            for _target, _parallel_page in self._parallel_pages.items():
+                _parallel_page.automatic_cpu_checkbox.toggled.connect(
+                    lambda _checked, target=_target: self._parallel_options_changed(target))
+                _parallel_page.maximum_processes_combo.currentIndexChanged.connect(
+                    lambda _index, target=_target: self._parallel_options_changed(target))
 
             amiga_layout = QVBoxLayout(self.amiga_tab)
             amiga_layout.addWidget(QLabel("AMIGA-Projekteinstellungen", self.amiga_tab))
@@ -109490,6 +110002,141 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 self.c64_pages[_profile] = _page
             self._syncing_c64_profile = False
             self.c64_arch_tabs.currentChanged.connect(self._c64_profile_changed)
+
+        @staticmethod
+        def _debug_page_controls(page):
+            return (
+                page.enable_debug, page.ces, page.dwarf_enabled,
+                page.dwarf_v2, page.dwarf_v3,
+            )
+
+        def _set_debug_page_options(self, page, options: DebugOptions) -> None:
+            # Beim Laden keine Qt-Aenderungssignale und kein Dirty-Flag.
+            widgets = self._debug_page_controls(page)
+            previous = [widget.blockSignals(True) for widget in widgets]
+            try:
+                page.set_options(options)
+            finally:
+                for widget, blocked in zip(widgets, previous):
+                    widget.blockSignals(blocked)
+
+        def _debug_options_changed(self, source_page=None) -> None:
+            if source_page is None:
+                source_page = self.windows_pe32_page.debug_page
+            target = next(
+                (key for key, page in self._debug_pages.items()
+                 if page is source_page), None
+            )
+            if target is None:
+                return
+            options = source_page.options()
+            # Nur den Zustand der geaenderten Architektur aktualisieren.
+            settings = getattr(self.owner, "project_debug_options", None)
+            if not isinstance(settings, dict):
+                settings = stage530_default_debug_options()
+            settings[target] = options
+            self.owner.project_debug_options = settings
+            stage527_set_debug_options(options, target=target)
+            if hasattr(self.owner, "set_project_modified"):
+                self.owner.set_project_modified(True)
+
+        def set_debug_options(self, options) -> None:
+            # Legacy callers can still supply a single DebugOptions object.
+            if isinstance(options, DebugOptions):
+                options = {"pe32": options, "pe64": options}
+            if not isinstance(options, dict):
+                options = {}
+            for target, page in self._debug_pages.items():
+                value = options.get(target, DebugOptions())
+                self._set_debug_page_options(page, value)
+                stage527_set_debug_options(value, target=target)
+            self.owner.project_debug_options = self.debug_options()
+
+        def debug_options(self, target: str = None):
+            if target is not None:
+                return self._debug_pages[self._target_key(target)].options()
+            return {
+                key: page.options() for key, page in self._debug_pages.items()
+            }
+
+        def _stack_cookie_changed(self, target: str) -> None:
+            # Nur das aktuell geaenderte Ziel aktualisieren.
+            state = getattr(self.owner, "project_windows_compiler_security_options", None)
+            if not isinstance(state, dict):
+                state = stage531_default_compiler_security_options()
+            state[target] = self._security_pages[target].options()
+            self.owner.project_windows_compiler_security_options = state
+            if hasattr(self.owner, "set_project_modified"):
+                self.owner.set_project_modified(True)
+
+        def set_stack_cookie_options(self, settings) -> None:
+            values = settings if isinstance(settings, dict) else {}
+            for target, page in self._security_pages.items():
+                checkbox = page.protector_cookie_checkbox
+                blocked = checkbox.blockSignals(True)
+                try:
+                    page.set_options(values.get(target, {}))
+                finally:
+                    checkbox.blockSignals(blocked)
+            self.owner.project_windows_compiler_security_options = self.stack_cookie_options()
+
+        def stack_cookie_options(self, target: str = None):
+            if target is not None:
+                return self._security_pages[self._target_key(target)].options()
+            return {
+                target: page.options() for target, page in self._security_pages.items()
+            }
+
+        def _pascal_optimization_changed(self, target: str) -> None:
+            state = getattr(self.owner, "project_windows_pascal_optimization_options", None)
+            if not isinstance(state, dict):
+                state = stage537_default_pascal_optimization_options()
+            state[target] = self._pascal_optimization_pages[target].options()
+            self.owner.project_windows_pascal_optimization_options = state
+            if hasattr(self.owner, "set_project_modified"):
+                self.owner.set_project_modified(True)
+
+        def set_pascal_optimization_options(self, values) -> None:
+            values = values if isinstance(values, dict) else {}
+            for target, page in self._pascal_optimization_pages.items():
+                signals = [button.blockSignals(True) for button in page.level_buttons]
+                try:
+                    page.set_options(values.get(target, {"level": 0}))
+                finally:
+                    for button, prior in zip(page.level_buttons, signals):
+                        button.blockSignals(prior)
+            self.owner.project_windows_pascal_optimization_options = self.pascal_optimization_options()
+
+        def pascal_optimization_options(self, target: str = None):
+            if target is not None:
+                return self._pascal_optimization_pages[self._target_key(target)].options()
+            return {target: page.options() for target, page in self._pascal_optimization_pages.items()}
+
+        def _parallel_options_changed(self, target: str) -> None:
+            state = getattr(self.owner, "project_windows_pascal_parallel_options", None)
+            if not isinstance(state, dict):
+                state = stage536_default_parallel_options()
+            state[target] = self._parallel_pages[target].options()
+            self.owner.project_windows_pascal_parallel_options = state
+            if hasattr(self.owner, "set_project_modified"):
+                self.owner.set_project_modified(True)
+
+        def set_parallel_options(self, settings) -> None:
+            values = settings if isinstance(settings, dict) else {}
+            for target, page in self._parallel_pages.items():
+                widgets = (page.automatic_cpu_checkbox, page.maximum_processes_combo)
+                blocked = [widget.blockSignals(True) for widget in widgets]
+                try:
+                    page.set_options(values.get(target, {}))
+                finally:
+                    for widget, previous in zip(widgets, blocked):
+                        widget.blockSignals(previous)
+            self.owner.project_windows_pascal_parallel_options = self.parallel_options()
+
+        def parallel_options(self, target: str = None):
+            if target is not None:
+                return self._parallel_pages[self._target_key(target)].options()
+            return {target: page.options() for target, page in self._parallel_pages.items()}
 
         @staticmethod
         def _target_key(target: str) -> str:
@@ -111482,6 +112129,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._source_find_project_signature = None
 
             self.current_project_path = None
+            self.project_debug_options = stage530_default_debug_options()
+            self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
+            self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
+            self.project_windows_pascal_optimization_options = stage537_default_pascal_optimization_options()
             self.project_modified = False
             # Stage ASM 70: projektspezifische Session-Geometrie/MRU.
             self._last_opened_c64_basic_path = None
@@ -123586,6 +124237,19 @@ border-radius: 7px;}}"""
             scroll.setFrameShape(QFrame.NoFrame)
             scroll.setMinimumSize(0, 0)
             panel = ProjectSettingsPanel(self, scroll)
+            panel.set_debug_options(getattr(self, "project_debug_options", stage530_default_debug_options()))
+            panel.set_stack_cookie_options(getattr(
+                self, "project_windows_compiler_security_options",
+                stage531_default_compiler_security_options(),
+            ))
+            panel.set_parallel_options(getattr(
+                self, "project_windows_pascal_parallel_options",
+                stage536_default_parallel_options(),
+            ))
+            panel.set_pascal_optimization_options(getattr(
+                self, "project_windows_pascal_optimization_options",
+                stage537_default_pascal_optimization_options(),
+            ))
             # Unterhalb dieser Groesse scrollt der Viewport, statt das
             # Hauptfenster oder den Dock-Bereich breiter zu machen.
             panel.setMinimumSize(760, 520)
@@ -123850,6 +124514,11 @@ border-radius: 7px;}}"""
             _window_was_fullscreen = bool(self.isFullScreen())
             self._ensure_project_settings_dock()
             self._enter_project_settings_workspace()
+            self.project_settings_panel.set_debug_options(getattr(self, "project_debug_options", stage530_default_debug_options()))
+            self.project_settings_panel.set_stack_cookie_options(getattr(
+                self, "project_windows_compiler_security_options",
+                stage531_default_compiler_security_options(),
+            ))
             for _target in ("pe32", "pe64"):
                 _modes = self.project_windows_relative_paths.get(
                     _target, {"input": True, "output": True}
@@ -126595,6 +127264,13 @@ border-radius: 7px;}}"""
 
             help_menu = self.main_menu_bar.addMenu("&Hilfe")
             help_menu.addAction(self.chm_viewer_action)
+            self.system_information_action = QAction("System-Informationen", self)
+            self.system_information_action.setObjectName("system_information_action")
+            self.system_information_action.setStatusTip(
+                "Windows-Version, CPU, Kerne, RAM und virtuellen Speicher anzeigen")
+            self.system_information_action.triggered.connect(
+                self.show_system_information_dialog)
+            help_menu.addAction(self.system_information_action)
             help_menu.addSeparator()
             help_menu.addAction(self.about_action)
             help_menu.addAction(self.about_qt_action)
@@ -131558,6 +132234,27 @@ border: 2px solid #2a69aa;
                     if "fpu_model" in parameter_map:
                         compiler_kwargs["fpu_model"] = document.amiga_fpu_model
                 if document.build_target in {"pe32", "pe64"}:
+                    if "optimization_level" in parameter_map:
+                        compiler_kwargs["optimization_level"] = _stage537_optimizer_level(
+                            getattr(self, "project_windows_pascal_optimization_options", {})
+                            .get(document.build_target, {}))
+                        self.log(f"PASCAL OPTIMIZATION {document.build_target.upper()}: "
+                                 f"O{compiler_kwargs['optimization_level']}")
+                    if "stack_protector" in parameter_map:
+                        _cookie_options = getattr(
+                            self, "project_windows_compiler_security_options", {}
+                        ) or {}
+                        _target_cookie = (
+                            _cookie_options.get(document.build_target, {})
+                            if isinstance(_cookie_options, dict) else {}
+                        )
+                        compiler_kwargs["stack_protector"] = _parse_project_bool(
+                            _target_cookie.get("protector_cookie", False), False
+                        )
+                        self.log(
+                            "PASCAL STACK COOKIE " + document.build_target.upper()
+                            + (": enabled" if compiler_kwargs["stack_protector"] else ": disabled")
+                        )
                     if "graphics_backend" in parameter_map:
                         compiler_kwargs["graphics_backend"] = (
                             document.windows_graphics_backend
@@ -138183,6 +138880,73 @@ border: 2px solid #2a69aa;
                 {"path": path, "last_id": int(self.project_dbase_id_counters.get(key, 0))}
                 for path, key in entry_paths
             ]
+            # Stage 530: all project-save routes persist BOTH ABI profiles.
+            panel = getattr(self, "project_settings_panel", None)
+            options_by_target = (
+                panel.debug_options() if panel is not None
+                else getattr(self, "project_debug_options", stage530_default_debug_options())
+            )
+            if not isinstance(options_by_target, dict):
+                options_by_target = {"pe32": options_by_target, "pe64": options_by_target}
+            for target in ("pe32", "pe64"):
+                option = options_by_target.get(target, DebugOptions())
+                stage527_set_debug_options(option, target=target)
+                entries[f"__stage530_debug_{target}__"] = [{
+                    "enable_debug": option.enable_debug,
+                    "ces": option.ces,
+                    "dwarf_enabled": option.dwarf_enabled,
+                    "dwarf_version": option.dwarf_version,
+                }]
+            self.project_debug_options = dict(options_by_target)
+
+            # Stage 531: beide Compiler-Security-Profile projektbezogen sichern.
+            security_by_target = (
+                panel.stack_cookie_options() if panel is not None
+                else getattr(self, "project_windows_compiler_security_options",
+                             stage531_default_compiler_security_options())
+            )
+            if not isinstance(security_by_target, dict):
+                security_by_target = stage531_default_compiler_security_options()
+            for target in ("pe32", "pe64"):
+                values = security_by_target.get(target, {})
+                entries[PROJECT_WINDOWS_COMPILER_SECURITY_KEYS[target]] = [{
+                    "protector_cookie": _parse_project_bool(
+                        values.get("protector_cookie", False)
+                        if isinstance(values, dict) else False, False
+                    ),
+                }]
+            self.project_windows_compiler_security_options = {
+                target: dict(entries[PROJECT_WINDOWS_COMPILER_SECURITY_KEYS[target]][0])
+                for target in ("pe32", "pe64")
+            }
+            # Stage 537: persist Pascal optimizer selection independently.
+            optimizer_by_target = (
+                panel.pascal_optimization_options() if panel is not None
+                else getattr(self, "project_windows_pascal_optimization_options",
+                             stage537_default_pascal_optimization_options())
+            )
+            if not isinstance(optimizer_by_target, dict):
+                optimizer_by_target = stage537_default_pascal_optimization_options()
+            self.project_windows_pascal_optimization_options = {
+                target: {"level": _stage537_optimizer_level(optimizer_by_target.get(target, {}))}
+                for target in ("pe32", "pe64")
+            }
+            for target, options in self.project_windows_pascal_optimization_options.items():
+                entries[PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS[target]] = [dict(options)]
+            # Stage 536: preserve separate per-architecture parallel settings.
+            parallel_by_target = (
+                panel.parallel_options() if panel is not None
+                else getattr(self, "project_windows_pascal_parallel_options",
+                             stage536_default_parallel_options())
+            )
+            if not isinstance(parallel_by_target, dict):
+                parallel_by_target = stage536_default_parallel_options()
+            self.project_windows_pascal_parallel_options = {
+                target: normalize_parallel_options(parallel_by_target.get(target, {}))
+                for target in ("pe32", "pe64")
+            }
+            for target, options in self.project_windows_pascal_parallel_options.items():
+                entries[PROJECT_WINDOWS_COMPILER_PARALLEL_KEYS[target]] = [dict(options)]
             return entries
 
         def project_has_entries(self) -> bool:
@@ -138382,6 +139146,18 @@ border: 2px solid #2a69aa;
             if designer is not None:
                 designer.set_project_column_widths(self.project_dbase_data_column_widths)
             self.current_project_path = None
+            self.project_debug_options = stage530_default_debug_options()
+            self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
+            self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
+            self.project_windows_pascal_optimization_options = stage537_default_pascal_optimization_options()
+            for _target, _opts in self.project_debug_options.items():
+                stage527_set_debug_options(_opts, target=_target)
+            _panel = getattr(self, "project_settings_panel", None)
+            if _panel is not None:
+                _panel.set_debug_options(self.project_debug_options)
+                _panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
+                _panel.set_parallel_options(self.project_windows_pascal_parallel_options)
+                _panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
             self.current_project_kind = "generic"
             if hasattr(self, "project_path_edit"):
                 self.project_path_edit.clear()
@@ -138522,6 +139298,18 @@ border: 2px solid #2a69aa;
             if designer is not None:
                 designer.set_project_column_widths(self.project_dbase_data_column_widths)
             self.current_project_path = None
+            self.project_debug_options = stage530_default_debug_options()
+            self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
+            self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
+            self.project_windows_pascal_optimization_options = stage537_default_pascal_optimization_options()
+            for _target, _opts in self.project_debug_options.items():
+                stage527_set_debug_options(_opts, target=_target)
+            _panel = getattr(self, "project_settings_panel", None)
+            if _panel is not None:
+                _panel.set_debug_options(self.project_debug_options)
+                _panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
+                _panel.set_parallel_options(self.project_windows_pascal_parallel_options)
+                _panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
             self.project_path_edit.clear()
             # reset_project_tree() baut ausschließlich die geschützten
             # Hauptknoten aus PROJECT_CATEGORIES wieder auf.
@@ -139125,6 +139913,33 @@ border: 2px solid #2a69aa;
             }
             counters_modified = self._initialize_dbase_table_id_counters(entries)
             self.current_project_path = resolved
+            self.project_debug_options = {
+                target: DebugOptions(**(entries.get(f"__stage530_debug_{target}__") or [{}])[0])
+                for target in ("pe32", "pe64")
+            }
+            self.project_windows_compiler_security_options = {
+                target: dict((entries.get(PROJECT_WINDOWS_COMPILER_SECURITY_KEYS[target])
+                              or [{"protector_cookie": False}])[0])
+                for target in ("pe32", "pe64")
+            }
+            self.project_windows_pascal_parallel_options = {
+                target: normalize_parallel_options(
+                    (entries.get(PROJECT_WINDOWS_COMPILER_PARALLEL_KEYS[target]) or [{}])[0])
+                for target in ("pe32", "pe64")
+            }
+            self.project_windows_pascal_optimization_options = {
+                target: {"level": _stage537_optimizer_level(
+                    (entries.get(PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS[target]) or [{}])[0])}
+                for target in ("pe32", "pe64")
+            }
+            for _target, _options in self.project_debug_options.items():
+                stage527_set_debug_options(_options, target=_target)
+            _debug_panel = getattr(self, "project_settings_panel", None)
+            if _debug_panel is not None:
+                _debug_panel.set_debug_options(self.project_debug_options)
+                _debug_panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
+                _debug_panel.set_parallel_options(self.project_windows_pascal_parallel_options)
+                _debug_panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
             self.project_path_edit.setText(str(resolved))
             # Stage ASM 29: Ein geladenes Projekt mit dBase-Ressourcen behält
             # den dBase-Kontext. Dadurch werden später manuell hinzugefügte
@@ -139250,10 +140065,8 @@ border: 2px solid #2a69aa;
             if self.current_project_path is None:
                 return self.save_project_as()
             try:
-                save_project_ini(
-                    self.current_project_path,
-                    self.collect_project_entries(),
-                )
+                _entries = self.collect_project_entries()
+                save_project_ini(self.current_project_path, _entries)
             except OSError as exc:
                 self.show_error(
                     "Projekt konnte nicht gespeichert werden",
@@ -140092,7 +140905,213 @@ border: 2px solid #2a69aa;
                 )
             return None
 
+        def _project_pascal_parallel_objects(self, target: str, main_path: Path):
+            """Build independent Pascal units in isolated compiler processes.
+
+            Returns None for the unchanged sequential fallback, False for an
+            actual parallel build failure, or {absolute source path: COFF path}.
+            Project source ordering is preserved by the caller during linking.
+            """
+            settings = normalize_parallel_options(
+                getattr(self, "project_windows_pascal_parallel_options", {})
+                .get(target, {}))
+            limit = effective_parallel_processes(settings)
+            if getattr(sys, "frozen", False):
+                self.log("PASCAL PARALLEL: kein Python-Worker im gepackten GUI -> sequentiell")
+                return None
+            if limit <= 1:
+                self.log("PASCAL PARALLEL: 1 Prozess -> sequentieller Build")
+                return None
+            # Ordinal remapping and custom AT&T assembly currently rely on
+            # per-document GUI transformations; don't silently bypass them.
+            if self.project_windows_link_with_ordinals.get(target, False):
+                self.log("PASCAL PARALLEL: Ordinal-Importe -> sequentieller Build")
+                return None
+            if self.project_windows_assembler_syntax.get(target, "intel") != "intel":
+                self.log("PASCAL PARALLEL: AT&T-ASM -> sequentieller Build")
+                return None
+            # Regenerate/validate ANTLR artefacts once before starting several
+            # workers, never from competing compiler processes.
+            frontend_state = prepare_pascal_frontend_for_compile(main_path)
+            if not frontend_state.get("ready"):
+                self.log("PASCAL PARALLEL: Parser-Frontend nicht bereit -> "
+                         "sequentieller Build (" + str(frontend_state.get("reason", "")) + ")")
+                return None
+            all_sources = list(self._project_pascal_group_paths(target, "units"))
+            for path in self._project_pascal_group_paths(target, "modules"):
+                if path.resolve() != main_path.resolve() and \
+                        self._project_pascal_declared_kind(path) == "unit":
+                    all_sources.append(path)
+            all_units = []
+            used = set()
+            for path in all_sources:
+                if path.suffix.casefold() not in {".pas", ".pp"}:
+                    continue
+                key = str(path.resolve()).casefold()
+                if key not in used:
+                    all_units.append(path.resolve())
+                    used.add(key)
+            if len(all_units) < 2:
+                return None
+
+            try:
+                from c64pascal import preprocess_pascal_source
+                from c64pascal.compiler import _unit_program_source
+                jobs = []
+                for path in all_units:
+                    document = self._project_pascal_document(path, target)
+                    if document is None:
+                        return False
+                    if getattr(document, "is_modified", False):
+                        self.log(f"PASCAL PARALLEL: {path.name} ungespeichert -> sequentiell")
+                        return None
+                    asm_path = self._pascal_assembly_output_path(document)
+                    asm_document = self._find_open_document(asm_path)
+                    if asm_document is not None and asm_document.is_modified:
+                        self.log(f"PASCAL PARALLEL: {asm_path.name} manuell geaendert -> sequentiell")
+                        return None
+                    source = document.raw_editor.toPlainText()
+                    macros = windows_application_predefined_macros(
+                        document.windows_application_mode, target)
+                    preprocessed = preprocess_pascal_source(
+                        source, filename=str(path), predefined_macros=macros)
+                    (_, declared, interface_uses, implementation_uses,
+                     _, _) = _unit_program_source(preprocessed.source, filename=str(path))
+                    output_dir = self._document_windows_pascal_unit_output_path(document)
+                    # Child processes have cwd=Unit.parent. Resolve the two
+                    # IDE-relative search paths NOW, before the cwd changes.
+                    include_paths = [path.parent, Path(".").resolve(),
+                                     Path("./include").resolve(),
+                                     self.current_directory, self.workspace_root]
+                    output_exe = self._document_windows_output_path(document)
+                    for candidate in (output_exe, output_dir):
+                        if candidate is not None:
+                            include_paths.append(candidate)
+                    unit_obj = _pascal_unit_coff_output_path(
+                        path, target, output_directory=output_dir)
+                    pui_path = ((Path(output_dir) / (path.stem + ".pui"))
+                                if output_dir else path.with_suffix(".pui"))
+                    breakpoints = set(document.raw_editor.breakpoint_lines())
+                    breakpoints.update(self._project_marker_lines_for_path(
+                        "breakpoint", path))
+                    sec_options = getattr(self, "project_windows_compiler_security_options", {})
+                    job = {
+                        "name": declared,
+                        "path": str(path), "target": target, "source": source,
+                        "dependencies": list(dict.fromkeys(
+                            interface_uses + implementation_uses)),
+                        "assembly_path": str(asm_path),
+                        "object_path": str(unit_obj), "pui_path": str(pui_path),
+                        "output_directory": str(output_dir) if output_dir else None,
+                        "include_paths": list(dict.fromkeys(str(x) for x in include_paths)),
+                        "asm_include_paths": [str(x) for x in
+                            self._project_windows_asm_include_paths(target)],
+                        "link_search_paths": [str(x) for x in
+                            self._project_windows_link_search_paths(target)],
+                        "graphics_backend": document.windows_graphics_backend,
+                        "windows_application_mode": document.windows_application_mode,
+                        "predefined_macros": macros,
+                        "optimization_level": _stage537_optimizer_level(
+                            getattr(self, "project_windows_pascal_optimization_options", {})
+                            .get(target, {})),
+                        "stack_protector": _parse_project_bool(
+                            (sec_options.get(target, {}) if isinstance(sec_options, dict)
+                             else {}).get("protector_cookie", False), False),
+                        "breakpoint_lines": sorted(breakpoints),
+                    }
+                    jobs.append(job)
+                # Conflicting per-file macro sets could cause competing
+                # writes to shared external Unit metadata. Preserve the
+                # deterministic sequential path in that uncommon case.
+                macros_sets = {json.dumps(job["predefined_macros"], sort_keys=True)
+                               for job in jobs}
+                if len(macros_sets) > 1:
+                    self.log("PASCAL PARALLEL: unterschiedliche Define-Profile "
+                             "-> sequentieller Build")
+                    return None
+                from pascal_parallel_build import validate_jobs
+                validate_jobs(jobs)
+            except (Exception,) as exc:
+                # Fallback on unschedulable or unparseable source only. The
+                # unchanged compiler will produce its existing error details.
+                self.log(f"PASCAL PARALLEL: Planung nicht moeglich ({exc}); sequentiell")
+                return None
+
+            self.log(f"PASCAL PARALLEL {target.upper()}: "
+                     f"{len(jobs)} Units, {limit} Prozesse, "
+                     f"CPU-Erkennung={'an' if settings['automatic_cpu_detection'] else 'aus'}")
+            thread = QThread(self)
+            worker = PascalParallelProjectWorker(jobs, limit)
+            worker.moveToThread(thread)
+            event_loop = QEventLoop(self)
+            state = {"result": None, "error": None}
+            worker.progress.connect(self.log)
+            worker.succeeded.connect(lambda result: state.__setitem__("result", result))
+            worker.failed.connect(lambda error: state.__setitem__("error", error))
+            thread.started.connect(worker.run)
+            worker.succeeded.connect(worker.deleteLater)
+            worker.failed.connect(worker.deleteLater)
+            worker.succeeded.connect(thread.quit)
+            worker.failed.connect(thread.quit)
+            thread.finished.connect(event_loop.quit)
+            thread.finished.connect(thread.deleteLater)
+            self._pascal_project_parallel_thread = thread
+            self._pascal_project_parallel_worker = worker
+            try:
+                thread.start()
+                event_loop.exec_()
+            finally:
+                self._pascal_project_parallel_thread = None
+                self._pascal_project_parallel_worker = None
+            if state["error"] is not None:
+                self.show_error("Paralleler Pascal-Build fehlgeschlagen",
+                                str(state["error"]))
+                self.log("PASCAL PARALLEL ERROR: " + str(state["error"]))
+                return False
+            outcomes = state["result"] or {}
+            # Verify actual COFF architecture before passing objects to linker.
+            result = {}
+            for job in jobs:
+                outcome = outcomes.get(str(job["name"]).casefold())
+                if not outcome:
+                    self.show_error("Paralleler Pascal-Build",
+                                    f"Fehlendes Ergebnis: {job['name']}")
+                    return False
+                object_path = Path(outcome["object_path"])
+                if not _pascal_unit_coff_matches_target(object_path, target):
+                    self.show_error("Paralleler Pascal-Build",
+                                    f"Ungueltiges {target.upper()}-COFF: {object_path}")
+                    return False
+                result[str(Path(job["path"]).resolve()).casefold()] = object_path
+                asm_path = Path(job["assembly_path"])
+                assembly = asm_path.read_text(encoding="utf-8")
+                # Preserve the normal Compile result in already-open UNIT tabs.
+                source_editor = self._find_open_document(Path(job["path"]))
+                if isinstance(source_editor, DocumentEditor):
+                    source_editor.invalidate_assembly_result("Neu kompiliert")
+                    source_editor.set_generated_assembly(
+                        assembly, asm_path, select_tab=False)
+                    source_editor.generated_source_kind = "unit"
+                    source_editor.generated_unit_coff_paths = (object_path,)
+                asm_editor = self._find_open_document(asm_path)
+                if asm_editor is not None and not asm_editor.is_modified:
+                    asm_editor.raw_editor.setPlainText(assembly)
+                    asm_editor.mark_saved()
+            return result
+
         def build_project_pascal_target(
+            self, target: str, *, build_kind: str,
+        ) -> bool:
+            if getattr(self, "_pascal_project_build_active", False):
+                self.log("PASCAL PROJECT: Build laeuft bereits")
+                return False
+            self._pascal_project_build_active = True
+            try:
+                return self._build_project_pascal_target_impl(target, build_kind=build_kind)
+            finally:
+                self._pascal_project_build_active = False
+
+        def _build_project_pascal_target_impl(
             self,
             target: str,
             *,
@@ -140106,6 +141125,11 @@ border: 2px solid #2a69aa;
             if main_path is None:
                 return False
 
+            # Compile all independent Pascal units before the existing ordered
+            # link-input collection. None means original sequential fallback.
+            parallel_objects = self._project_pascal_parallel_objects(target, main_path)
+            if parallel_objects is False:
+                return False
             extra_inputs: List[Path] = []
             seen = set()
 
@@ -140126,11 +141150,13 @@ border: 2px solid #2a69aa;
             # Units zuerst: PUI und architekturspezifische COFFs sind damit
             # aktuell, bevor das Hauptmodul kompiliert wird.
             for unit_path in self._project_pascal_group_paths(target, "units"):
-                object_path = self._project_pascal_object_input(
-                    unit_path,
-                    target,
-                    require_unit=True,
+                object_path = (
+                    parallel_objects.get(str(unit_path.resolve()).casefold())
+                    if isinstance(parallel_objects, dict) else None
                 )
+                if object_path is None:
+                    object_path = self._project_pascal_object_input(
+                        unit_path, target, require_unit=True)
                 if object_path is None or not add_input(object_path):
                     return False
 
@@ -140148,11 +141174,13 @@ border: 2px solid #2a69aa;
                 _other_kind = self._project_pascal_declared_kind(module_path)
                 if _other_kind in {"program", "library"}:
                     continue
-                object_path = self._project_pascal_object_input(
-                    module_path,
-                    target,
-                    require_unit=False,
+                object_path = (
+                    parallel_objects.get(str(module_path.resolve()).casefold())
+                    if isinstance(parallel_objects, dict) else None
                 )
+                if object_path is None:
+                    object_path = self._project_pascal_object_input(
+                        module_path, target, require_unit=False)
                 if object_path is None or not add_input(object_path):
                     return False
 
@@ -145097,6 +146125,13 @@ QFileDialog QComboBox QAbstractItemView {
                     dialog.open_chm(last_file)
                 else:
                     QTimer.singleShot(0, dialog.choose_chm)
+            dialog.exec_()
+
+        def show_system_information_dialog(self) -> None:
+            """Stage 536: themed Windows system diagnostics (no external tools)."""
+            from system_information import SystemInformationDialog
+            dialog = SystemInformationDialog(
+                self, dark_mode=self.application_dark_mode(self.dark_mode_enabled))
             dialog.exec_()
 
         def show_about_dialog(self) -> None:

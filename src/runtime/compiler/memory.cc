@@ -85,102 +85,71 @@ MPRImport mpr_imports[] = {
     { "WNetGetConnectionA", (void**)&p_WNetGetConnectionA},
 };
 
+// Stage 534: all CRT and Win32 imports are resolved as one atomic unit.
+// GCC __sync builtins are available in the project MinGW32 toolchain.
+static volatile int g_crt_init_state = 0; // 0=uninit, 1=busy, 2=ready, 3=failed
+
+static bool resolve_import_table(HMODULE module, CRTImport *entries, unsigned count) {
+    if (!module) return false;
+    bool ok = true;
+    for (unsigned i = 0; i < count; ++i) {
+        void *address = (void*)p_GetProcAddress(module, entries[i].name);
+        *entries[i].target = address;
+        if (!address) ok = false;
+    }
+    return ok;
+}
+
 static int init_msvcrt(void)
 {
-    HMODULE h1, h2, h3, h4;
-    bool ok = true;
-
-    if (p_malloc && p_free) {
+    if (__sync_val_compare_and_swap(&g_crt_init_state, 2, 2) == 2)
         return 1;
-    }
-    
-    // msvcrt.dll
-    ok = true;
-    h1 = p_LoadLibraryA("msvcrt.dll");
-    if (!h1) {
-        p_MessageBoxA(0,
-            "Error",
-            "Error: msvcrt.dll could not load.",
-            0);
-        return 0;
-    }
-    
-    for (int i = 0; i < sizeof(crt_imports) / sizeof(crt_imports[0]); ++i) {
-        *crt_imports[i].target = (void*)p_GetProcAddress(h1, crt_imports[i].name);
-        
-        if (!*crt_imports[i].target) {
-            std::cout << crt_imports[i].name << " ";
-            ok = false;
+    if (__sync_bool_compare_and_swap(&g_crt_init_state, 0, 1)) {
+        bool ok = true;
+        HMODULE crt = p_LoadLibraryA("msvcrt.dll");
+        if (!crt) ok = false;
+        if (ok) {
+            for (unsigned i = 0; i < sizeof(crt_imports)/sizeof(crt_imports[0]); ++i) {
+                void *ptr = (void*)p_GetProcAddress(crt, crt_imports[i].name);
+                *crt_imports[i].target = ptr;
+                if (!ptr) ok = false;
+            }
         }
-    }
-    
-    // kernel32t.dll
-    ok = true;
-    h2 = p_LoadLibraryA("kernel32.dll");
-    if (!h2) {
-        MessageBoxA(0,
-            "Error",
-            "Error: kernel32.dll could not load.",
-            0);
-        return 0;
-    }
-    
-    for (int i = 0; i < sizeof(kernel32_imports) / sizeof(kernel32_imports[0]); ++i) {
-        *kernel32_imports[i].target = (void*)GetProcAddress(h2, kernel32_imports[i].name);
-        
-        if (!*kernel32_imports[i].target) {
-            std::cout << kernel32_imports[i].name << " ";
-            ok = false;
+        if (ok) {
+            HMODULE kernel = p_LoadLibraryA("kernel32.dll");
+            if (!kernel) ok = false;
+            for (unsigned i=0; kernel && i<sizeof(kernel32_imports)/sizeof(kernel32_imports[0]); ++i) {
+                void* ptr=(void*)p_GetProcAddress(kernel,kernel32_imports[i].name);
+                *kernel32_imports[i].target=ptr;
+                if (!ptr) ok=false;
+            }
         }
-    }
-    if (!ok) {
-        std::cout << "== null" << std::endl;
-        return 0;
-    }
-    
-    // user32.dll
-    ok = true;
-    h3 = LoadLibraryA("user32.dll");
-    if (!h3) {
-        MessageBoxA(0,
-            "Error",
-            "Error: user32.dll could not load.",
-            0);
-        return 0;
-    }
-    
-    for (int i = 0; i < sizeof(user32_imports) / sizeof(user32_imports[0]); ++i) {
-        *user32_imports[i].target = (void*)GetProcAddress(h3, user32_imports[i].name);
-        
-        if (!*user32_imports[i].target) {
-            std::cout << user32_imports[i].name << " ";
-            ok = false;
+        if (ok) {
+            HMODULE user = p_LoadLibraryA("user32.dll");
+            if (!user) ok=false;
+            for (unsigned i=0; user && i<sizeof(user32_imports)/sizeof(user32_imports[0]); ++i) {
+                void* ptr=(void*)p_GetProcAddress(user,user32_imports[i].name);
+                *user32_imports[i].target=ptr;
+                if (!ptr) ok=false;
+            }
         }
-    }
-    
-    // user32.dll
-    ok = true;
-    h4 = p_LoadLibraryA("mpr.dll");
-    if (!h4) {
-        MessageBoxA(0,
-            "Error",
-            "Error: mpr.dll could not load.",
-            0);
-        return 0;
-    }
-    
-    for (int i = 0; i < sizeof(mpr_imports) / sizeof(mpr_imports[0]); ++i) {
-        *mpr_imports[i].target = (void*)GetProcAddress(h4, mpr_imports[i].name);
-        
-        if (!*mpr_imports[i].target) {
-            std::cout << mpr_imports[i].name << " ";
-            ok = false;
+        if (ok) {
+            HMODULE mpr = p_LoadLibraryA("mpr.dll");
+            if (!mpr) ok=false;
+            for (unsigned i=0; mpr && i<sizeof(mpr_imports)/sizeof(mpr_imports[0]); ++i) {
+                void* ptr=(void*)p_GetProcAddress(mpr,mpr_imports[i].name);
+                *mpr_imports[i].target=ptr;
+                if (!ptr) ok=false;
+            }
         }
+        __sync_synchronize();
+        g_crt_init_state = ok ? 2 : 3;
+        return ok ? 1 : 0;
     }
-    if (!ok) {
-        std::cout << "== null" << std::endl;
-        return 0;
-    }   return 1;
+    while (__sync_val_compare_and_swap(&g_crt_init_state, 1, 1) == 1) {
+        __asm__ volatile("pause");
+    }
+    return __sync_val_compare_and_swap(&g_crt_init_state, 2, 2) == 2;
 }
 
 extern "C" DLL_API char* _jit_dynstring_from_cstr(const char* text);
@@ -486,7 +455,9 @@ _jit_free(void *ptr) {
     if (!init_msvcrt())
         return;
 
-    _jit_free(ptr);
+    // Resolve through the initialized MSVCRT import instead of
+    // recursively calling the local _jit_free wrapper.
+    p_free(ptr);
 }
 
 DLL_API size_t

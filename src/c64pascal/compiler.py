@@ -4566,7 +4566,12 @@ def _pui_document(
 
 def _write_pui_document(path: Path, document: Dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    # Stage 536: each compiler subprocess needs its own temporary file.
+    # A fixed ".pui.tmp" races when several independent units import System.
+    # os.replace() keeps readers from ever seeing an incomplete PUI.
+    import os
+    import uuid
+    temporary = path.with_name(path.name + f".{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(
             json.dumps(document, ensure_ascii=False, indent=4) + "\n",
@@ -9182,8 +9187,15 @@ class _PE32CodeGenerator(_CodeGenerator):
         library_exports: Optional[Dict[str, str]] = None,
         unit_name: Optional[str] = None,
         breakpoint_lines: Iterable[int] = (),
+        stack_protector: bool = False,
+        optimization_level: int = 0,
     ) -> None:
         super().__init__(program)
+        from pascal_optimizer import normalize_optimization_level
+        self.optimization_level = normalize_optimization_level(optimization_level)
+        self._frame_offsets = {}
+        self._frame_stack_labels = set()
+        self.stack_protector = bool(stack_protector)
         # Delphi/Win32-compatible native widths used by bootstrap units.
         self.types["integer"] = PE32_INTEGER_TYPE
         self.types["pointer"] = PE32_POINTER_TYPE
@@ -9222,10 +9234,184 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.uses_try = _program_contains_try(program)
         self.uses_readln = _program_contains_builtin_call(program, "readln")
         self.exception_frames: List[Tuple[str, str]] = []
+        self._active_exception_frames: List[int] = []
 
         # Stage 249: IEEE-754 Double constants are kept by exact 64-bit pattern.
         self.double_literals: Dict[int, str] = {}
         self.uses_double_runtime = _program_contains_double(program)
+
+    # Stage 537: per-invocation local storage; no global .bss for O2/O3.
+    def _start_stack_locals(self, local_variables, result_variable,
+                            line: int, *, is_method=False, is_pe64=False):
+        self._frame_offsets = {}
+        if self.optimization_level < 2:
+            return
+        alignment = 8 if is_pe64 else 4
+        if is_pe64:
+            base = 16 if is_method else (16 if self.stack_protector else 0)
+        else:
+            # EBP-4 is the cookie when active, followed by EBX/ESI/EDI.
+            base = (4 if self.stack_protector else 0) + 12
+        offset = base
+        items = list(local_variables.values())
+        if result_variable is not None:
+            items.append(result_variable)
+        for variable in items:
+            if variable.label in self._frame_offsets:
+                continue
+            size = self._value_storage_size(variable.type_info)
+            size = (size + alignment - 1) & ~(alignment - 1)
+            offset += size
+            self._frame_offsets[variable.label] = offset
+            self._frame_stack_labels.add(variable.label)
+        amount = offset - base
+        if is_pe64:
+            amount = (amount + 15) & ~15
+        if amount:
+            self.emitter.emit(f"    sub {'rsp' if is_pe64 else 'esp'}, {amount}", line)
+
+    def _restore_x86_saved(self, line: int):
+        offset = 4 if self.stack_protector else 0
+        self.emitter.emit(f"    mov ebx, dword ptr [ebp-{offset + 4}]", line)
+        self.emitter.emit(f"    mov esi, dword ptr [ebp-{offset + 8}]", line)
+        self.emitter.emit(f"    mov edi, dword ptr [ebp-{offset + 12}]", line)
+
+    def _finalized_assembly(self) -> str:
+        from pascal_optimizer import optimize_assembler
+        self.emitter.lines, self.emitter.source_map = optimize_assembler(
+            self.emitter.lines, self.emitter.source_map, self.optimization_level)
+        return "\n".join(self.emitter.lines).rstrip() + "\n"
+
+    def _fold_integer_constants(self, expression):
+        if self.optimization_level < 1 or not isinstance(expression, BinaryExpression):
+            return None
+        a, b = expression.left, expression.right
+        if not isinstance(a, LiteralExpression) or not isinstance(b, LiteralExpression):
+            return None
+        if type(a.value) is not int or type(b.value) is not int:
+            return None
+        op = expression.operator
+        x, y = int(a.value), int(b.value)
+        # Fold only operations provably within the signed 32-bit range.
+        # PE64 also has pointer-sized literals whose arithmetic must not be
+        # accidentally narrowed by a constant folder.
+        if not (-2**31 <= x < 2**31 and -2**31 <= y < 2**31):
+            return None
+        if op == '+': out = x + y
+        elif op == '-': out = x - y
+        elif op == '*': out = x * y
+        elif op in ('=', '<>', '<', '<=', '>', '>='):
+            return int({'=': x == y, '<>': x != y, '<': x < y,
+                        '<=': x <= y, '>': x > y, '>=': x >= y}[op]), BOOLEAN_TYPE
+        else: return None
+        if not -2**31 <= out < 2**31:
+            return None
+        return out, self._expression_type(expression)
+
+    def _direct_comparison_jump(self, expression, target, *, is_pe64=False):
+        if self.optimization_level < 2 or not isinstance(expression, BinaryExpression):
+            return False
+        op = expression.operator
+        if op not in ('=', '<>', '<', '<=', '>', '>='):
+            return False
+        left_type = self._expression_type(expression.left)
+        right_type = self._expression_type(expression.right)
+        if left_type.kind in ('string', 'double') or right_type.kind in ('string', 'double'):
+            return False
+        line = expression.position.line
+        # Same operand evaluation order as the legacy comparison expression.
+        self._compile_expr(expression.left)
+        wide = is_pe64 and max(self._value_storage_size(left_type),
+                               self._value_storage_size(right_type)) > 4
+        self.emitter.emit('    push rax' if wide else '    push eax', line)
+        self._compile_expr(expression.right)
+        if wide:
+            self.emitter.emit('    mov r10, rax', line)
+            self.emitter.emit('    pop rax', line)
+            self.emitter.emit('    cmp rax, r10', line)
+        else:
+            self.emitter.emit('    mov edx, eax', line)
+            self.emitter.emit('    pop eax', line)
+            self.emitter.emit('    cmp eax, edx', line)
+        signed = bool(left_type.signed or right_type.signed)
+        suffix = {'=':'ne', '<>':'e'}
+        suffix.update(({'<':'ge','<=':'g','>':'le','>=':'l'} if signed else
+                       {'<':'ae','<=':'a','>':'be','>=':'b'}))
+        self.emitter.emit(f'    j{suffix[op]} {target}', line)
+        return True
+
+    # Stage 532: stack-frame cookies for generated Pascal routines.  A
+    # module-local secret is initialized atomically using the Windows CSPRNG.
+    # The saved cookie is bound to EBP; mismatch never returns to Pascal code.
+    def _cookie_enter(self, line: int) -> None:
+        if not self.stack_protector:
+            return
+        p = self.symbol_prefix
+        self.emitter.emit("    sub esp, 4", line)
+        self.emitter.emit(f"    call {p}_cookie_initialize", line)
+        self.emitter.emit(f"    mov edx, dword ptr [{p}_cookie_secret]", line)
+        self.emitter.emit("    xor edx, ebp", line)
+        self.emitter.emit("    mov dword ptr [ebp-4], edx", line)
+
+    def _cookie_verify(self, line: int) -> None:
+        if not self.stack_protector:
+            return
+        p = self.symbol_prefix
+        self.emitter.emit("    mov edx, dword ptr [ebp-4]", line)
+        self.emitter.emit("    xor edx, ebp", line)
+        self.emitter.emit(f"    cmp edx, dword ptr [{p}_cookie_secret]", line)
+        self.emitter.emit(f"    jne {p}_cookie_failure", line)
+
+    def _emit_cookie_runtime(self) -> None:
+        if not self.stack_protector:
+            return
+        p = self.symbol_prefix
+        self.emitter.emit()
+        self.emitter.emit("; Stage 532: PE32 stack cookie (CSPRNG + atomic first writer)")
+        self.emitter.emit(f"{p}_cookie_initialize:")
+        self.emitter.emit("    push ebp")
+        self.emitter.emit("    mov ebp, esp")
+        self.emitter.emit("    sub esp, 4")
+        done = f"{p}_cookie_initialized"
+        self.emitter.emit(f"    mov eax, dword ptr [{p}_cookie_secret]")
+        self.emitter.emit("    test eax, eax")
+        self.emitter.emit(f"    jne {done}")
+        self.emitter.emit("    lea eax, [ebp-4]")
+        self.emitter.emit("    push 2")  # BCRYPT_USE_SYSTEM_PREFERRED_RNG
+        self.emitter.emit("    push 4")
+        self.emitter.emit("    push eax")
+        self.emitter.emit("    push 0")
+        self.emitter.emit("    call __d64_cookie_BCryptGenRandom")
+        self.emitter.emit("    test eax, eax")
+        self.emitter.emit(f"    js {p}_cookie_failure")
+        self.emitter.emit("    mov edx, dword ptr [ebp-4]")
+        self.emitter.emit("    or edx, 1")  # zero is uninitialized
+        self.emitter.emit("    push 0")
+        self.emitter.emit("    push edx")
+        self.emitter.emit(f"    push {p}_cookie_secret")
+        self.emitter.emit("    call __d64_cookie_InterlockedCompareExchange")
+        self.emitter.emit(f"{done}:")
+        self.emitter.emit("    mov esp, ebp")
+        self.emitter.emit("    pop ebp")
+        self.emitter.emit("    ret")
+        self.emitter.emit(f"{p}_cookie_failure:")
+        self.emitter.emit("    push 0")
+        self.emitter.emit("    push 0")
+        self.emitter.emit("    push 0")
+        self.emitter.emit("    call __d64_cookie_RaiseFailFastException")
+        self.emitter.emit("    push 3221226505")  # STATUS_STACK_BUFFER_OVERRUN
+        self.emitter.emit("    call __d64_cookie_ExitProcess")
+
+    def _emit_cookie_imports(self) -> None:
+        if not self.stack_protector:
+            return
+        for symbol, dll, exported in (
+            ("__d64_cookie_BCryptGenRandom", "bcrypt.dll", "BCryptGenRandom"),
+            ("__d64_cookie_InterlockedCompareExchange", "kernel32.dll", "InterlockedCompareExchange"),
+            ("__d64_cookie_RaiseFailFastException", "kernel32.dll", "RaiseFailFastException"),
+            ("__d64_cookie_ExitProcess", "kernel32.dll", "ExitProcess"),
+        ):
+            self.emitter.emit(f'import {symbol}, "{dll}", "{exported}"')
 
     def _compile_statement(self, statement: Statement) -> None:
         # Stage 245: a red gutter point emits exactly:
@@ -9240,6 +9426,16 @@ class _PE32CodeGenerator(_CodeGenerator):
                 self._emitted_breakpoint_lines.add(line)
                 self.emitter.emit(f"    ; BREAKPOINT source line {line}", line)
                 self.emitter.emit("    call _jit_debug_break", line)
+        if self.optimization_level >= 3 and isinstance(statement, IfStatement):
+            folded = self._fold_integer_constants(statement.condition)
+            if folded is not None and folded[1] == BOOLEAN_TYPE:
+                # Pure constant condition: do not generate the unreachable
+                # branch at all; retain source-line breakpoint emission.
+                selected = (statement.then_statement if folded[0]
+                            else statement.else_statement)
+                if selected is not None:
+                    self._compile_statement(selected)
+                return
         super()._compile_statement(statement)
 
     def _class_instance_header_size(self) -> int:
@@ -9528,7 +9724,13 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    mov ecx, esi", line)
         else:
             assert access.base_label is not None
-            self.emitter.emit(f"    mov ecx, {access.base_label}", line)
+            if access.base_label in self._frame_offsets:
+                frame_offset = self._frame_offsets[access.base_label]
+                displacement = (f"-{frame_offset}" if frame_offset >= 0
+                                else f"+{-frame_offset}")
+                self.emitter.emit(f"    lea ecx, [ebp{displacement}]", line)
+            else:
+                self.emitter.emit(f"    mov ecx, {access.base_label}", line)
 
         for deref_offset in access.dereference_offsets:
             if deref_offset:
@@ -9644,6 +9846,11 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.emitter.emit("    movzx eax, al", line)
 
     def _compile_expr(self, expression: Expression) -> _PascalType:
+        folded = self._fold_integer_constants(expression)
+        if folded is not None:
+            value, value_type = folded
+            self._emit_load_literal(value, expression.position.line)
+            return value_type
         line = expression.position.line
         if isinstance(expression, AddressOfExpression):
             label = self._routine_address_label(expression)
@@ -9797,6 +10004,15 @@ class _PE32CodeGenerator(_CodeGenerator):
                 ),
                 line,
             )
+        # EXIT must unlink every active thread-local TRY frame.
+        # Preserve EAX (function Result) across the runtime pop calls.
+        if self._active_exception_frames:
+            self.emitter.emit("    push eax", line)
+            for _frame in reversed(self._active_exception_frames):
+                self._emit_exception_pop(line)
+            self.emitter.emit("    pop eax", line)
+        self._cookie_verify(line)
+        self._restore_x86_saved(line)
         self.emitter.emit("    mov esp, ebp", line)
         self.emitter.emit("    pop ebp", line)
         if self.current_global_routine is not None:
@@ -9830,85 +10046,73 @@ class _PE32CodeGenerator(_CodeGenerator):
         self.emitter.emit("    call _jit_raise", line)
         self.emitter.emit("    add esp, 8", line)
 
-    def _new_exception_frame(self) -> Tuple[str, str]:
-        env_label = self._new_label("exc_env")
-        frame_label = self._new_label("exc_frame")
-        self.exception_frames.append((env_label, frame_label))
-        return env_label, frame_label
+    def _emit_exception_checkpoint(self, handler_label: str, line: int) -> None:
+        """Save the IA-32 jump target directly in the current *stack* frame.
 
-    def _emit_exception_checkpoint(
-        self,
-        env_label: str,
-        handler_label: str,
-        line: int,
-    ) -> None:
-        """Store a native IA-32 longjmp target without a C wrapper frame.
-
-        ``_jit_setjmp`` is exported through a normal C wrapper by the current
-        PE32 runtime.  A later ``longjmp`` therefore resumes inside a wrapper
-        invocation which has already returned.  Depending on the compiler
-        prologue/epilogue used for the runtime DLL, that stale frame corrupts
-        ESP before control reaches the Pascal EXCEPT block.
-
-        The six dwords below are the established ``JitJumpBuffer`` ABI:
-        EBX, ESI, EDI, EBP, ESP and EIP.  Saving the Pascal handler address
-        directly makes the non-local jump independent of the runtime
-        wrapper's private stack frame.
+        The first 24 bytes of the 292-byte allocation hold the JitJumpBuffer.
+        This must not call _jit_setjmp: its wrapper would already be returned
+        when _jit_longjmp transfers control to the handler.
         """
-        self.emitter.emit(f"    mov dword ptr [{env_label}+0], ebx", line)
-        self.emitter.emit(f"    mov dword ptr [{env_label}+4], esi", line)
-        self.emitter.emit(f"    mov dword ptr [{env_label}+8], edi", line)
-        self.emitter.emit(f"    mov dword ptr [{env_label}+12], ebp", line)
-        self.emitter.emit(f"    mov dword ptr [{env_label}+16], esp", line)
-        self.emitter.emit(
-            f"    mov dword ptr [{env_label}+20], {handler_label}", line
-        )
+        self.emitter.emit("    mov dword ptr [esp+0], ebx", line)
+        self.emitter.emit("    mov dword ptr [esp+4], esi", line)
+        self.emitter.emit("    mov dword ptr [esp+8], edi", line)
+        self.emitter.emit("    mov dword ptr [esp+12], ebp", line)
+        self.emitter.emit("    mov dword ptr [esp+16], esp", line)
+        self.emitter.emit(f"    mov dword ptr [esp+20], {handler_label}", line)
 
     def _emit_exception_pop(self, line: int) -> None:
         self.emitter.emit("    call _jit_exception_pop", line)
 
     def _compile_try_statement(self, statement: TryStatement) -> None:
         line = statement.position.line
-        env_label, frame_label = self._new_exception_frame()
         handler_label = self._new_label("try_handler")
         end_label = self._new_label("try_end")
-
-        # JitExceptionFrame.env must point at its 24-byte IA-32 jump buffer
-        # before _jit_exception_push initializes code/message/prev.
-        self.emitter.emit(f"    mov dword ptr [{frame_label}], {env_label}", line)
-        self.emitter.emit(f"    push {frame_label}", line)
+        # JitJumpBuffer=24, JitExceptionFrame=268 (PE32); no BSS frame.
+        # Each invocation gets an independent frame, including recursion.
+        frame_size = 292
+        self.emitter.emit(f"    sub esp, {frame_size}", line)
+        self.emitter.emit("    lea eax, [esp+24]", line)
+        self.emitter.emit("    lea edx, [esp]", line)
+        self.emitter.emit("    mov dword ptr [eax], edx", line)
+        self.emitter.emit("    push eax", line)
         self.emitter.emit("    call _jit_exception_push", line)
         self.emitter.emit("    add esp, 4", line)
-        self._emit_exception_checkpoint(env_label, handler_label, line)
+        self._emit_exception_checkpoint(handler_label, line)
 
-        for child in statement.try_statements:
-            self._compile_statement(child)
+        self._active_exception_frames.append(frame_size)
+        try:
+            for child in statement.try_statements:
+                self._compile_statement(child)
+        finally:
+            self._active_exception_frames.pop()
 
         self._emit_exception_pop(line)
         if statement.handler_kind == "except":
+            self.emitter.emit(f"    add esp, {frame_size}", line)
             self.emitter.emit(f"    jmp {end_label}", line)
             self.emitter.emit(f"{handler_label}:", line)
-            # Pop before executing the handler so a RAISE inside EXCEPT is
-            # handled by the surrounding exception frame instead of itself.
             self._emit_exception_pop(line)
+            self.emitter.emit(f"    add esp, {frame_size}", line)
             for child in statement.handler_statements:
                 self._compile_statement(child)
             self.emitter.emit(f"{end_label}:", line)
             return
 
         if statement.handler_kind == "finally":
+            self.emitter.emit(f"    add esp, {frame_size}", line)
             for child in statement.handler_statements:
                 self._compile_statement(child)
             self.emitter.emit(f"    jmp {end_label}", line)
             self.emitter.emit(f"{handler_label}:", line)
             self._emit_exception_pop(line)
+            # Save code and message before reclaiming the stack allocation.
+            # The runtime copies the message into the parent TLS frame before
+            # longjmp, preserving its content for re-raised exceptions.
             for child in statement.handler_statements:
                 self._compile_statement(child)
-            # Re-raise the captured exception code.  The current runtime does
-            # not persist the message text in JitExceptionFrame yet, so pass
-            # null for the rethrow message while preserving the exception code.
-            self.emitter.emit(f"    mov eax, dword ptr [{frame_label}+4]", line)
-            self.emitter.emit("    push 0", line)
+            self.emitter.emit("    mov eax, dword ptr [esp+28]", line)
+            self.emitter.emit("    lea edx, [esp+32]", line)
+            self.emitter.emit("    push edx", line)
             self.emitter.emit("    push eax", line)
             self.emitter.emit("    call _jit_raise", line)
             self.emitter.emit("    add esp, 8", line)
@@ -10230,53 +10434,50 @@ class _PE32CodeGenerator(_CodeGenerator):
         arguments: Sequence[Expression],
         position: SourcePosition,
     ) -> _PascalType:
+        """Stage 534: all PE32 global calls follow the callee's stack ABI.
+
+        Earlier versions used global parameter variables for the default
+        convention, while _emit_global_routines always read [ebp+8] etc.
+        This made ordinary Pascal calls depend on stale stack contents.
+        """
         self._require_argument_count(
             routine.name, arguments, len(routine.parameters), position
         )
-        line = position.line
+        for argument, parameter in zip(arguments, routine.parameters):
+            if self._external_parameter_by_reference(parameter):
+                self._resolve_external_reference_argument(
+                    routine, argument, parameter
+                )
+                continue
+            arg_type = self._expression_type(argument)
+            if not self._value_is_scalar(arg_type) or not self._value_is_scalar(parameter.type_info):
+                raise self._error(
+                    "Aggregat-Wertparameter werden noch nicht unterstützt.",
+                    argument.position,
+                )
+            if self._value_storage_size(parameter.type_info) > 4:
+                raise self._error(
+                    "PE32 globale Routinen: Wertparameter > 32 Bit benötigen eine eigene ABI-Implementierung.",
+                    argument.position,
+                )
+            if not self._types_compatible(parameter.type_info, arg_type):
+                raise self._error(
+                    f"Argumenttyp {arg_type.name} passt nicht zu {parameter.type_info.name}.",
+                    argument.position,
+                )
 
-        # A global routine declared CDECL is a real unit ABI entry point. Calls
-        # from the defining unit must use the same stack contract as consumers
-        # reconstructed from its source-free PUI.
-        if routine.calling_convention == "cdecl":
-            for argument, parameter in zip(arguments, routine.parameters):
-                argument_type = self._expression_type(argument)
-                if not self._value_is_scalar(argument_type) or not self._value_is_scalar(parameter.type_info):
-                    raise self._error(
-                        "Aggregatparameter werden noch nicht unterstützt.",
-                        argument.position,
-                    )
-                if not self._types_compatible(parameter.type_info, argument_type):
-                    raise self._error(
-                        f"Argumenttyp {argument_type.name} passt nicht zu "
-                        f"{parameter.type_info.name}.",
-                        argument.position,
-                    )
-            for argument in reversed(arguments):
+        line = position.line
+        for argument, parameter in reversed(list(zip(arguments, routine.parameters))):
+            if self._external_parameter_by_reference(parameter):
+                access = self._resolve_external_reference_argument(routine, argument, parameter)
+                self._emit_address(access, line)
+                self.emitter.emit("    push ecx", line)
+            else:
                 self._compile_expr(argument)
                 self.emitter.emit("    push eax", line)
-            self.emitter.emit(f"    call {routine.label}", line)
-            if arguments:
-                self.emitter.emit(f"    add esp, {len(arguments) * 4}", line)
-            return routine.result_type if routine.result_type is not None else BYTE_TYPE
-
-        for argument, parameter, variable in zip(
-            arguments, routine.parameters, routine.parameter_variables
-        ):
-            argument_type = self._compile_expr(argument)
-            if not self._value_is_scalar(argument_type) or not self._value_is_scalar(parameter.type_info):
-                raise self._error(
-                    "Aggregatparameter werden noch nicht unterstützt.",
-                    argument.position,
-                )
-            if not self._types_compatible(parameter.type_info, argument_type):
-                raise self._error(
-                    f"Argumenttyp {argument_type.name} passt nicht zu "
-                    f"{parameter.type_info.name}.",
-                    argument.position,
-                )
-            self._store_variable(variable, line)
         self.emitter.emit(f"    call {routine.label}", line)
+        if arguments and str(routine.calling_convention or "cdecl").casefold() != "stdcall":
+            self.emitter.emit(f"    add esp, {len(arguments) * 4}", line)
         return routine.result_type if routine.result_type is not None else BYTE_TYPE
 
     def _emit_set_self_address(self, receiver: _StorageAccess, line: int) -> None:
@@ -10301,6 +10502,16 @@ class _PE32CodeGenerator(_CodeGenerator):
             if not self._types_compatible(parameter.type_info, argument_type):
                 raise self._error(f"Argumenttyp {argument_type.name} passt nicht zu {parameter.type_info.name}.", argument.position)
             self._store_variable(variable, line)
+        if (self.optimization_level >= 3 and not arguments
+                and method.kind == "procedure" and method.result_type is None
+                and not method.is_virtual and not method.is_override
+                and method.implementation is not None
+                and not method.implementation.body.statements
+                and not method.local_variables and not method.local_initializers
+                and receiver.dynamic is None and not receiver.dereference_offsets):
+            # Body has no observable instructions; receiver/parameters have
+            # no side effects. An empty direct procedure is safe to inline.
+            return BYTE_TYPE
         restore_self = self.current_method is not None
         if restore_self:
             self.emitter.emit("    push esi", line)
@@ -10357,6 +10568,8 @@ class _PE32CodeGenerator(_CodeGenerator):
         return class_type
 
     def _compile_condition_jump_false(self, expression: Expression, target: str) -> None:
+        if self._direct_comparison_jump(expression, target, is_pe64=isinstance(self, _PE64CodeGenerator)):
+            return
         result_type = self._compile_expr(expression)
         if result_type.kind == "string":
             raise self._error("String kann nicht als Bedingung verwendet werden.", expression.position)
@@ -10496,13 +10709,14 @@ class _PE32CodeGenerator(_CodeGenerator):
             try:
                 self.emitter.emit("    push ebp", implementation.position.line)
                 self.emitter.emit("    mov ebp, esp", implementation.position.line)
+                self._cookie_enter(implementation.position.line)
 
                 # IA-32 CDECL and STDCALL both receive arguments on the stack.
                 # STDCALL differs only in who removes them afterwards.  Materialize
                 # both conventions so callbacks such as GlobalWindowProc can use
                 # HWND/UINT/WPARAM/LPARAM through the normal variable resolver.
                 convention = str(routine.calling_convention or "cdecl").casefold()
-                if convention in {"cdecl", "stdcall"}:
+                if convention in {"cdecl", "stdcall"} and self.optimization_level < 2:
                     stack_offset = 8
                     for parameter, variable in zip(
                         routine.parameters, routine.parameter_variables
@@ -10519,7 +10733,29 @@ class _PE32CodeGenerator(_CodeGenerator):
                         self._store_variable(variable, implementation.position.line)
                         stack_offset += slot_size
 
+                self.emitter.emit("    push ebx", implementation.position.line)
+                self.emitter.emit("    push esi", implementation.position.line)
+                self.emitter.emit("    push edi", implementation.position.line)
+                self._start_stack_locals(routine.local_variables, routine.result_variable,
+                                         implementation.position.line)
+                # O2/O3: CDECL/STDCALL parameters belong to the current
+                # invocation. Refer to caller-owned [EBP+8...] slots directly.
+                if self.optimization_level >= 2 and convention in {"cdecl", "stdcall"}:
+                    stack_offset = 8
+                    for parameter, variable in zip(routine.parameters, routine.parameter_variables):
+                        self._frame_offsets[variable.label] = -stack_offset
+                        self._frame_stack_labels.add(variable.label)
+                        if self._external_parameter_by_reference(parameter):
+                            slot_size = 4
+                        else:
+                            size = self._value_storage_size(parameter.type_info)
+                            slot_size = max(4, (size + 3) & ~3)
+                        stack_offset += slot_size
+                _literal_initialized = {var.label for var, init in routine.local_initializers
+                                        if isinstance(init, LiteralExpression)}
                 for variable in routine.local_variables.values():
+                    if self.optimization_level >= 2 and variable.label in _literal_initialized:
+                        continue
                     self._zero_variable(variable, implementation.position.line)
                 if routine.result_variable is not None:
                     self._zero_variable(routine.result_variable, implementation.position.line)
@@ -10542,6 +10778,8 @@ class _PE32CodeGenerator(_CodeGenerator):
                         ),
                         implementation.position.line,
                     )
+                self._cookie_verify(implementation.position.line)
+                self._restore_x86_saved(implementation.position.line)
                 self.emitter.emit("    mov esp, ebp", implementation.position.line)
                 self.emitter.emit("    pop ebp", implementation.position.line)
                 convention = str(routine.calling_convention or "cdecl").casefold()
@@ -10578,7 +10816,19 @@ class _PE32CodeGenerator(_CodeGenerator):
             try:
                 self.emitter.emit("    push ebp", implementation.position.line)
                 self.emitter.emit("    mov ebp, esp", implementation.position.line)
+                self._cookie_enter(implementation.position.line)
+                self.emitter.emit("    push ebx", implementation.position.line)
+                self.emitter.emit("    push esi", implementation.position.line)
+                self.emitter.emit("    push edi", implementation.position.line)
+                self._start_stack_locals(
+                    routine.local_variables if self.current_global_routine is not None else method.local_variables,
+                    routine.result_variable if self.current_global_routine is not None else method.result_variable,
+                    implementation.position.line)
+                _literal_initialized = {var.label for var, init in method.local_initializers
+                                        if isinstance(init, LiteralExpression)}
                 for variable in method.local_variables.values():
+                    if self.optimization_level >= 2 and variable.label in _literal_initialized:
+                        continue
                     self._zero_variable(variable, implementation.position.line)
                 if method.result_variable is not None:
                     self._zero_variable(method.result_variable, implementation.position.line)
@@ -10590,6 +10840,8 @@ class _PE32CodeGenerator(_CodeGenerator):
                 self._compile_statement(implementation.body)
                 if method.result_variable is not None:
                     self._emit_load_access(_StorageAccess(method.result_variable.type_info, implementation.position, method.result_variable.label, False), implementation.position.line)
+                self._cookie_verify(implementation.position.line)
+                self._restore_x86_saved(implementation.position.line)
                 self.emitter.emit("    mov esp, ebp", implementation.position.line)
                 self.emitter.emit("    pop ebp", implementation.position.line)
                 self.emitter.emit("    ret", implementation.position.line)
@@ -10645,6 +10897,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    ret")
 
     def _emit_runtime(self) -> None:
+        self._emit_cookie_runtime()
         if self.uses_debug_break:
             # _getch waits for one key without echo.  For extended keys the
             # leading 0/E0 byte and following scan code belong to one event.
@@ -10679,7 +10932,8 @@ class _PE32CodeGenerator(_CodeGenerator):
             # einem noch groesseren Fenster fehlschlagen.
             self.emitter.emit(f"    push {self.symbol_prefix}_console_rect")
             self.emitter.emit("    push 1")
-            self.emitter.emit("    push eax")
+            # The preceding EAX is a BOOL, not an output HANDLE.
+            self.emitter.emit(f"    push dword ptr [{self.symbol_prefix}_stdout_handle]")
             self.emitter.emit("    call SetConsoleWindowInfo")
             self.emitter.emit("    push 1638480")  # (25 << 16) | 80
             self.emitter.emit(f"    push dword ptr [{self.symbol_prefix}_stdout_handle]")
@@ -10801,7 +11055,11 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    push 1"); self.emitter.emit("    call ExitProcess"); self.emitter.emit("    ret")
 
     def _emit_data(self) -> None:
-        self.emitter.emit(); self.emitter.emit("align 4")
+        # Stage 535: all non-executable initializers belong in writable .data.
+        # Zero-initialized Pascal storage is emitted separately in .bss.
+        self.emitter.emit()
+        self.emitter.emit("section .data")
+        self.emitter.emit("align 4")
         if self.console_mode:
             self.emitter.emit(f"{self.symbol_prefix}_console_rect: dw 0, 0, 79, 24")
         self.emitter.emit(f"{self.symbol_prefix}_fmt_s: db 37, 115, 0")
@@ -10817,9 +11075,19 @@ class _PE32CodeGenerator(_CodeGenerator):
                 high = (bits >> 32) & 0xFFFFFFFF
                 self.emitter.emit(f"{label}: dd {low}, {high}")
         self._emit_class_runtime_metadata()
-        if self.variable_order:
+        # Only variables with nonzero static initializers need file-backed bytes.
+        # Ordinary Pascal globals, locals, records and arrays start as zero.
+        initialized_variables = [
+            v for v in self.variable_order
+            if v.label not in self._frame_stack_labels and getattr(v, "c_initial_value", None) not in (None, 0)
+        ]
+        bss_variables = [
+            v for v in self.variable_order
+            if v.label not in self._frame_stack_labels and getattr(v, "c_initial_value", None) in (None, 0)
+        ]
+        if initialized_variables:
             self.emitter.emit(); self.emitter.emit(f"; {self.language_name}-Variablen")
-            for variable in self.variable_order:
+            for variable in initialized_variables:
                 comment = "intern" if variable.internal else variable.name
                 initial_value = getattr(variable, "c_initial_value", None)
                 value_size = self._value_storage_size(variable.type_info)
@@ -10841,10 +11109,16 @@ class _PE32CodeGenerator(_CodeGenerator):
             for data, label in self.strings.items():
                 values = ", ".join(str(value) for value in data + b"\x00")
                 self.emitter.emit(f"{label}: db {values}")
-        if self.console_mode or self.exception_frames or self.uses_double_runtime:
+        if bss_variables or self.console_mode or self.exception_frames or self.uses_double_runtime or self.stack_protector:
             self.emitter.emit()
             self.emitter.emit("section .bss")
             self.emitter.emit("align 4")
+        if bss_variables:
+            self.emitter.emit("; Stage 535: nichtinitialisierte Pascal-Variablen (BSS)")
+            for variable in bss_variables:
+                comment = "intern" if variable.internal else variable.name
+                size = self._value_storage_size(variable.type_info)
+                self.emitter.emit(f"{variable.label}: resb {size} ; {comment}: {variable.type_info.name}")
         if self.console_mode:
             self.emitter.emit(f"{self.symbol_prefix}_stdout_handle: resd 1")
             self.emitter.emit(f"{self.symbol_prefix}_console_restore_rect: resw 4")
@@ -10854,6 +11128,8 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit(f"{self.symbol_prefix}_written: resd 1")
             self.emitter.emit(f"{self.symbol_prefix}_format_buffer: resb 32")
             self.emitter.emit(f"{self.symbol_prefix}_char_buffer: resb 2")
+        if self.stack_protector:
+            self.emitter.emit(f"{self.symbol_prefix}_cookie_secret: resd 1")
         if self.uses_double_runtime:
             self.emitter.emit(f"{self.symbol_prefix}_double_scratch: resq 1")
             self.emitter.emit(f"{self.symbol_prefix}_double_int_scratch: resd 1")
@@ -10866,6 +11142,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                 self.emitter.emit(f"{frame_label}: resb 268")
 
     def _emit_external_declarations(self) -> None:
+        self._emit_cookie_imports()
         emitted: set[str] = set()
         if self._node_uses_class_constructor(self.program):
             line = (
@@ -10942,7 +11219,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self._emit_class_runtime_thunks()
             self._emit_runtime()
             self._emit_data()
-            assembly = "\n".join(self.emitter.lines).rstrip() + "\n"
+            assembly = self._finalized_assembly()
             return GeneratedAssembly(
                 self.program.name,
                 assembly,
@@ -11006,7 +11283,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self._emit_library_exports()
             self._emit_runtime()
             self._emit_data()
-            assembly = "\n".join(self.emitter.lines).rstrip() + "\n"
+            assembly = self._finalized_assembly()
             return GeneratedAssembly(
                 self.program.name,
                 assembly,
@@ -11046,11 +11323,23 @@ class _PE32CodeGenerator(_CodeGenerator):
             self._store_variable(variable, initializer.position.line)
         self._compile_statement(self.program.body)
         if self.console_mode:
+            # Insert restore directly before noreturn ExitProcess calls made
+            # from the PROGRAM body, not only at the fallthrough epilogue.
+            _entry_begin = self.emitter.lines.index("_start:") + 1
+            _entry_end = len(self.emitter.lines)
+            for _index in range(_entry_end - 1, _entry_begin - 1, -1):
+                _line = self.emitter.lines[_index].strip().lower()
+                if _line in ("call _exitprocess@4", "call exitprocess"):
+                    self.emitter.lines.insert(
+                        _index, f"    call {self.symbol_prefix}_console_restore")
+                    self.emitter.source_map = {
+                        (k + 1 if k > _index else k): v
+                        for k, v in self.emitter.source_map.items()}
             self.emitter.emit(f"    call {self.symbol_prefix}_console_restore", source_line)
         self.emitter.emit("    push 0", source_line)
         self.emitter.emit("    call ExitProcess", source_line)
         self._emit_global_routines(); self._emit_methods(); self._emit_class_runtime_thunks(); self._emit_runtime(); self._emit_data()
-        assembly = "\n".join(self.emitter.lines).rstrip() + "\n"
+        assembly = self._finalized_assembly()
         return GeneratedAssembly(
             self.program.name,
             assembly,
@@ -11083,6 +11372,8 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         library_exports: Optional[Dict[str, str]] = None,
         unit_name: Optional[str] = None,
         breakpoint_lines: Iterable[int] = (),
+        stack_protector: bool = False,
+        optimization_level: int = 0,
     ) -> None:
         super().__init__(
             program,
@@ -11094,11 +11385,94 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             library_exports=library_exports,
             unit_name=unit_name,
             breakpoint_lines=breakpoint_lines,
+            stack_protector=stack_protector,
+            optimization_level=optimization_level,
         )
         self.types["integer"] = PE64_INTEGER_TYPE
         self.types["pointer"] = PE64_POINTER_TYPE
         self.types["string"] = PE64_STRING_TYPE
         self.call_temporaries: List[str] = []
+
+    # Stage 532: PE64 frame guard (R10 is volatile, RAX/XMM0 are untouched).
+    def _cookie_enter(self, line: int, *, method: bool = False) -> None:
+        if not self.stack_protector:
+            return
+        p = self.symbol_prefix
+        if not method:
+            self.emitter.emit("    sub rsp, 16", line)
+        # RSP is 16-byte aligned; provide 32 bytes of Win64 shadow space.
+        self.emitter.emit("    sub rsp, 32", line)
+        self.emitter.emit(f"    call {p}_cookie_initialize", line)
+        self.emitter.emit("    add rsp, 32", line)
+        self.emitter.emit(f"    mov r10, qword ptr [{p}_cookie_secret]", line)
+        self.emitter.emit("    xor r10, rbp", line)
+        self.emitter.emit(
+            f"    mov qword ptr [rbp-{'16' if method else '8'}], r10", line
+        )
+
+    def _cookie_verify(self, line: int, *, method: bool = False) -> None:
+        if not self.stack_protector:
+            return
+        p = self.symbol_prefix
+        self.emitter.emit(
+            f"    mov r10, qword ptr [rbp-{'16' if method else '8'}]", line
+        )
+        self.emitter.emit("    xor r10, rbp", line)
+        self.emitter.emit(f"    cmp r10, qword ptr [{p}_cookie_secret]", line)
+        self.emitter.emit(f"    jne {p}_cookie_failure", line)
+
+    def _emit_cookie_runtime(self) -> None:
+        if not self.stack_protector:
+            return
+        p = self.symbol_prefix
+        self.emitter.emit()
+        self.emitter.emit("; Stage 532: PE64 stack cookie (CSPRNG + atomic first writer)")
+        self.emitter.emit(f"{p}_cookie_initialize:")
+        self.emitter.emit("    push rbp")
+        self.emitter.emit("    mov rbp, rsp")
+        self.emitter.emit("    sub rsp, 48") # aligned, 32-byte home + local 8-byte RNG output
+        done = f"{p}_cookie_initialized"
+        self.emitter.emit(f"    mov rax, qword ptr [{p}_cookie_secret]")
+        self.emitter.emit("    test rax, rax")
+        self.emitter.emit(f"    jne {done}")
+        self.emitter.emit("    xor ecx, ecx")
+        self.emitter.emit("    lea rdx, [rbp-8]")
+        self.emitter.emit("    mov r8d, 8")
+        self.emitter.emit("    mov r9d, 2")
+        self.emitter.emit("    call __d64_cookie_BCryptGenRandom")
+        self.emitter.emit("    test eax, eax")
+        self.emitter.emit(f"    js {p}_cookie_failure")
+        self.emitter.emit("    mov rdx, qword ptr [rbp-8]")
+        self.emitter.emit("    or rdx, 1")
+        self.emitter.emit(f"    lea rcx, [{p}_cookie_secret]")
+        self.emitter.emit("    xor r8d, r8d")
+        self.emitter.emit("    call __d64_cookie_InterlockedCompareExchange")
+        self.emitter.emit(f"{done}:")
+        self.emitter.emit("    mov rsp, rbp")
+        self.emitter.emit("    pop rbp")
+        self.emitter.emit("    ret")
+        self.emitter.emit(f"{p}_cookie_failure:")
+        self.emitter.emit("    xor ecx, ecx")
+        self.emitter.emit("    xor edx, edx")
+        self.emitter.emit("    xor r8d, r8d")
+        self.emitter.emit("    sub rsp, 32")
+        self.emitter.emit("    call __d64_cookie_RaiseFailFastException")
+        self.emitter.emit("    add rsp, 32")
+        self.emitter.emit("    mov ecx, 3221226505")
+        self.emitter.emit("    sub rsp, 32")
+        self.emitter.emit("    call __d64_cookie_ExitProcess")
+        # no return: both APIs terminate the entire process.
+
+    def _emit_cookie_imports(self) -> None:
+        if not self.stack_protector:
+            return
+        for symbol, dll, exported in (
+            ("__d64_cookie_BCryptGenRandom", "bcrypt.dll", "BCryptGenRandom"),
+            ("__d64_cookie_InterlockedCompareExchange", "kernel32.dll", "InterlockedCompareExchange64"),
+            ("__d64_cookie_RaiseFailFastException", "kernel32.dll", "RaiseFailFastException"),
+            ("__d64_cookie_ExitProcess", "kernel32.dll", "ExitProcess"),
+        ):
+            self.emitter.emit(f'import {symbol}, "{dll}", "{exported}"')
 
     @staticmethod
     def _align16(value: int) -> int:
@@ -11305,7 +11679,13 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit("    mov r11, rsi", line)
         else:
             assert access.base_label is not None
-            self.emitter.emit(f"    mov r11, {access.base_label}", line)
+            if access.base_label in self._frame_offsets:
+                frame_offset = self._frame_offsets[access.base_label]
+                displacement = (f"-{frame_offset}" if frame_offset >= 0
+                                else f"+{-frame_offset}")
+                self.emitter.emit(f"    lea r11, [rbp{displacement}]", line)
+            else:
+                self.emitter.emit(f"    mov r11, {access.base_label}", line)
 
         for deref_offset in access.dereference_offsets:
             if deref_offset:
@@ -11432,6 +11812,11 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         self.emitter.emit("    movzx eax, al", line)
 
     def _compile_expr(self, expression: Expression) -> _PascalType:
+        folded = self._fold_integer_constants(expression)
+        if folded is not None:
+            value, value_type = folded
+            self._emit_load_literal(value, expression.position.line)
+            return value_type
         line = expression.position.line
         if isinstance(expression, AddressOfExpression):
             label = self._routine_address_label(expression)
@@ -11697,12 +12082,14 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         if self.current_method is not None:
             # Matches _PE64CodeGenerator._emit_methods prologue:
             # push rbp / mov rbp,rsp / push rsi / sub rsp,8.
-            self.emitter.emit("    add rsp, 8", line)
+            self._cookie_verify(line, method=True)
+            self.emitter.emit("    lea rsp, [rbp-16]", line)
             self.emitter.emit("    pop rsi", line)
             self.emitter.emit("    pop rbp", line)
             self.emitter.emit("    ret", line)
             return
         # Global PE64 routines only establish an RBP frame.
+        self._cookie_verify(line)
         self.emitter.emit("    mov rsp, rbp", line)
         self.emitter.emit("    pop rbp", line)
         self.emitter.emit("    ret", line)
@@ -11818,6 +12205,8 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         return class_type
 
     def _compile_condition_jump_false(self, expression: Expression, target: str) -> None:
+        if self._direct_comparison_jump(expression, target, is_pe64=isinstance(self, _PE64CodeGenerator)):
+            return
         result_type = self._compile_expr(expression)
         if result_type.kind == "string":
             raise self._error(
@@ -11969,9 +12358,32 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             try:
                 self.emitter.emit("    push rbp", line)
                 self.emitter.emit("    mov rbp, rsp", line)
-                for index, variable in enumerate(routine.parameter_variables):
-                    self._materialize_win64_parameter(variable, index, line)
+                if self.optimization_level >= 2:
+                    # Windows x64 caller reserves 32 bytes of home/shadow space.
+                    # Spill register arguments before the cookie initializer
+                    # (which may modify volatile registers), and keep the
+                    # per-call parameter slots in that invocation's frame.
+                    for index in range(min(4, len(routine.parameter_variables))):
+                        register = self.WIN64_ARGUMENT_REGISTERS[index]
+                        self.emitter.emit(
+                            f"    mov qword ptr [rbp+{16 + index * 8}], {register}", line)
+                else:
+                    for index, variable in enumerate(routine.parameter_variables):
+                        self._materialize_win64_parameter(variable, index, line)
+                self._cookie_enter(line)
+                self._start_stack_locals(routine.local_variables, routine.result_variable,
+                                         line, is_pe64=True)
+                if self.optimization_level >= 2:
+                    for index, variable in enumerate(routine.parameter_variables):
+                        stack_offset = (16 + index * 8 if index < 4
+                                        else 48 + (index - 4) * 8)
+                        self._frame_offsets[variable.label] = -stack_offset
+                        self._frame_stack_labels.add(variable.label)
+                _literal_initialized = {var.label for var, init in routine.local_initializers
+                                        if isinstance(init, LiteralExpression)}
                 for variable in routine.local_variables.values():
+                    if self.optimization_level >= 2 and variable.label in _literal_initialized:
+                        continue
                     self._zero_variable(variable, line)
                 if routine.result_variable is not None:
                     self._zero_variable(routine.result_variable, line)
@@ -11994,6 +12406,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                         ),
                         line,
                     )
+                self._cookie_verify(line)
                 self.emitter.emit("    mov rsp, rbp", line)
                 self.emitter.emit("    pop rbp", line)
                 self.emitter.emit("    ret", line)
@@ -12036,7 +12449,14 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 self.emitter.emit("    mov rsi, rcx", line)
                 for index, variable in enumerate(method.parameter_variables):
                     self._materialize_win64_parameter(variable, index + 1, line)
+                self._cookie_enter(line, method=True)
+                self._start_stack_locals(method.local_variables, method.result_variable,
+                                         line, is_method=True, is_pe64=True)
+                _literal_initialized = {var.label for var, init in method.local_initializers
+                                        if isinstance(init, LiteralExpression)}
                 for variable in method.local_variables.values():
+                    if self.optimization_level >= 2 and variable.label in _literal_initialized:
+                        continue
                     self._zero_variable(variable, line)
                 if method.result_variable is not None:
                     self._zero_variable(method.result_variable, line)
@@ -12059,7 +12479,8 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                         ),
                         line,
                     )
-                self.emitter.emit("    add rsp, 8", line)
+                self._cookie_verify(line, method=True)
+                self.emitter.emit("    lea rsp, [rbp-16]", line)
                 self.emitter.emit("    pop rsi", line)
                 self.emitter.emit("    pop rbp", line)
                 self.emitter.emit("    ret", line)
@@ -12105,6 +12526,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         self.emitter.emit("    ret")
 
     def _emit_runtime(self) -> None:
+        self._emit_cookie_runtime()
         if self.uses_debug_break:
             self.emitter.emit()
             self.emitter.emit("_jit_debug_break:")
@@ -12319,7 +12741,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self._emit_runtime_epilogue()
 
     def _emit_data(self) -> None:
+        # Stage 535: keep initialized metadata/literals in .data; zero storage
+        # is reserved virtually by the COFF64 .bss section.
         self.emitter.emit()
+        self.emitter.emit("section .data")
         self.emitter.emit("align 8")
         if self.console_mode:
             self.emitter.emit(f"{self.symbol_prefix}_console_rect: dw 0, 0, 79, 24")
@@ -12339,10 +12764,20 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             for bits, label in self.double_literals.items():
                 self.emitter.emit(f"{label}: dq {bits}")
         self._emit_class_runtime_metadata()
-        if self.variable_order:
+        # Only variables with nonzero static initializers need file-backed bytes.
+        # Ordinary Pascal globals, locals, records and arrays start as zero.
+        initialized_variables = [
+            v for v in self.variable_order
+            if v.label not in self._frame_stack_labels and getattr(v, "c_initial_value", None) not in (None, 0)
+        ]
+        bss_variables = [
+            v for v in self.variable_order
+            if v.label not in self._frame_stack_labels and getattr(v, "c_initial_value", None) in (None, 0)
+        ]
+        if initialized_variables:
             self.emitter.emit()
             self.emitter.emit(f"; {self.language_name}-Variablen")
-            for variable in self.variable_order:
+            for variable in initialized_variables:
                 comment = "intern" if variable.internal else variable.name
                 initial_value = getattr(variable, "c_initial_value", None)
                 value_size = self._value_storage_size(variable.type_info)
@@ -12371,10 +12806,16 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             for data, label in self.strings.items():
                 values = ", ".join(str(value) for value in data + b"\x00")
                 self.emitter.emit(f"{label}: db {values}")
-        if self.console_mode or self.call_temporaries or self.uses_double_runtime:
+        if bss_variables or self.console_mode or self.call_temporaries or self.uses_double_runtime or self.stack_protector:
             self.emitter.emit()
             self.emitter.emit("section .bss")
             self.emitter.emit("align 8")
+        if bss_variables:
+            self.emitter.emit("; Stage 535: nichtinitialisierte Pascal-Variablen (BSS)")
+            for variable in bss_variables:
+                comment = "intern" if variable.internal else variable.name
+                size = self._value_storage_size(variable.type_info)
+                self.emitter.emit(f"{variable.label}: resb {size} ; {comment}: {variable.type_info.name}")
         if self.console_mode:
             self.emitter.emit(f"{self.symbol_prefix}_stdout_handle: resq 1")
             self.emitter.emit(f"{self.symbol_prefix}_console_restore_rect: resw 4")
@@ -12385,6 +12826,8 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit(f"{self.symbol_prefix}_write_ptr: resq 1")
             self.emitter.emit(f"{self.symbol_prefix}_format_buffer: resb 32")
             self.emitter.emit(f"{self.symbol_prefix}_char_buffer: resb 2")
+        if self.stack_protector:
+            self.emitter.emit(f"{self.symbol_prefix}_cookie_secret: resq 1")
         if self.uses_double_runtime:
             self.emitter.emit(f"{self.symbol_prefix}_double_scratch: resq 1")
             self.emitter.emit(f"{self.symbol_prefix}_double_int_scratch: resd 1")
@@ -12396,6 +12839,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 self.emitter.emit(f"{label}: resq 1")
 
     def _emit_external_declarations(self) -> None:
+        self._emit_cookie_imports()
         emitted: set[str] = set()
         if self._node_uses_class_constructor(self.program):
             line = (
@@ -12463,7 +12907,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self._emit_methods()
             self._emit_runtime()
             self._emit_data()
-            assembly = "\n".join(self.emitter.lines).rstrip() + "\n"
+            assembly = self._finalized_assembly()
             return GeneratedAssembly(
                 self.program.name,
                 assembly,
@@ -12512,7 +12956,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self._emit_library_exports()
             self._emit_runtime()
             self._emit_data()
-            assembly = "\n".join(self.emitter.lines).rstrip() + "\n"
+            assembly = self._finalized_assembly()
             return GeneratedAssembly(
                 self.program.name,
                 assembly,
@@ -12568,7 +13012,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         self._emit_methods()
         self._emit_runtime()
         self._emit_data()
-        assembly = "\n".join(self.emitter.lines).rstrip() + "\n"
+        assembly = self._finalized_assembly()
         return GeneratedAssembly(
             self.program.name,
             assembly,
@@ -13644,6 +14088,8 @@ def _compile_pascal_unit_interface(
     output_directory: Optional[Path | str] = None,
     progress_callback: Optional[Callable[[str, int], None]] = None,
     breakpoint_lines: Iterable[int] = (),
+    stack_protector: bool = False,
+    optimization_level: int = 0,
 ) -> GeneratedAssembly:
     """Kompiliert eine direkt geöffnete Pascal-Unit.
 
@@ -13811,6 +14257,8 @@ def _compile_pascal_unit_interface(
             console_mode=False,
             unit_name=unit_name,
             breakpoint_lines=breakpoint_lines,
+            stack_protector=stack_protector,
+            optimization_level=optimization_level,
         ).generate()
         generated = replace(
             generated,
@@ -13883,6 +14331,8 @@ def _compile_pascal_unit_interface(
             console_mode=False,
             unit_name=unit_name,
             breakpoint_lines=breakpoint_lines,
+            stack_protector=stack_protector,
+            optimization_level=optimization_level,
         ).generate()
         generated = replace(
             generated,
@@ -14196,6 +14646,8 @@ def compile_pascal_to_assembly(
     output_directory: Optional[Path | str] = None,
     progress_callback: Optional[Callable[[str, int], None]] = None,
     breakpoint_lines: Iterable[int] = (),
+    stack_protector: bool = False,
+    optimization_level: int = 0,
 ) -> GeneratedAssembly:
     """Parst PROGRAM-, UNIT- oder PE32-LIBRARY-Quellen und erzeugt Assembler.
 
@@ -14226,6 +14678,8 @@ def compile_pascal_to_assembly(
             output_directory=output_directory,
             progress_callback=progress_callback,
             breakpoint_lines=breakpoint_lines,
+            stack_protector=stack_protector,
+            optimization_level=optimization_level,
         )
 
     library_name: Optional[str] = None
@@ -14267,6 +14721,8 @@ def compile_pascal_to_assembly(
             library_name=library_name,
             library_exports=library_exports,
             breakpoint_lines=breakpoint_lines,
+            stack_protector=stack_protector,
+            optimization_level=optimization_level,
         ).generate()
     elif normalized_target in {
         "pe64", "win64", "windows64", "windows-pe64", "windows-pe32+"
@@ -14279,6 +14735,8 @@ def compile_pascal_to_assembly(
             library_name=library_name,
             library_exports=library_exports,
             breakpoint_lines=breakpoint_lines,
+            stack_protector=stack_protector,
+            optimization_level=optimization_level,
         ).generate()
     else:
         raise C64PascalError(f"Unbekanntes Compilerziel: {target}.")
