@@ -422,6 +422,12 @@ class PascalProgram:
     global_routines: Tuple[GlobalRoutineImplementation, ...] = ()
     unit_assembly_files: Tuple[str, ...] = ()
     unit_object_files: Tuple[str, ...] = ()
+    # Export contracts are public ABI metadata, never Pascal source text.
+    class_export_contracts: Tuple[dict, ...] = ()
+    class_import_libraries: Tuple[Tuple[str, str], ...] = ()
+    class_export_owners: Tuple[str, ...] = ()
+    library_unit_documents: Tuple[Tuple[str, dict], ...] = ()
+    dll_provider_contracts: Tuple[Tuple[str, dict], ...] = ()
 
 
 
@@ -553,6 +559,7 @@ class GeneratedAssembly:
     pui_path: Optional[str] = None
     linked_assembly_files: Tuple[str, ...] = ()
     linked_object_files: Tuple[str, ...] = ()
+    import_manifest: Optional[dict] = None
 
     def pascal_line_for_assembly_line(self, assembly_line: int) -> int:
         line = int(assembly_line)
@@ -1537,6 +1544,7 @@ class PascalPreprocessResult:
     notes: Tuple["PascalPreprocessorDiagnostic", ...] = ()
     warnings: Tuple["PascalPreprocessorDiagnostic", ...] = ()
     link_files: Tuple[str, ...] = ()
+    link_dlls: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1727,6 +1735,7 @@ class PascalPreprocessor:
         # integrierten COFF32/COFF64-Linker. Die Liste bleibt ueber rekursiv
         # verarbeitete USES-Units erhalten und wird am Ende dedupliziert.
         self.link_files: List[str] = []
+        self.link_dlls: List[str] = []
         self.link_search_paths: List[Path] = []
         for item in link_search_paths or ():
             try:
@@ -1869,6 +1878,15 @@ class PascalPreprocessor:
                                         0,
                                     )
                                 self.macros[key] = value or "1"
+                    elif command == "export":
+                        if was_active:
+                            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", argument):
+                                raise C64PascalError(
+                                    "{$export} erwartet genau einen Klassennamen.", line, 0
+                                )
+                            # Keep the directive in the source solely for the
+                            # interface scanner. ANTLR treats it as a comment.
+                            output.append(text[index:end + 1])
                     elif command in {"l", "link", "linklib"}:
                         if was_active:
                             link_name = _expand_pascal_macros(
@@ -1892,6 +1910,31 @@ class PascalPreprocessor:
                                 else {".o", ".obj", ".a", ".lib"}
                             )
                             source_candidate = Path(link_name).expanduser()
+                            if command == "l" and source_candidate.suffix.casefold() in {"", ".dll"}:
+                                if not source_candidate.suffix:
+                                    source_candidate = source_candidate.with_suffix(".dll")
+                                # DLLs are resolved by the Windows PE import
+                                # loader, never submitted as COFF object files.
+                                # Paths are recorded separately and validated
+                                # when a consumer actually binds an export.
+                                candidates = []
+                                if source_candidate.is_absolute():
+                                    candidates.append(source_candidate)
+                                else:
+                                    origin = (Path(filename).expanduser().resolve().parent
+                                              if not str(filename).startswith("<") else Path.cwd())
+                                    # Prefer configured project search roots
+                                    # (especially the final DLL directory).
+                                    candidates.extend(d / source_candidate for d in self.link_search_paths)
+                                    candidates.append(origin / source_candidate)
+                                chosen = next((item for item in candidates if item.is_file()), candidates[0])
+                                dll_name = str(chosen.resolve())
+                                if dll_name.casefold() not in {x.casefold() for x in self.link_dlls}:
+                                    self.link_dlls.append(dll_name)
+                                # No duplicate COFF input is introduced.
+                                segment_start = end + 1
+                                index = end + 1
+                                continue
                             if source_candidate.suffix.casefold() not in allowed:
                                 raise C64PascalError(
                                     (
@@ -2005,6 +2048,7 @@ class PascalPreprocessor:
             notes=tuple(self.notes),
             warnings=tuple(self.warnings),
             link_files=tuple(process_link_files),
+            link_dlls=tuple(self.link_dlls),
         )
 
 
@@ -4250,11 +4294,19 @@ def _pui_type_metadata(
         if not isinstance(specification, ClassTypeSpecification):
             continue
 
-        # Private member names are intentionally not serialized. The aggregate
-        # class size remains part of the ABI so derived-class layout still works.
+        # Keep private field *offsets* only when a public/protected property
+        # needs them as a READ/WRITE backing field. Other private fields stay
+        # absent from the source-free PUI and are never DLL exports.
+        backing = {
+            str(accessor).casefold()
+            for prop in specification.properties if prop.visibility != 'private'
+            for accessor in (prop.read_accessor, prop.write_accessor)
+            if accessor is not None
+        }
         class_fields: List[Dict[str, object]] = []
         for field_declaration in specification.fields:
-            if field_declaration.visibility == "private":
+            if (field_declaration.visibility == 'private'
+                and not any(name.casefold() in backing for name in field_declaration.names)):
                 continue
             for field_name in field_declaration.names:
                 field_info = (
@@ -4417,6 +4469,43 @@ def _pui_document(
         semantic=semantic,
         calling_convention=str(target_info["calling_convention"]),
     )
+    from pascal_class_exports import exported_classes, export_name, bridge_symbol
+    try:
+        export_names = exported_classes(interface_source, _pascal_code_mask(interface_source))
+    except ValueError as exc:
+        raise C64PascalError(str(exc)) from exc
+    if export_names and target_info["compiler_target"] not in {"pe32", "pe64"}:
+        raise C64PascalError("{$export Klasse} ist nur für Windows PE32/PE32+ verfügbar.")
+    marked = {name.casefold() for name in export_names}
+    for cls in classes:
+        if cls['name'].casefold() not in marked:
+            continue
+        cls['dll_export'] = True
+        # A class-level stable DLL symbol does not yet encode overloaded
+        # signatures. Reject collisions instead of accidentally exporting the
+        # wrong overload behind the same public name.
+        seen_exports: set[str] = set()
+        for method in cls['methods']:
+            key = str(method['name']).casefold()
+            if key in seen_exports:
+                raise C64PascalError(
+                    f"DLL-Klassenexport {cls['name']}.{method['name']}: "
+                    "überladene Methoden benötigen eindeutige ABI-Symbolnamen."
+                )
+            seen_exports.add(key)
+        for method in cls['methods']:
+            method['dll_export_name'] = export_name(cls['name'], method['name'])
+            method['dll_bridge_symbol'] = bridge_symbol(cls['name'], method['name'])
+        for field in cls['fields']:
+            if field.get('visibility') == 'private':
+                continue
+            field['dll_get_export'] = export_name(cls['name'], field['name'], 'get')
+            field['dll_set_export'] = export_name(cls['name'], field['name'], 'set')
+            field['dll_get_symbol'] = bridge_symbol(cls['name'], field['name'], 'get')
+            field['dll_set_symbol'] = bridge_symbol(cls['name'], field['name'], 'set')
+        for prop in cls['properties']:
+            prop['dll_get_export'] = export_name(cls['name'], prop['name'], 'get') if prop.get('read') else None
+            prop['dll_set_export'] = export_name(cls['name'], prop['name'], 'set') if prop.get('write') else None
 
     functions: List[Dict[str, object]] = []
     procedures: List[Dict[str, object]] = []
@@ -4547,6 +4636,8 @@ def _pui_document(
         },
         "constants": constants,
         "types": types,
+        "exported_classes": list(export_names),
+        "class_export_abi": 1,
         "symbols": {
             "functions": functions,
             "procedures": procedures,
@@ -5437,6 +5528,20 @@ class _PascalUnitResolver:
             self.search_paths.append(current)
         self.programs: List[PascalProgram] = []
         self.external_routines: List[ExternalRoutineDeclaration] = []
+        self.class_export_contracts: Dict[str, dict] = {}
+        self.class_export_owners: set[str] = set()
+        self.class_import_libraries: Dict[str, str] = {}
+        self.library_unit_documents: Dict[str, dict] = {}
+        self.dll_providers = []
+        self.target = str(target)
+        from pascal_library_contract import read_contract
+        for dll in preprocessor.link_dlls:
+            contract = read_contract(
+                dll, self.target,
+                ([self.output_directory] if self.output_directory else []) + self.search_paths,
+            )
+            if contract is not None:
+                self.dll_providers.append((Path(dll).name, contract))
         self.assembly_files: List[str] = []
         self.object_files: List[str] = []
         self.resolved: Dict[str, Path] = {}
@@ -5553,6 +5658,8 @@ class _PascalUnitResolver:
             processed: Optional[PascalPreprocessResult] = None
             source_full_program: Optional[PascalProgram] = None
 
+            unit_added_link_files: Tuple[str, ...] = ()
+            unit_added_link_dlls: Tuple[str, ...] = ()
             if source_path is not None:
                 try:
                     source_text = source_path.read_text(encoding="utf-8-sig")
@@ -5560,10 +5667,18 @@ class _PascalUnitResolver:
                     raise C64PascalError(
                         f"Unit kann nicht gelesen werden: {source_path}: {exc}"
                     ) from exc
+                existing_links = set(self.preprocessor.link_files)
+                existing_dlls = set(self.preprocessor.link_dlls)
                 processed = self.preprocessor.process(
                     source_text,
                     filename=str(source_path),
                 )
+                unit_added_link_files = tuple(
+                    path for path in self.preprocessor.link_files
+                    if path not in existing_links)
+                unit_added_link_dlls = tuple(
+                    path for path in self.preprocessor.link_dlls
+                    if path not in existing_dlls)
                 (
                     transformed_source,
                     declared_name,
@@ -5702,7 +5817,58 @@ class _PascalUnitResolver:
                     _write_pui_document(pui_path, fresh_document)
                 pui_document = fresh_document
 
-            self.external_routines.extend(_pui_external_routines(pui_document))
+            from pascal_library_contract import unit_contract, public_routine_export
+            try:
+                provider = unit_contract(self.dll_providers, declared_name)
+            except ValueError as exc:
+                raise C64PascalError(str(exc)) from exc
+            provider_dll, provider_unit = provider if provider is not None else (None, None)
+            if provider_unit is not None:
+                # A metadata-only provider must expose every class that the
+                # consumer could instantiate/call. Never silently fall back to
+                # source or COFF for a missing class export.
+                exported = {str(x).casefold() for x in provider_unit.get('classes', ())}
+                pui_classes = {str(x.get('name','')).casefold(): x
+                               for x in pui_document.get('symbols',{}).get('classes',())
+                               if isinstance(x,dict)}
+                for class_key, cls in pui_classes.items():
+                    if class_key not in exported and any(
+                        str(m.get('visibility','public')).casefold() != 'private'
+                        for m in cls.get('methods',()) if isinstance(m,dict)
+                    ):
+                        raise C64PascalError(
+                            f'DLL {provider_dll}: Klasse {cls.get("name")} in Unit '
+                            f'{declared_name} besitzt keinen Klassenexport. '
+                            '{$export Klassenname} ergänzen und die DLL neu bauen.'
+                        )
+                imports = dict(pui_document.get('imports') or {})
+                for routine in provider_unit.get('routines', ()):
+                    symbol = next((str(x.get('symbol')) for category in ('functions','procedures')
+                                   for x in pui_document.get('symbols', {}).get(category, ())
+                                   if str(x.get('name','')).casefold() == str(routine.get('name','')).casefold()), None)
+                    if symbol:
+                        imports[symbol] = {'kind':'dll', 'library':provider_dll,
+                                           'name':str(routine['export']),
+                                           'calling_convention': 'win64' if self.target.casefold() in
+                                               {'pe64','win64','windows64','windows-pe64','windows-pe32+'} else 'cdecl'}
+                import_pui = dict(pui_document, imports=imports)
+                self.external_routines.extend(_pui_external_routines(import_pui))
+            else:
+                self.external_routines.extend(_pui_external_routines(pui_document))
+            self.library_unit_documents[declared_name] = pui_document
+            from pascal_class_exports import public_class_contract
+            for contract in public_class_contract(pui_document):
+                # A class-export key must not overwrite the unit resolution key.
+                # Otherwise a USED unit that exports a class is registered as
+                # resolved under the class name, and a second dependency path
+                # parses its routines again (e.g. VCL.Windows.GlobalWindowProc).
+                class_key = contract["name"].casefold()
+                previous_contract = self.class_export_contracts.get(class_key)
+                if previous_contract is not None and previous_contract != contract:
+                    raise C64PascalError(
+                        f"Uneindeutiger Klassenexport: {contract['name']}"
+                    )
+                self.class_export_contracts[class_key] = contract
             implementation_base = (pui_path or source_path).parent
             link_search_paths = tuple(self.preprocessor.link_search_paths)
             primary_object = _pui_primary_object_file(
@@ -5720,7 +5886,40 @@ class _PascalUnitResolver:
             # source build the companion object may not exist yet; in that one
             # case source is used transiently as a compatibility fallback, but
             # it is never copied into the PUI.
-            use_metadata_program = (
+            # A {$L libfoo} class import is provided by libfoo.dll, NOT by
+            # additionally linking the unit's original COFF object. Using both
+            # would duplicate VMTs and can run a destructor from the wrong DLL.
+            if provider_unit is not None:
+                # {$L foo.o} inside the DLL-owned Unit belongs to the DLL,
+                # never to this consumer EXE.  Restore only dependencies added
+                # by this Unit (not explicit links in the main program).
+                for linked in unit_added_link_files:
+                    if linked in self.preprocessor.link_files:
+                        self.preprocessor.link_files.remove(linked)
+                for linked in unit_added_link_dlls:
+                    if linked in self.preprocessor.link_dlls:
+                        self.preprocessor.link_dlls.remove(linked)
+                dll_class_import = True  # complete provider unit: metadata only
+                for cls in pui_document.get('symbols',{}).get('classes',()):
+                    if str(cls.get('name','')).casefold() in {
+                        str(c).casefold() for c in provider_unit.get('classes',())
+                    }:
+                        self.class_import_libraries[cls['name']] = provider_dll
+            else:
+                dll_class_import = bool(
+                    self.preprocessor.link_dlls
+                    and pui_document.get('exported_classes')
+                    and not self.dll_providers  # do not guess owner with a manifest
+                )
+                if dll_class_import and len(self.preprocessor.link_dlls) != 1:
+                    raise C64PascalError(
+                        "Klassenimporte benötigen genau eine {$L modul}-DLL; "
+                        "mehrdeutige Bibliothekszuordnung."
+                    )
+                if dll_class_import:
+                    for name in pui_document['exported_classes']:
+                        self.class_import_libraries[str(name)] = Path(self.preprocessor.link_dlls[0]).name
+            use_metadata_program = dll_class_import or (
                 not _pui_is_legacy(pui_document)
                 and (
                     source_path is None
@@ -5729,11 +5928,11 @@ class _PascalUnitResolver:
             )
 
             if use_metadata_program:
-                if primary_object is not None and not primary_object.is_file():
+                if primary_object is not None and not primary_object.is_file() and not dll_class_import:
                     raise C64PascalError(
                         f"PUI-Objektdatei fehlt: {primary_object}."
                     )
-                for object_name in link_inputs:
+                for object_name in (() if dll_class_import else link_inputs):
                     if object_name not in self.object_files:
                         self.object_files.append(object_name)
                 program = _pui_program_from_metadata(pui_document)
@@ -5796,6 +5995,10 @@ class _PascalUnitResolver:
                         "die Unit-Quelle ist nicht verfügbar."
                     )
 
+            if not use_metadata_program and pui_document.get('exported_classes'):
+                self.class_export_owners.update(
+                    x.casefold() for x in pui_document['exported_classes']
+                )
             self.programs.append(program)
             self.resolved[key] = pui_path or source_path
         finally:
@@ -5893,12 +6096,18 @@ def _parse_pascal_frontend(
     predefined_macros: Optional[Dict[str, Union[str, int, bool]]] = None,
     target: str = "c64",
     link_search_paths: Iterable[Path | str] = (),
+    linked_dll_files: Sequence[str] = (),
     output_directory: Optional[Path | str] = None,
     progress_callback: Optional[Callable[[str, int], None]] = None,
 ) -> Tuple[PascalProgram, PascalPreprocessResult]:
     preprocessor = PascalPreprocessor(
         predefined_macros, link_search_paths=link_search_paths
     )
+    # The IDE may preprocess {$L library} before invoking the compiler.
+    # Preserve its DLL dependencies just like linked .o files.
+    for dll in linked_dll_files:
+        if str(dll).casefold() not in {str(x).casefold() for x in preprocessor.link_dlls}:
+            preprocessor.link_dlls.append(str(dll))
     root_processed = preprocessor.process(source, filename=filename)
     cleaned_source, unit_names = _extract_program_uses(
         root_processed.source,
@@ -5919,6 +6128,7 @@ def _parse_pascal_frontend(
             tuple(preprocessor.notes),
             tuple(preprocessor.warnings),
             tuple(preprocessor.link_files),
+            tuple(preprocessor.link_dlls),
         )
 
     resolver = _PascalUnitResolver(
@@ -5976,6 +6186,11 @@ def _parse_pascal_frontend(
                 list(preprocessor.link_files) + list(resolver.object_files)
             )
         ),
+        class_export_contracts=tuple(resolver.class_export_contracts.values()),
+        class_export_owners=tuple(sorted(resolver.class_export_owners)),
+        class_import_libraries=tuple(resolver.class_import_libraries.items()),
+        library_unit_documents=tuple(resolver.library_unit_documents.items()),
+        dll_provider_contracts=tuple(resolver.dll_providers),
     )
     return program, PascalPreprocessResult(
         root_processed.source,
@@ -5983,6 +6198,7 @@ def _parse_pascal_frontend(
         tuple(preprocessor.notes),
         tuple(preprocessor.warnings),
         tuple(preprocessor.link_files),
+        tuple(preprocessor.link_dlls),
     )
 
 
@@ -7219,11 +7435,124 @@ class _CodeGenerator:
             return DesignatorExpression(position, expression, ())
         return DesignatorExpression(expression.position, expression.name, ())
 
+    def _resolve_property_target(
+        self,
+        expression: Union[NameExpression, DesignatorExpression],
+        *,
+        for_write: bool = False,
+    ) -> Optional[Tuple["_PropertyInfo", _StorageAccess,
+                        Optional["_FieldInfo"], Optional["_MethodInfo"]]]:
+        """Resolve an object property to its read/write backing field or method.
+
+        Resolve receiver separately, so a qualified property such as
+        ``Foo.OnTest1`` and an implicit ``OnTest1`` within TFoo.Create share
+        the same access rules.  No backing-field alias is exposed when a
+        property is write-only or read-only.
+        """
+        designator = self._as_designator(expression)
+        if designator.selectors:
+            last = designator.selectors[-1]
+            if not isinstance(last, FieldSelector):
+                return None
+            receiver_name = last.name
+            receiver_designator = DesignatorExpression(
+                designator.position, designator.name, designator.selectors[:-1]
+            )
+            receiver = self._resolve_storage(receiver_designator)
+            owner = receiver.type_info
+        elif self.current_method is not None:
+            # Local variables, formal parameters and Result shadow an implicit
+            # property of the same name in normal Pascal name resolution.
+            key = self._key(designator.name)
+            if (self._lookup_variable(designator.name) is not None or
+                    key in {"result", self._key(self.current_method.name)} or
+                    key in self.current_method.owner.fields):
+                return None
+            receiver_name = designator.name
+            owner = self.current_method.owner
+            receiver = _StorageAccess(owner, designator.position, None, True)
+        else:
+            return None
+
+        if owner.kind != "class":
+            return None
+        prop = owner.properties.get(self._key(receiver_name))
+        if prop is None:
+            return None
+        if prop.index_parameters:
+            raise self._error(
+                f"Indizierte Property {owner.name}.{prop.name} wird noch nicht unterstützt.",
+                designator.position,
+            )
+        access_kind = "WRITE" if for_write else "READ"
+        accessor = prop.write_accessor if for_write else prop.read_accessor
+        if not accessor:
+            raise self._error(
+                f"Property {owner.name}.{prop.name} ist "
+                f"{'schreibgeschützt' if for_write else 'nicht lesbar'}.",
+                designator.position,
+            )
+        # Accessors are identifiers (FString, GetValue, SetValue). The parser
+        # preserves their case; resolution uses Pascal's case-insensitive names.
+        accessor_key = self._key(accessor)
+        field_info = owner.fields.get(accessor_key)
+        method_info = owner.methods.get(accessor_key)
+        if field_info is None and method_info is None:
+            raise self._error(
+                f"Property {owner.name}.{prop.name}: {access_kind}-Accessor "
+                f"{accessor} nicht gefunden.", designator.position,
+            )
+        if field_info is not None:
+            if not self._types_compatible(prop.type_info, field_info.type_info) or not self._types_compatible(field_info.type_info, prop.type_info):
+                raise self._error(
+                    f"Property {owner.name}.{prop.name}: Feld {accessor} "
+                    "hat einen anderen Datentyp.", designator.position,
+                )
+        else:
+            assert method_info is not None
+            if for_write:
+                if (method_info.result_type is not None or
+                        len(method_info.parameters) != 1 or
+                        not self._types_compatible(method_info.parameters[0].type_info, prop.type_info)):
+                    raise self._error(
+                        f"Property {owner.name}.{prop.name}: "
+                        f"Setter {accessor} benötigt genau einen passenden Parameter.",
+                        designator.position,
+                    )
+            elif (method_info.result_type is None or method_info.parameters or
+                  not self._types_compatible(prop.type_info, method_info.result_type)):
+                raise self._error(
+                    f"Property {owner.name}.{prop.name}: "
+                    f"Getter {accessor} benötigt einen passenden Rückgabewert.",
+                    designator.position,
+                )
+        return prop, receiver, field_info, method_info
+
     def _resolve_storage(
         self,
         expression: Union[NameExpression, DesignatorExpression],
+        *,
+        for_write: bool = False,
     ) -> _StorageAccess:
         designator = self._as_designator(expression)
+        property_access = self._resolve_property_target(designator, for_write=for_write)
+        if property_access is not None:
+            prop, _receiver, field_info, method_info = property_access
+            if field_info is None:
+                raise self._error(
+                    f"Property {prop.name} verwendet einen Methoden-Accessor "
+                    "und kann nicht als Speicheradresse benutzt werden.",
+                    designator.position,
+                )
+            if designator.selectors:
+                last = designator.selectors[-1]
+                rewritten = DesignatorExpression(
+                    designator.position, designator.name,
+                    designator.selectors[:-1] + (FieldSelector(last.position, field_info.name),),
+                )
+            else:
+                rewritten = DesignatorExpression(designator.position, field_info.name, ())
+            return self._resolve_storage(rewritten, for_write=for_write)
         key = self._key(designator.name)
         variable = self._lookup_variable(designator.name)
         use_self = False
@@ -7564,6 +7893,9 @@ class _CodeGenerator:
                             expression.position,
                         )
                     return class_type
+            prop_access = self._resolve_property_target(expression)
+            if prop_access is not None and prop_access[3] is not None:
+                return prop_access[0].type_info
             try:
                 return self._resolve_storage(expression).type_info
             except C64PascalError:
@@ -7804,6 +8136,10 @@ class _CodeGenerator:
                     return self._compile_class_constructor_call(
                         class_type, method, (), expression.position
                     )
+            prop_access = self._resolve_property_target(expression)
+            if prop_access is not None and prop_access[3] is not None:
+                _prop, receiver, _field, getter = prop_access
+                return self._compile_method_call(getter, receiver, (), expression.position)
             try:
                 access = self._resolve_storage(expression)
             except C64PascalError:
@@ -8335,7 +8671,23 @@ class _CodeGenerator:
 
     def _compile_assignment(self, statement: AssignmentStatement) -> None:
         designator = self._as_designator(statement.designator, statement.position)
-        access = self._resolve_storage(designator)
+        prop_access = self._resolve_property_target(designator, for_write=True)
+        if prop_access is not None and prop_access[3] is not None:
+            _prop, receiver, _field, setter = prop_access
+            self._compile_method_call(
+                setter, receiver, (statement.expression,), statement.position
+            )
+            return
+        dll_member = getattr(self, '_dll_field_access', lambda *args, **kwargs: None)(
+            designator, for_write=True)
+        if dll_member is not None:
+            value_type = self._compile_expr(statement.expression)
+            if not self._types_compatible(dll_member[1], value_type):
+                raise self._error('DLL-Feldzuweisung mit unpassendem Typ.',statement.position)
+            self._emit_dll_field_bridge(dll_member, for_write=True,
+                                        line=statement.position.line)
+            return
+        access = self._resolve_storage(designator, for_write=True)
         if not self._value_is_scalar(access.type_info):
             raise self._error(
                 "Ganze Arrays oder Records können nicht direkt zugewiesen werden.",
@@ -9189,13 +9541,16 @@ class _PE32CodeGenerator(_CodeGenerator):
         breakpoint_lines: Iterable[int] = (),
         stack_protector: bool = False,
         optimization_level: int = 0,
+        no_stack_frames: bool = False,
     ) -> None:
         super().__init__(program)
         from pascal_optimizer import normalize_optimization_level
         self.optimization_level = normalize_optimization_level(optimization_level)
+        self.no_stack_frames = bool(no_stack_frames)
         self._frame_offsets = {}
         self._frame_stack_labels = set()
         self.stack_protector = bool(stack_protector)
+        self._shared_classname_literals: set[str] = set()
         # Delphi/Win32-compatible native widths used by bootstrap units.
         self.types["integer"] = PE32_INTEGER_TYPE
         self.types["pointer"] = PE32_POINTER_TYPE
@@ -9280,6 +9635,13 @@ class _PE32CodeGenerator(_CodeGenerator):
         from pascal_optimizer import optimize_assembler
         self.emitter.lines, self.emitter.source_map = optimize_assembler(
             self.emitter.lines, self.emitter.source_map, self.optimization_level)
+        if self.no_stack_frames and not self.stack_protector:
+            from pascal_optimizer import omit_safe_pascal_stack_frames
+            labels = [routine.label for routine in self.global_routines.values()]
+            labels.extend(method.label for method in self.methods if method.implementation is not None)
+            self.emitter.lines, self.emitter.source_map = omit_safe_pascal_stack_frames(
+                self.emitter.lines, self.emitter.source_map, labels,
+                is_pe64=isinstance(self, _PE64CodeGenerator))
         return "\n".join(self.emitter.lines).rstrip() + "\n"
 
     def _fold_integer_constants(self, expression):
@@ -9475,6 +9837,418 @@ class _PE32CodeGenerator(_CodeGenerator):
             return "0"
         return self._class_destroy_thunk_label(class_type)
 
+    # Stage 542: executable class members exported via a stable DLL ABI.
+    def _class_export_methods(self):
+        for contract in self.program.class_export_contracts:
+            cls = self.types.get(str(contract.get("name", "")).casefold())
+            if cls is None or cls.kind != "class":
+                continue
+            for raw in contract.get("methods", ()):
+                method = cls.methods.get(str(raw.get("name", "")).casefold())
+                if method is None:
+                    continue
+                yield contract, raw, method
+
+    def _dll_field_access(self, expression, *, for_write=False):
+        """Find a DLL-owned field/property and the exported typed accessor.
+
+        Only a *direct* member (including an inherited public property) is
+        lowered through this bridge.  Recursive/chained lvalues retain the
+        normal Pascal resolver until they receive a complete lvalue ABI.
+        """
+        from pascal_class_exports import export_name, bridge_symbol
+        if not self.program.class_import_libraries:
+            return None
+        if not isinstance(expression, (NameExpression, DesignatorExpression)):
+            return None
+        designator = self._as_designator(expression)
+        owner = None
+        receiver = None
+        member = None
+        is_property = False
+        if designator.selectors:
+            if not isinstance(designator.selectors[-1], FieldSelector):
+                return None
+            member = designator.selectors[-1].name
+            receiver_designator = DesignatorExpression(
+                designator.position, designator.name, designator.selectors[:-1])
+            try:
+                receiver = self._resolve_storage(receiver_designator)
+            except C64PascalError:
+                return None
+            owner = receiver.type_info
+        elif self.current_method is not None:
+            member = designator.name
+            key = self._key(member)
+            if self._lookup_variable(member) is not None or key == 'result':
+                return None
+            owner = self.current_method.owner
+            receiver = _StorageAccess(owner, designator.position, None, True)
+        if owner is None or owner.kind != 'class' or receiver is None:
+            return None
+        imported = {name.casefold() for name, _ in self.program.class_import_libraries}
+        if owner.name.casefold() not in imported:
+            return None
+        prop = owner.properties.get(self._key(member))
+        field_info = owner.fields.get(self._key(member)) if prop is None else None
+        if prop is not None:
+            checked = self._resolve_property_target(designator, for_write=for_write)
+            if checked is None:
+                return None
+            _property, checked_receiver, backing_field, accessor_method = checked
+            if accessor_method is not None:
+                return None   # method ABI is handled by _compile_method_call
+            if backing_field is None:
+                return None
+            is_property = True
+            receiver = checked_receiver
+            type_info = prop.type_info
+        elif field_info is not None:
+            # Do not expose a private backing field as an independent API.
+            type_info = field_info.type_info
+        else:
+            return None
+        contract = None
+        raw = None
+        # A derived class can access an inherited exported property/field.
+        # Resolve its bridge in the class that *declared* the member.
+        current_owner = owner
+        while current_owner is not None and current_owner.kind == 'class':
+            candidate = next((row for row in self.program.class_export_contracts
+                              if row.get('name','').casefold() == current_owner.name.casefold()),None)
+            if candidate is not None:
+                raw_members = candidate.get('properties' if is_property else 'fields', ())
+                found = next((row for row in raw_members
+                              if str(row.get('name','')).casefold() == member.casefold()),None)
+                if found is not None:
+                    contract, raw = candidate, found
+                    break
+            current_owner = current_owner.base_type
+        if raw is None or contract is None:
+            return None
+        if not is_property and raw.get('visibility') == 'private':
+            raise self._error(f'Privates DLL-Feld nicht zugreifbar: {owner.name}.{member}.',
+                              designator.position)
+        if is_property and not raw.get('write' if for_write else 'read'):
+            raise self._error(f'DLL-Property {owner.name}.{member} besitzt keinen passenden Accessor.',
+                              designator.position)
+        direction = 'set' if for_write else 'get'
+        symbol = bridge_symbol(contract['name'], raw['name'], direction)
+        exported = export_name(contract['name'], raw['name'], direction)
+        return receiver, type_info, symbol, exported
+
+    def _emit_dll_field_bridge(self, target, *, for_write, line):
+        """Call typed DLL access bridge with an 8-byte caller-owned buffer.
+
+        Values are returned in EAX/RAX or x87 ST0, matching existing Pascal
+        expression conventions. We never call across a DLL with a raw Python
+        or compiler-time field address.
+        """
+        receiver, info, symbol, _export = target
+        size = self._value_storage_size(info)
+        if size not in (1, 2, 4, 8):
+            raise self._error('DLL-Feld erfordert einen skalar unterstützten Typ.', receiver.position)
+        pe64 = isinstance(self, _PE64CodeGenerator)
+        if not pe64 and size == 8 and info.kind != 'double':
+            raise self._error('PE32-DLL-Feld mit 64-Bit-Integer noch nicht unterstützt.', receiver.position)
+        if pe64:
+            # Windows x64: RCX=Self, RDX=buffer, 32 byte shadow space.
+            # 48 bytes provide aligned shadow+value+saved RSI.
+            self.emitter.emit('    sub rsp, 48', line)
+            self.emitter.emit('    mov qword ptr [rsp+40], rsi', line)
+            if for_write:
+                if info.kind == 'double':
+                    self.emitter.emit('    fstp qword ptr [rsp+32]', line)
+                elif size == 8:
+                    self.emitter.emit('    mov qword ptr [rsp+32], rax', line)
+                else:
+                    self.emitter.emit('    mov dword ptr [rsp+32], eax', line)
+            self._emit_set_self_address(receiver, line)
+            self.emitter.emit('    mov rcx, rsi', line)
+            self.emitter.emit('    lea rdx, [rsp+32]', line)
+            self.emitter.emit(f'    call {symbol}', line)
+            if not for_write:
+                if info.kind == 'double':
+                    self.emitter.emit('    fld qword ptr [rsp+32]', line)
+                elif size == 8:
+                    self.emitter.emit('    mov rax, qword ptr [rsp+32]', line)
+                elif size == 4:
+                    self.emitter.emit('    mov eax, dword ptr [rsp+32]', line)
+                elif size == 2:
+                    op = 'movsx' if info.signed else 'movzx'
+                    self.emitter.emit(f'    {op} eax, word ptr [rsp+32]', line)
+                else:
+                    self.emitter.emit('    movzx eax, byte ptr [rsp+32]', line)
+            self.emitter.emit('    mov rsi, qword ptr [rsp+40]', line)
+            self.emitter.emit('    add rsp, 48', line)
+        else:
+            self.emitter.emit('    push esi', line)
+            self.emitter.emit('    sub esp, 8', line)
+            if for_write:
+                if info.kind == 'double':
+                    self.emitter.emit('    fstp qword ptr [esp]', line)
+                else:
+                    self.emitter.emit('    mov dword ptr [esp], eax', line)
+            self.emitter.emit('    lea edx, [esp]', line)
+            self.emitter.emit('    push edx', line)
+            self._emit_set_self_address(receiver, line)
+            self.emitter.emit('    push esi', line)
+            self.emitter.emit(f'    call {symbol}', line)
+            self.emitter.emit('    add esp, 8', line)
+            if not for_write:
+                if info.kind == 'double':
+                    self.emitter.emit('    fld qword ptr [esp]', line)
+                elif size == 4:
+                    self.emitter.emit('    mov eax, dword ptr [esp]', line)
+                elif size == 2:
+                    op = 'movsx' if info.signed else 'movzx'
+                    self.emitter.emit(f'    {op} eax, word ptr [esp]', line)
+                else:
+                    self.emitter.emit('    movzx eax, byte ptr [esp]', line)
+            self.emitter.emit('    add esp, 8', line)
+            self.emitter.emit('    pop esi', line)
+        if not for_write:
+            return info
+
+    def _emit_class_export_factories(self) -> None:
+        from pascal_class_exports import bridge_symbol
+        pe64 = isinstance(self, _PE64CodeGenerator)
+        defined = {method.label for method in self.methods if method.implementation is not None}
+        for contract, raw, method in self._class_export_methods():
+            if method.kind != 'constructor' or method.label not in defined:
+                continue
+            label = bridge_symbol(contract['name'], raw['name'], 'new')
+            self.emitter.emit()
+            self.emitter.emit(f'global {label}')
+            self.emitter.emit(f'{label}:')
+            if pe64:
+                if len(method.parameters) > 3:
+                    raise self._error('PE64-DLL-Konstruktor: maximal drei Wertparameter.', method.position)
+                if any(p.type_info.kind=='double' for p in method.parameters):
+                    raise self._error('PE64-DLL-Konstruktor: Double-Parameter benötigen eine gesonderte XMM-ABI.', method.position)
+                self.emitter.emit('    push rbp')
+                self.emitter.emit('    mov rbp, rsp')
+                self.emitter.emit('    push rsi')
+                self.emitter.emit('    sub rsp, 72')  # preserves 16-byte alignment
+                for idx, reg in enumerate(('rcx','rdx','r8')):
+                    if idx >= len(method.parameters):
+                        break
+                    self.emitter.emit(f'    mov qword ptr [rsp+{32+idx*8}], {reg}')
+                self.emitter.emit(f'    mov rcx, {self._class_vmt_label(method.owner)}')
+                self.emitter.emit('    call jit_object_instance_new')
+                self.emitter.emit('    mov rsi, rax')
+                self.emitter.emit('    test rsi, rsi')
+                end = label + '_end'
+                self.emitter.emit(f'    jz {end}')
+                self.emitter.emit('    mov rcx, rsi')
+                for idx,reg in enumerate(('rdx','r8','r9')):
+                    if idx >= len(method.parameters):
+                        break
+                    self.emitter.emit(f'    mov {reg}, qword ptr [rsp+{32+idx*8}]')
+                self.emitter.emit(f'    call {method.label}')
+                self.emitter.emit('    mov rax, rsi')
+                self.emitter.emit(f'{end}:')
+                self.emitter.emit('    add rsp, 72')
+                self.emitter.emit('    pop rsi')
+                self.emitter.emit('    pop rbp')
+                self.emitter.emit('    ret')
+            else:
+                self.emitter.emit('    push ebp')
+                self.emitter.emit('    mov ebp, esp')
+                self.emitter.emit('    push esi')
+                self.emitter.emit(f'    push {self._class_vmt_label(method.owner)}')
+                self.emitter.emit('    call _jit_object_instance_new')
+                self.emitter.emit('    add esp, 4')
+                self.emitter.emit('    mov esi, eax')
+                self.emitter.emit('    test esi, esi')
+                end = label + '_end'
+                self.emitter.emit(f'    jz {end}')
+                offset = 8
+                for parameter, storage in zip(method.parameters, method.parameter_variables):
+                    size = self._value_storage_size(parameter.type_info)
+                    if size not in (1,2,4,8):
+                        raise self._error('PE32-DLL-Konstruktor mit nicht unterstütztem Wertparameter.',method.position)
+                    for step in range(0, max(4,size), 4):
+                        self.emitter.emit(f'    mov eax, dword ptr [ebp+{offset+step}]')
+                        dest = f'{storage.label}+{step}' if step else storage.label
+                        if size==1: self.emitter.emit(f'    mov byte ptr [{dest}], al')
+                        elif size==2: self.emitter.emit(f'    mov word ptr [{dest}], ax')
+                        else: self.emitter.emit(f'    mov dword ptr [{dest}], eax')
+                    offset += max(4,size)
+                self.emitter.emit(f'    call {method.label}')
+                self.emitter.emit('    mov eax, esi')
+                self.emitter.emit(f'{end}:')
+                self.emitter.emit('    pop esi')
+                self.emitter.emit('    mov esp, ebp')
+                self.emitter.emit('    pop ebp')
+                self.emitter.emit('    ret')
+
+    def _emit_class_export_bridges(self) -> None:
+        self._emit_class_export_factories()
+        from pascal_class_exports import bridge_symbol
+        pe64 = isinstance(self, _PE64CodeGenerator)
+        # Unit or source-inlined DLL provides the implementation; a pure PUI
+        # consumer never creates the bridge in its own object module.
+        implementations = {
+            method.label for method in self.methods
+            if method.implementation is not None
+        }
+        for contract, raw, method in self._class_export_methods():
+            if method.label not in implementations or pe64:
+                continue
+            symbol = bridge_symbol(contract['name'], raw['name'])
+            self.emitter.emit()
+            self.emitter.emit(f'global {symbol}')
+            self.emitter.emit(f'{symbol}:')
+            self.emitter.emit('    push ebp')
+            self.emitter.emit('    mov ebp, esp')
+            self.emitter.emit('    push esi')
+            self.emitter.emit('    mov esi, dword ptr [ebp+8]')
+            offset = 12
+            for parameter, storage in zip(method.parameters, method.parameter_variables):
+                size = self._value_storage_size(parameter.type_info)
+                if size not in (1, 2, 4, 8):
+                    raise self._error(
+                        f"DLL-Methode {contract['name']}.{method.name}: "
+                        'Aggregat-Wertparameter werden noch nicht unterstützt.',
+                        method.position)
+                if size == 8:
+                    for step in (0, 4):
+                        self.emitter.emit(f'    mov eax, dword ptr [ebp+{offset + step}]')
+                        self.emitter.emit(f'    mov dword ptr [{storage.label}+{step}], eax')
+                else:
+                    self.emitter.emit(f'    mov eax, dword ptr [ebp+{offset}]')
+                    reg, typ = {1: ('al','byte'), 2: ('ax','word'), 4: ('eax','dword')}[size]
+                    self.emitter.emit(f'    mov {typ} ptr [{storage.label}], {reg}')
+                offset += max(4, size)
+            self.emitter.emit(f'    call {method.label}')
+            self.emitter.emit('    pop esi')
+            self.emitter.emit('    mov esp, ebp')
+            self.emitter.emit('    pop ebp')
+            self.emitter.emit('    ret')
+
+        # For fields, getters/setters use a uniform ABI:
+        # void get(Self, void *destination), void set(Self, const void *source).
+        # This also supports Double, records and arrays without exposing
+        # platform-specific return-register conventions.
+        for contract in self.program.class_export_contracts:
+            cls = self.types.get(str(contract.get('name','')).casefold())
+            if cls is None or cls.kind != 'class':
+                continue
+            is_owner = (cls.name.casefold() in self.program.class_export_owners
+                        or any(m.owner is cls and m.label in implementations
+                               for m in cls.methods.values()))
+            if not is_owner:
+                continue
+            backing_fields = {
+                str(raw.get(accessor, '')).casefold()
+                for raw in contract.get('properties', ())
+                for accessor in ('read', 'write')
+                if raw.get(accessor)
+            }
+            for field in contract.get('fields', ()):
+                if (field.get('visibility') == 'private'
+                    and str(field.get('name', '')).casefold() not in backing_fields):
+                    continue
+                name = str(field.get('name',''))
+                info = cls.fields.get(name.casefold())
+                if info is None:
+                    continue
+                size = self._value_storage_size(info.type_info)
+                if size <= 0 or size > 256:
+                    raise self._error('Ungültige exportierte Feldgröße.', info.position)
+                for direction in ('get', 'set'):
+                    sym = bridge_symbol(cls.name, name, direction)
+                    self.emitter.emit()
+                    self.emitter.emit(f'global {sym}')
+                    self.emitter.emit(f'{sym}:')
+                    if pe64:
+                        # rdx points to caller-owned buffer, rcx is Self.
+                        for index in range(0, size, 1):
+                            source = f'[rcx+{info.offset+index}]' if direction == 'get' else f'[rdx+{index}]'
+                            target = f'[rdx+{index}]' if direction == 'get' else f'[rcx+{info.offset+index}]'
+                            self.emitter.emit(f'    mov r8b, byte ptr {source}')
+                            self.emitter.emit(f'    mov byte ptr {target}, r8b')
+                        self.emitter.emit('    ret')
+                    else:
+                        self.emitter.emit('    push ebp')
+                        self.emitter.emit('    mov ebp, esp')
+                        self.emitter.emit('    mov eax, dword ptr [ebp+8]')
+                        self.emitter.emit('    mov edx, dword ptr [ebp+12]')
+                        for index in range(size):
+                            src = f'[eax+{info.offset+index}]' if direction == 'get' else f'[edx+{index}]'
+                            dst = f'[edx+{index}]' if direction == 'get' else f'[eax+{info.offset+index}]'
+                            self.emitter.emit(f'    mov cl, byte ptr {src}')
+                            self.emitter.emit(f'    mov byte ptr {dst}, cl')
+                        self.emitter.emit('    mov esp, ebp')
+                        self.emitter.emit('    pop ebp')
+                        self.emitter.emit('    ret')
+
+    def _emit_library_unit_routine_exports(self) -> None:
+        from pascal_library_contract import public_routine_export
+        exported = set()
+        for unit, doc in self.program.library_unit_documents:
+            for kind in ('functions', 'procedures'):
+                for row in doc.get('symbols', {}).get(kind, ()):
+                    if not isinstance(row, dict):
+                        continue
+                    name = str(row.get('name',''))
+                    if not name or name.casefold() not in self.global_routines:
+                        continue
+                    # DLL exposes a stable name, but internal global label
+                    # remains a compiler detail. It is never duplicated in EXE.
+                    internal = self.global_routines[name.casefold()].label
+                    public = public_routine_export(unit,name)
+                    if public.casefold() in exported:
+                        raise C64PascalError(f'DLL-Export mehrfach: {public}')
+                    exported.add(public.casefold())
+                    self.emitter.emit(f'export "{public}", {internal}')
+
+    def _emit_library_class_exports(self) -> None:
+        from pascal_class_exports import export_name, bridge_symbol
+        pe64 = isinstance(self, _PE64CodeGenerator)
+        definitions = {method.label for method in self.methods if method.implementation is not None}
+        exports: dict[str, str] = {}
+        for contract, raw, method in self._class_export_methods():
+            public = str(raw.get('dll_export_name') or export_name(contract['name'], raw['name']))
+            symbol = method.label if pe64 else bridge_symbol(contract['name'], raw['name'])
+            exports[public] = symbol
+            if method.kind == 'constructor':
+                exports[export_name(contract['name'], raw['name'], 'new')] = bridge_symbol(contract['name'], raw['name'], 'new')
+        for contract in self.program.class_export_contracts:
+            cls = self.types.get(str(contract.get('name', '')).casefold())
+            if cls is None or cls.kind != 'class':
+                continue
+            for raw in contract.get('fields', ()):
+                if raw.get('visibility') == 'private':
+                    continue
+                for direction in ('get','set'):
+                    exports[export_name(contract['name'], raw['name'], direction)] = bridge_symbol(contract['name'], raw['name'], direction)
+            for raw in contract.get('properties', ()):
+                for direction, accessor_key in (('get','read'), ('set','write')):
+                    accessor = raw.get(accessor_key)
+                    if accessor is None:
+                        continue
+                    field_name = str(accessor).casefold()
+                    if field_name in cls.fields:
+                        exports[export_name(contract['name'], raw['name'], direction)] = bridge_symbol(contract['name'], accessor, direction)
+                    elif field_name in cls.methods:
+                        # Publish a stable property name as an alias of the
+                        # declared getter/setter method's normal DLL ABI.
+                        accessor_method = cls.methods[field_name]
+                        exports[export_name(contract['name'], raw['name'], direction)] = (
+                            accessor_method.label if pe64
+                            else bridge_symbol(contract['name'], accessor_method.name)
+                        )
+        for public, symbol in sorted(exports.items(), key=lambda item: item[0].casefold()):
+            # 'export' can point at a different COFF object linked into the DLL.
+            # Avoid inventing the implementation if a PUI had no body.
+            self.emitter.emit(f'export "{public}", {symbol}')
+            if symbol not in definitions and not any(
+                row.strip() == symbol + ':' for row in self.emitter.lines
+            ):
+                self.emitter.emit(f'extern {symbol}')
+
     def _emit_class_runtime_thunks(self) -> None:
         for class_type in self._class_types_for_runtime_metadata():
             method = self._class_destructor_method(class_type)
@@ -9487,7 +10261,13 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    mov ebp, esp")
             self.emitter.emit("    push esi")
             self.emitter.emit("    mov esi, dword ptr [ebp+8]")
-            self.emitter.emit(f"    call {method.label}")
+            imported = {name.casefold() for name, _dll in self.program.class_import_libraries}
+            if method.is_external and method.owner.name.casefold() in imported:
+                self.emitter.emit("    push esi")
+                self.emitter.emit(f"    call {method.label}")
+                self.emitter.emit("    add esp, 4")
+            else:
+                self.emitter.emit(f"    call {method.label}")
             self.emitter.emit("    pop esi")
             self.emitter.emit("    mov esp, ebp")
             self.emitter.emit("    pop ebp")
@@ -9503,6 +10283,12 @@ class _PE32CodeGenerator(_CodeGenerator):
             name_label = self._class_name_label(class_type)
             encoded = class_type.name.encode("latin-1", errors="replace") + b"\x00"
             values = ", ".join(str(value) for value in encoded)
+            literal_label = self.strings.get(encoded[:-1]) if self.optimization_level >= 1 else None
+            if literal_label:
+                # Both labels denote the exact same null-terminated byte sequence.
+                # Only shared *complete* strings, never mere common prefixes.
+                self.emitter.emit(f"{literal_label}:")
+                self._shared_classname_literals.add(literal_label)
             self.emitter.emit(f"{name_label}: db {values}")
         self.emitter.emit("align 4")
         for class_type in classes:
@@ -9852,6 +10638,10 @@ class _PE32CodeGenerator(_CodeGenerator):
             self._emit_load_literal(value, expression.position.line)
             return value_type
         line = expression.position.line
+        if isinstance(expression, (NameExpression, DesignatorExpression)):
+            dll_member = self._dll_field_access(expression, for_write=False)
+            if dll_member is not None:
+                return self._emit_dll_field_bridge(dll_member, for_write=False, line=line)
         if isinstance(expression, AddressOfExpression):
             label = self._routine_address_label(expression)
             self.emitter.emit(f"    mov eax, {label}", line)
@@ -9896,6 +10686,10 @@ class _PE32CodeGenerator(_CodeGenerator):
                     return self._compile_class_constructor_call(
                         class_type, method, (), expression.position
                     )
+            prop_access = self._resolve_property_target(expression)
+            if prop_access is not None and prop_access[3] is not None:
+                _prop, receiver, _field, getter = prop_access
+                return self._compile_method_call(getter, receiver, (), expression.position)
             try:
                 access = self._resolve_storage(expression)
             except C64PascalError:
@@ -10309,7 +11103,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                     argument.position,
                 )
             designator = self._as_designator(argument, argument.position)
-            access = self._resolve_storage(designator)
+            access = self._resolve_storage(designator, for_write=True)
             type_info = access.type_info
             is_last = index == len(statement.arguments) - 1
 
@@ -10495,6 +11289,35 @@ class _PE32CodeGenerator(_CodeGenerator):
     def _compile_method_call(self, method, receiver, arguments, position):
         self._require_argument_count(method.name, arguments, len(method.parameters), position)
         line = position.line
+        imported = {name.casefold(): dll for name, dll in self.program.class_import_libraries}
+        if method.is_external and method.owner.name.casefold() in imported:
+            # Public ABI: cdecl method(Self, arg1, ...).  Do NOT write the
+            # method's private static parameter slots in the client image.
+            if self.current_method is not None:
+                self.emitter.emit('    push esi', line)
+            size_total = 4
+            for argument, parameter in reversed(list(zip(arguments, method.parameters))):
+                argument_type = self._expression_type(argument)
+                if not self._types_compatible(parameter.type_info, argument_type):
+                    raise self._error('Falscher DLL-Methodenparametertyp.', argument.position)
+                size = self._value_storage_size(parameter.type_info)
+                self._compile_expr(argument)
+                if size == 8 and parameter.type_info.kind == 'double':
+                    self.emitter.emit('    sub esp, 8', line)
+                    self.emitter.emit('    fstp qword ptr [esp]', line)
+                    size_total += 8
+                elif size in (1, 2, 4):
+                    self.emitter.emit('    push eax', line)
+                    size_total += 4
+                else:
+                    raise self._error('DLL-Wertparameter dieser Größe werden noch nicht unterstützt.', argument.position)
+            self._emit_set_self_address(receiver, line)
+            self.emitter.emit('    push esi', line)
+            self.emitter.emit(f'    call {method.label}', line)
+            self.emitter.emit(f'    add esp, {size_total}', line)
+            if self.current_method is not None:
+                self.emitter.emit('    pop esi', line)
+            return method.result_type if method.result_type is not None else BYTE_TYPE
         for argument, parameter, variable in zip(arguments, method.parameters, method.parameter_variables):
             argument_type = self._compile_expr(argument)
             if not self._value_is_scalar(argument_type) or not self._value_is_scalar(parameter.type_info):
@@ -10537,6 +11360,30 @@ class _PE32CodeGenerator(_CodeGenerator):
             len(method.parameters),
             position,
         )
+        line = position.line
+        imported = {name.casefold(): dll for name, dll in self.program.class_import_libraries}
+        if method.is_external and method.owner.name.casefold() in imported:
+            from pascal_class_exports import bridge_symbol
+            consumed = 0
+            for argument, parameter in reversed(list(zip(arguments,method.parameters))):
+                actual = self._expression_type(argument)
+                if not self._types_compatible(parameter.type_info,actual):
+                    raise self._error('DLL-Konstruktor: Parameter passt nicht zum Typ.',argument.position)
+                size = self._value_storage_size(parameter.type_info)
+                self._compile_expr(argument)
+                if size == 8 and parameter.type_info.kind == 'double':
+                    self.emitter.emit('    sub esp, 8',line)
+                    self.emitter.emit('    fstp qword ptr [esp]',line)
+                    consumed += 8
+                elif size in (1,2,4):
+                    self.emitter.emit('    push eax',line)
+                    consumed += 4
+                else:
+                    raise self._error('DLL-Konstruktor: Aggregatparameter nicht unterstützt.',argument.position)
+            self.emitter.emit(f'    call {bridge_symbol(class_type.name,method.name,"new")}',line)
+            if consumed:
+                self.emitter.emit(f'    add esp, {consumed}',line)
+            return class_type
         if method.is_external and method.parameters:
             raise self._error(
                 "PE32: Konstruktoren importierter Klassen mit Parametern "
@@ -10896,6 +11743,17 @@ class _PE32CodeGenerator(_CodeGenerator):
             # Exportierte Routinen verwenden cdecl; der Aufrufer räumt auf.
             self.emitter.emit("    ret")
 
+    def _needs_console_output_storage(self) -> bool:
+        """WriteFile support needs storage even in UNITs and DLLs.
+
+        ``console_mode`` governs AllocConsole/restore, not WriteLn support.
+        Runtime-use flags are complete after routine and method generation.
+        """
+        return bool(self.runtime.intersection({
+            "print_string", "print_int", "print_double", "print_char",
+            "print_newline", "clear_screen", "range_error",
+        }))
+
     def _emit_runtime(self) -> None:
         self._emit_cookie_runtime()
         if self.uses_debug_break:
@@ -10996,6 +11854,16 @@ class _PE32CodeGenerator(_CodeGenerator):
 
         if self.runtime.intersection({"print_string", "print_int", "print_double", "print_char", "print_newline", "clear_screen", "range_error"}):
             self.emitter.emit(); self.emitter.emit(f"{self.symbol_prefix}_write_cstring:")
+            if not self.console_mode:
+                # A DLL/UNIT borrows the host console (if present).
+                # Preserve the C-string address across GetStdHandle.
+                self.emitter.emit("    push eax")
+                self.emitter.emit("    push -11")
+                self.emitter.emit("    call GetStdHandle")
+                self.emitter.emit(
+                    f"    mov dword ptr [{self.symbol_prefix}_stdout_handle], eax"
+                )
+                self.emitter.emit("    pop eax")
             self.emitter.emit("    push eax")
             self.emitter.emit("    push eax")
             self.emitter.emit("    call lstrlenA")
@@ -11107,9 +11975,11 @@ class _PE32CodeGenerator(_CodeGenerator):
         if self.strings:
             self.emitter.emit(); self.emitter.emit("; Nullterminierte Windows-Latin-1-Zeichenketten")
             for data, label in self.strings.items():
+                if label in self._shared_classname_literals:
+                    continue
                 values = ", ".join(str(value) for value in data + b"\x00")
                 self.emitter.emit(f"{label}: db {values}")
-        if bss_variables or self.console_mode or self.exception_frames or self.uses_double_runtime or self.stack_protector:
+        if bss_variables or self.console_mode or self._needs_console_output_storage() or self.exception_frames or self.uses_double_runtime or self.stack_protector:
             self.emitter.emit()
             self.emitter.emit("section .bss")
             self.emitter.emit("align 4")
@@ -11119,12 +11989,14 @@ class _PE32CodeGenerator(_CodeGenerator):
                 comment = "intern" if variable.internal else variable.name
                 size = self._value_storage_size(variable.type_info)
                 self.emitter.emit(f"{variable.label}: resb {size} ; {comment}: {variable.type_info.name}")
-        if self.console_mode:
+        if self.console_mode or self._needs_console_output_storage():
             self.emitter.emit(f"{self.symbol_prefix}_stdout_handle: resd 1")
+        if self.console_mode:
             self.emitter.emit(f"{self.symbol_prefix}_console_restore_rect: resw 4")
             self.emitter.emit(f"{self.symbol_prefix}_console_info: resb 22")
             self.emitter.emit(f"{self.symbol_prefix}_console_state_valid: resd 1")
             self.emitter.emit(f"{self.symbol_prefix}_console_mode: resd 1")
+        if self._needs_console_output_storage():
             self.emitter.emit(f"{self.symbol_prefix}_written: resd 1")
             self.emitter.emit(f"{self.symbol_prefix}_format_buffer: resb 32")
             self.emitter.emit(f"{self.symbol_prefix}_char_buffer: resb 2")
@@ -11144,7 +12016,11 @@ class _PE32CodeGenerator(_CodeGenerator):
     def _emit_external_declarations(self) -> None:
         self._emit_cookie_imports()
         emitted: set[str] = set()
-        if self._node_uses_class_constructor(self.program):
+        if (self._node_uses_class_constructor(self.program)
+            or any(m.kind == 'constructor' and m.implementation is not None
+                   for m in self.methods if m.owner.name.casefold() in {
+                       item['name'].casefold() for item in self.program.class_export_contracts
+                   })):
             line = (
                 f'import _jit_object_instance_new, "{PASCAL_MINIRUNTIME_DLL}", '
                 '"jit_object_instance_new"'
@@ -11167,8 +12043,47 @@ class _PE32CodeGenerator(_CodeGenerator):
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)
+        imported = {name.casefold(): dll for name, dll in self.program.class_import_libraries}
+        from pascal_class_exports import bridge_symbol, export_name
+        for contract in self.program.class_export_contracts:
+            dll = imported.get(contract['name'].casefold())
+            if not dll:
+                continue
+            for raw in contract.get('fields', ()):
+                if raw.get('visibility') == 'private':
+                    continue
+                for direction in ('get', 'set'):
+                    symbol = bridge_symbol(contract['name'], raw['name'], direction)
+                    line = (f'import {symbol}, "{dll}", "'
+                            f'{export_name(contract["name"], raw["name"], direction)}"')
+                    if line not in emitted:
+                        self.emitter.emit(line)
+                        emitted.add(line)
+            for raw in contract.get('properties', ()):
+                for direction, accessor in (('get', 'read'), ('set', 'write')):
+                    if not raw.get(accessor):
+                        continue
+                    if not any(field.get('name', '').casefold() == str(raw[accessor]).casefold()
+                               for field in contract.get('fields', ())):
+                        continue # method-backed property uses the normal DLL method import
+                    symbol = bridge_symbol(contract['name'], raw['name'], direction)
+                    line = (f'import {symbol}, "{dll}", "'
+                            f'{export_name(contract["name"], raw["name"], direction)}"')
+                    if line not in emitted:
+                        self.emitter.emit(line)
+                        emitted.add(line)
         for symbol in sorted(self.imported_method_symbols, key=str.casefold):
-            line = f"extern {symbol}"
+            owner = next((method.owner.name for cls in self.types.values()
+                          if cls.kind == 'class' for method in cls.methods.values()
+                          if method.label == symbol and method.owner.name.casefold() in imported), None)
+            if owner is not None:
+                method_name = next((method.name for cls in self.types.values()
+                                    if cls.kind == 'class' for method in cls.methods.values()
+                                    if method.label == symbol and method.owner.name.casefold() == owner.casefold()), None)
+                from pascal_class_exports import export_name
+                line = f'import {symbol}, "{imported[owner.casefold()]}", "{export_name(owner, method_name)}"'
+            else:
+                line = f"extern {symbol}"
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)
@@ -11177,6 +12092,22 @@ class _PE32CodeGenerator(_CodeGenerator):
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)
+        # DLL constructors are factories in the owning module.  They allocate
+        # objects with the DLL's VMT, not with a synthetic client-side VMT.
+        from pascal_class_exports import export_name, bridge_symbol
+        for contract in self.program.class_export_contracts:
+            dll = imported.get(contract['name'].casefold())
+            if not dll:
+                continue
+            for raw in contract.get('methods', ()):
+                if str(raw.get('kind','')).casefold() != 'constructor':
+                    continue
+                symbol = bridge_symbol(contract['name'],raw['name'],'new')
+                public = export_name(contract['name'],raw['name'],'new')
+                line = f'import {symbol}, "{dll}", "{public}"'
+                if line not in emitted:
+                    self.emitter.emit(line)
+                    emitted.add(line)
         if self.uses_debug_break:
             line = 'import _getch, "msvcrt.dll", "_getch"'
             if line not in emitted:
@@ -11211,11 +12142,16 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit(f"; Unit: {self.unit_name}")
             self.emitter.emit("bits 32")
             self.emitter.emit(f"global __unit_{safe_unit}")
+            # UNITs may contain WriteLn/range checks even without a console.
+            # Unused externs do not generate PE imports or IAT entries.
+            for symbol in ("ExitProcess", "GetStdHandle", "WriteFile", "lstrlenA", "wsprintfA"):
+                self.emitter.emit(f"extern {symbol}")
             self._emit_external_declarations()
             self.emitter.emit(f"__unit_{safe_unit}:")
             self.emitter.emit("    ret")
             self._emit_global_routines()
             self._emit_methods()
+            self._emit_class_export_bridges()
             self._emit_class_runtime_thunks()
             self._emit_runtime()
             self._emit_data()
@@ -11279,8 +12215,11 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    ret 12", source_line)
             self._emit_global_routines()
             self._emit_methods()
+            self._emit_class_export_bridges()
             self._emit_class_runtime_thunks()
             self._emit_library_exports()
+            self._emit_library_class_exports()
+            self._emit_library_unit_routine_exports()
             self._emit_runtime()
             self._emit_data()
             assembly = self._finalized_assembly()
@@ -11374,6 +12313,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         breakpoint_lines: Iterable[int] = (),
         stack_protector: bool = False,
         optimization_level: int = 0,
+        no_stack_frames: bool = False,
     ) -> None:
         super().__init__(
             program,
@@ -11387,6 +12327,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             breakpoint_lines=breakpoint_lines,
             stack_protector=stack_protector,
             optimization_level=optimization_level,
+            no_stack_frames=no_stack_frames,
         )
         self.types["integer"] = PE64_INTEGER_TYPE
         self.types["pointer"] = PE64_POINTER_TYPE
@@ -11501,6 +12442,12 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             name_label = self._class_name_label(class_type)
             encoded = class_type.name.encode("latin-1", errors="replace") + b"\x00"
             values = ", ".join(str(value) for value in encoded)
+            literal_label = self.strings.get(encoded[:-1]) if self.optimization_level >= 1 else None
+            if literal_label:
+                # Both labels denote the exact same null-terminated byte sequence.
+                # Only shared *complete* strings, never mere common prefixes.
+                self.emitter.emit(f"{literal_label}:")
+                self._shared_classname_literals.add(literal_label)
             self.emitter.emit(f"{name_label}: db {values}")
         self.emitter.emit("align 8")
         for class_type in classes:
@@ -11818,6 +12765,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self._emit_load_literal(value, expression.position.line)
             return value_type
         line = expression.position.line
+        if isinstance(expression, (NameExpression, DesignatorExpression)):
+            dll_member = self._dll_field_access(expression, for_write=False)
+            if dll_member is not None:
+                return self._emit_dll_field_bridge(dll_member, for_write=False, line=line)
         if isinstance(expression, AddressOfExpression):
             label = self._routine_address_label(expression)
             self.emitter.emit(f"    mov rax, {label}", line)
@@ -11860,6 +12811,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                     return self._compile_class_constructor_call(
                         class_type, method, (), expression.position
                     )
+            prop_access = self._resolve_property_target(expression)
+            if prop_access is not None and prop_access[3] is not None:
+                _prop, receiver, _field, getter = prop_access
+                return self._compile_method_call(getter, receiver, (), expression.position)
             try:
                 access = self._resolve_storage(expression)
             except C64PascalError:
@@ -12185,6 +13140,14 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             position,
         )
         line = position.line
+        imported = {name.casefold(): dll for name, dll in self.program.class_import_libraries}
+        if method.is_external and method.owner.name.casefold() in imported:
+            from pascal_class_exports import bridge_symbol
+            self._emit_win64_call(
+                bridge_symbol(class_type.name,method.name,'new'),
+                arguments,method.parameters,position
+            )
+            return class_type
         temp = self._allocate_variable(
             f"$ctor_{class_type.name}_{self.label_counter}_{len(self.variable_order)}",
             class_type,
@@ -12663,6 +13626,19 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit(
                 f"    mov qword ptr [{self.symbol_prefix}_write_ptr], rax"
             )
+            if not self.console_mode:
+                # GetStdHandle is safe in a DLL/UNIT and does not implicitly
+                # allocate a console; keep the string pointer in write_ptr.
+                self.emitter.emit("    mov ecx, -11")
+                self.emitter.emit("    sub rsp, 32")
+                self.emitter.emit("    call GetStdHandle")
+                self.emitter.emit("    add rsp, 32")
+                self.emitter.emit(
+                    f"    mov qword ptr [{self.symbol_prefix}_stdout_handle], rax"
+                )
+                self.emitter.emit(
+                    f"    mov rax, qword ptr [{self.symbol_prefix}_write_ptr]"
+                )
             self.emitter.emit("    mov rcx, rax")
             self.emitter.emit("    sub rsp, 32")
             self.emitter.emit("    call lstrlenA")
@@ -12804,9 +13780,11 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit()
             self.emitter.emit("; Nullterminierte Windows-Latin-1-Zeichenketten")
             for data, label in self.strings.items():
+                if label in self._shared_classname_literals:
+                    continue
                 values = ", ".join(str(value) for value in data + b"\x00")
                 self.emitter.emit(f"{label}: db {values}")
-        if bss_variables or self.console_mode or self.call_temporaries or self.uses_double_runtime or self.stack_protector:
+        if bss_variables or self.console_mode or self._needs_console_output_storage() or self.call_temporaries or self.uses_double_runtime or self.stack_protector:
             self.emitter.emit()
             self.emitter.emit("section .bss")
             self.emitter.emit("align 8")
@@ -12816,12 +13794,14 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 comment = "intern" if variable.internal else variable.name
                 size = self._value_storage_size(variable.type_info)
                 self.emitter.emit(f"{variable.label}: resb {size} ; {comment}: {variable.type_info.name}")
-        if self.console_mode:
+        if self.console_mode or self._needs_console_output_storage():
             self.emitter.emit(f"{self.symbol_prefix}_stdout_handle: resq 1")
+        if self.console_mode:
             self.emitter.emit(f"{self.symbol_prefix}_console_restore_rect: resw 4")
             self.emitter.emit(f"{self.symbol_prefix}_console_info: resb 22")
             self.emitter.emit(f"{self.symbol_prefix}_console_state_valid: resd 1")
             self.emitter.emit(f"{self.symbol_prefix}_console_mode: resd 1")
+        if self._needs_console_output_storage():
             self.emitter.emit(f"{self.symbol_prefix}_written: resd 1")
             self.emitter.emit(f"{self.symbol_prefix}_write_ptr: resq 1")
             self.emitter.emit(f"{self.symbol_prefix}_format_buffer: resb 32")
@@ -12841,7 +13821,11 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
     def _emit_external_declarations(self) -> None:
         self._emit_cookie_imports()
         emitted: set[str] = set()
-        if self._node_uses_class_constructor(self.program):
+        if (self._node_uses_class_constructor(self.program)
+            or any(m.kind == 'constructor' and m.implementation is not None
+                   for m in self.methods if m.owner.name.casefold() in {
+                       item['name'].casefold() for item in self.program.class_export_contracts
+                   })):
             line = (
                 f'import jit_object_instance_new, "{PASCAL_MINIRUNTIME_DLL}", '
                 '"jit_object_instance_new"'
@@ -12862,8 +13846,47 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)
+        imported = {name.casefold(): dll for name, dll in self.program.class_import_libraries}
+        from pascal_class_exports import bridge_symbol, export_name
+        for contract in self.program.class_export_contracts:
+            dll = imported.get(contract['name'].casefold())
+            if not dll:
+                continue
+            for raw in contract.get('fields', ()):
+                if raw.get('visibility') == 'private':
+                    continue
+                for direction in ('get', 'set'):
+                    symbol = bridge_symbol(contract['name'], raw['name'], direction)
+                    line = (f'import {symbol}, "{dll}", "'
+                            f'{export_name(contract["name"], raw["name"], direction)}"')
+                    if line not in emitted:
+                        self.emitter.emit(line)
+                        emitted.add(line)
+            for raw in contract.get('properties', ()):
+                for direction, accessor in (('get', 'read'), ('set', 'write')):
+                    if not raw.get(accessor):
+                        continue
+                    if not any(field.get('name', '').casefold() == str(raw[accessor]).casefold()
+                               for field in contract.get('fields', ())):
+                        continue # method-backed property uses the normal DLL method import
+                    symbol = bridge_symbol(contract['name'], raw['name'], direction)
+                    line = (f'import {symbol}, "{dll}", "'
+                            f'{export_name(contract["name"], raw["name"], direction)}"')
+                    if line not in emitted:
+                        self.emitter.emit(line)
+                        emitted.add(line)
         for symbol in sorted(self.imported_method_symbols, key=str.casefold):
-            line = f"extern {symbol}"
+            owner = next((method.owner.name for cls in self.types.values()
+                          if cls.kind == 'class' for method in cls.methods.values()
+                          if method.label == symbol and method.owner.name.casefold() in imported), None)
+            if owner is not None:
+                method_name = next((method.name for cls in self.types.values()
+                                    if cls.kind == 'class' for method in cls.methods.values()
+                                    if method.label == symbol and method.owner.name.casefold() == owner.casefold()), None)
+                from pascal_class_exports import export_name
+                line = f'import {symbol}, "{imported[owner.casefold()]}", "{export_name(owner, method_name)}"'
+            else:
+                line = f"extern {symbol}"
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)
@@ -12871,6 +13894,22 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit(f"{self.symbol_prefix}_double_scratch: resq 1")
             self.emitter.emit(f"{self.symbol_prefix}_double_int_scratch: resd 1")
             self.emitter.emit(f"{self.symbol_prefix}_double_buffer: resb 64")
+        # DLL constructors are factories in the owning module.  They allocate
+        # objects with the DLL's VMT, not with a synthetic client-side VMT.
+        from pascal_class_exports import export_name, bridge_symbol
+        for contract in self.program.class_export_contracts:
+            dll = imported.get(contract['name'].casefold())
+            if not dll:
+                continue
+            for raw in contract.get('methods', ()):
+                if str(raw.get('kind','')).casefold() != 'constructor':
+                    continue
+                symbol = bridge_symbol(contract['name'],raw['name'],'new')
+                public = export_name(contract['name'],raw['name'],'new')
+                line = f'import {symbol}, "{dll}", "{public}"'
+                if line not in emitted:
+                    self.emitter.emit(line)
+                    emitted.add(line)
         if self.uses_debug_break:
             line = 'import _getch, "msvcrt.dll", "_getch"'
             if line not in emitted:
@@ -12900,11 +13939,14 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit("; Architektur: AMD64 / x86-64 / COFF64")
             self.emitter.emit("bits 64")
             self.emitter.emit(f"global __unit_{safe_unit}")
+            for symbol in ("ExitProcess", "GetStdHandle", "WriteFile", "lstrlenA", "wsprintfA"):
+                self.emitter.emit(f"extern {symbol}")
             self._emit_external_declarations()
             self.emitter.emit(f"__unit_{safe_unit}:")
             self.emitter.emit("    ret")
             self._emit_global_routines()
             self._emit_methods()
+            self._emit_class_export_bridges()
             self._emit_runtime()
             self._emit_data()
             assembly = self._finalized_assembly()
@@ -12926,6 +13968,8 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit(f'dllname "{self.library_name}.dll"')
             self.emitter.emit("global __d64_dll_entry")
             self.emitter.emit("entry __d64_dll_entry")
+            for symbol in ("ExitProcess", "GetStdHandle", "WriteFile", "lstrlenA", "wsprintfA"):
+                self.emitter.emit(f"extern {symbol}")
             self._emit_external_declarations()
             self.emitter.emit("__d64_dll_entry:", source_line)
             self.emitter.emit("    push rbp", source_line)
@@ -12953,7 +13997,10 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             self.emitter.emit("    ret", source_line)
             self._emit_global_routines()
             self._emit_methods()
+            self._emit_class_export_bridges()
             self._emit_library_exports()
+            self._emit_library_class_exports()
+            self._emit_library_unit_routine_exports()
             self._emit_runtime()
             self._emit_data()
             assembly = self._finalized_assembly()
@@ -13223,6 +14270,10 @@ class _AmigaCodeGenerator(_CodeGenerator):
                     return STRING_TYPE
                 self._emit_load_literal(int(value), line)
                 return self.constant_types.get(key, self._constant_type(value))
+            prop_access = self._resolve_property_target(expression)
+            if prop_access is not None and prop_access[3] is not None:
+                _prop, receiver, _field, getter = prop_access
+                return self._compile_method_call(getter, receiver, (), expression.position)
             try:
                 access = self._resolve_storage(expression)
             except C64PascalError:
@@ -14084,12 +15135,14 @@ def _compile_pascal_unit_interface(
     predefined_macros: Optional[Dict[str, Union[str, int, bool]]],
     target: str,
     linked_object_files: Sequence[str] = (),
+    linked_dll_files: Sequence[str] = (),
     link_search_paths: Iterable[Path | str] = (),
     output_directory: Optional[Path | str] = None,
     progress_callback: Optional[Callable[[str, int], None]] = None,
     breakpoint_lines: Iterable[int] = (),
     stack_protector: bool = False,
     optimization_level: int = 0,
+    no_stack_frames: bool = False,
 ) -> GeneratedAssembly:
     """Kompiliert eine direkt geöffnete Pascal-Unit.
 
@@ -14100,6 +15153,9 @@ def _compile_pascal_unit_interface(
     preprocessor = PascalPreprocessor(
         predefined_macros, link_search_paths=link_search_paths
     )
+    for dll in linked_dll_files:
+        if str(dll).casefold() not in {str(x).casefold() for x in preprocessor.link_dlls}:
+            preprocessor.link_dlls.append(str(dll))
     processed = preprocessor.process(source, filename=filename)
     supplied_link_files = tuple(str(item) for item in linked_object_files)
     (
@@ -14185,6 +15241,10 @@ def _compile_pascal_unit_interface(
             macros=processed.macros,
         )
         _write_pui_document(pui_path, pui_document)
+        from pascal_class_exports import public_class_contract
+        own_contracts = public_class_contract(pui_document)
+    else:
+        own_contracts = []
 
     implementation_mask = _pascal_code_mask(implementation_source)
     has_pascal_routines = bool(re.search(
@@ -14244,6 +15304,9 @@ def _compile_pascal_unit_interface(
             external_routines=tuple(externals),
             global_routines=global_routines,
             unit_assembly_files=tuple(resolver.assembly_files),
+            class_export_contracts=tuple(list(resolver.class_export_contracts.values()) + own_contracts),
+            class_export_owners=tuple(sorted(resolver.class_export_owners | {
+                cls['name'].casefold() for cls in own_contracts})),
             unit_object_files=tuple(
                 dict.fromkeys(
                     list(supplied_link_files)
@@ -14259,6 +15322,7 @@ def _compile_pascal_unit_interface(
             breakpoint_lines=breakpoint_lines,
             stack_protector=stack_protector,
             optimization_level=optimization_level,
+            no_stack_frames=no_stack_frames,
         ).generate()
         generated = replace(
             generated,
@@ -14318,6 +15382,9 @@ def _compile_pascal_unit_interface(
             external_routines=tuple(externals),
             global_routines=global_routines,
             unit_assembly_files=tuple(resolver.assembly_files),
+            class_export_contracts=tuple(list(resolver.class_export_contracts.values()) + own_contracts),
+            class_export_owners=tuple(sorted(resolver.class_export_owners | {
+                cls['name'].casefold() for cls in own_contracts})),
             unit_object_files=tuple(
                 dict.fromkeys(
                     list(supplied_link_files)
@@ -14333,6 +15400,7 @@ def _compile_pascal_unit_interface(
             breakpoint_lines=breakpoint_lines,
             stack_protector=stack_protector,
             optimization_level=optimization_level,
+            no_stack_frames=no_stack_frames,
         ).generate()
         generated = replace(
             generated,
@@ -14631,6 +15699,44 @@ def _pascal_library_to_program_source(
     return transformed, library_name, public_exports
 
 
+def _stage541_process_pascal_imports(generated: GeneratedAssembly, *,
+                                   source: str, filename: str, target: str,
+                                   output_directory, import_cache_enabled: bool,
+                                   import_prune_unused: bool,
+                                   import_cache_directory: Optional[str],
+                                   import_runtime_version: str,
+                                   optimization_level: int,
+                                   stack_protector: bool,
+                                   no_stack_frames: bool) -> GeneratedAssembly:
+    if str(target).casefold() not in {
+        "pe32", "win32", "windows", "windows-pe32",
+        "pe64", "win64", "windows64", "windows-pe64", "windows-pe32+",
+    }:
+        return generated
+    from pascal_import_manager import process_assembly
+    # Never strip per-object imports if another object/UNIT could be the only
+    # consumer. Final linker prunes the union of actual COFF relocations.
+    conservative = (
+        str(generated.source_kind).casefold() == "unit"
+        or bool(generated.linked_assembly_files)
+        or bool(generated.linked_object_files)
+    )
+    assembly, manifest = process_assembly(
+        generated.assembly, target,
+        source_text=source, filename=filename,
+        output_directory=output_directory,
+        explicit_cache_root=import_cache_directory,
+        runtime_version=import_runtime_version,
+        configuration={"optimization_level": int(optimization_level),
+                       "stack_protector": bool(stack_protector),
+                       "no_stack_frames": bool(no_stack_frames)},
+        cache_enabled=import_cache_enabled,
+        prune_unused=import_prune_unused,
+        conservative=conservative,
+    )
+    return replace(generated, assembly=assembly, import_manifest=manifest)
+
+
 def compile_pascal_to_assembly(
     source: str,
     *,
@@ -14642,12 +15748,18 @@ def compile_pascal_to_assembly(
     fpu_model: str = "FPU: None",
     graphics_backend: str = "Direct2D",
     linked_object_files: Sequence[str] = (),
+    linked_dll_files: Sequence[str] = (),
     link_search_paths: Iterable[Path | str] = (),
     output_directory: Optional[Path | str] = None,
     progress_callback: Optional[Callable[[str, int], None]] = None,
     breakpoint_lines: Iterable[int] = (),
     stack_protector: bool = False,
     optimization_level: int = 0,
+    no_stack_frames: bool = False,
+    import_cache_enabled: bool = True,
+    import_prune_unused: bool = True,
+    import_cache_directory: Optional[str] = None,
+    import_runtime_version: str = "libd64_runtime",
 ) -> GeneratedAssembly:
     """Parst PROGRAM-, UNIT- oder PE32-LIBRARY-Quellen und erzeugt Assembler.
 
@@ -14667,19 +15779,32 @@ def compile_pascal_to_assembly(
         progress_callback(filename, 1)
 
     if source_kind == "unit":
-        return _compile_pascal_unit_interface(
+        unit_result = _compile_pascal_unit_interface(
             source,
             filename=filename,
             include_paths=include_paths,
             predefined_macros=predefined_macros,
             target=target,
             linked_object_files=linked_object_files,
+            linked_dll_files=linked_dll_files,
             link_search_paths=link_search_paths,
             output_directory=output_directory,
             progress_callback=progress_callback,
             breakpoint_lines=breakpoint_lines,
             stack_protector=stack_protector,
             optimization_level=optimization_level,
+            no_stack_frames=no_stack_frames,
+        )
+        return _stage541_process_pascal_imports(
+            unit_result, source=source, filename=filename, target=target,
+            output_directory=output_directory,
+            import_cache_enabled=import_cache_enabled,
+            import_prune_unused=import_prune_unused,
+            import_cache_directory=import_cache_directory,
+            import_runtime_version=import_runtime_version,
+            optimization_level=optimization_level,
+            stack_protector=stack_protector,
+            no_stack_frames=no_stack_frames,
         )
 
     library_name: Optional[str] = None
@@ -14705,9 +15830,42 @@ def compile_pascal_to_assembly(
         predefined_macros=predefined_macros,
         target=target,
         link_search_paths=link_search_paths,
+        linked_dll_files=linked_dll_files,
         output_directory=output_directory,
         progress_callback=progress_callback,
     )
+    if normalized_target in {
+        'pe32', 'win32', 'windows', 'windows-pe32',
+        'pe64', 'win64', 'windows64', 'windows-pe64', 'windows-pe32+',
+    }:
+        from pascal_class_exports import validate_class_dll_references
+        from pascal_library_contract import validate_contract_exports
+        dll_lookup = {Path(dll).name.casefold(): dll
+                      for dll in preprocessed.link_dlls}
+        try:
+            for library, contract in program.dll_provider_contracts:
+                match = dll_lookup.get(str(library).casefold(), library)
+                validate_contract_exports(
+                    contract, match, target,
+                    ([output_directory] if output_directory else [])
+                    + ([Path(filename).expanduser().resolve().parent]
+                       if not str(filename).startswith('<') else [])
+                    + list(link_search_paths),
+                )
+            class_imports = {}
+            for name, library in program.class_import_libraries:
+                class_imports.setdefault(str(library).casefold(), set()).add(str(name).casefold())
+            for library, names in class_imports.items():
+                contracts = [contract for contract in program.class_export_contracts
+                             if str(contract.get('name','')).casefold() in names]
+                linked_dll = dll_lookup.get(library, library)
+                validate_class_dll_references(
+                    (linked_dll,), contracts, target=target,
+                    filename=filename, output_directory=output_directory,
+                    link_search_paths=link_search_paths,
+                )
+        except (ValueError, OSError) as exc:
+            raise C64PascalError(str(exc)) from exc
     if normalized_target in {"c64", "c-64", "6510"}:
         generated = _CodeGenerator(program).generate()
     elif normalized_target in {"amiga", "amiga500", "a500", "m68k", "68000"}:
@@ -14723,6 +15881,7 @@ def compile_pascal_to_assembly(
             breakpoint_lines=breakpoint_lines,
             stack_protector=stack_protector,
             optimization_level=optimization_level,
+            no_stack_frames=no_stack_frames,
         ).generate()
     elif normalized_target in {
         "pe64", "win64", "windows64", "windows-pe64", "windows-pe32+"
@@ -14737,13 +15896,19 @@ def compile_pascal_to_assembly(
             breakpoint_lines=breakpoint_lines,
             stack_protector=stack_protector,
             optimization_level=optimization_level,
+            no_stack_frames=no_stack_frames,
         ).generate()
     else:
         raise C64PascalError(f"Unbekanntes Compilerziel: {target}.")
     generated = _link_pascal_assembly_modules(
         generated, program.unit_assembly_files, target=target
     )
-    return replace(
+    if source_kind == 'library' and library_name and not str(filename).startswith('<'):
+        from pascal_library_contract import write_contract
+        contract_output = output_directory or Path(filename).expanduser().resolve().parent
+        write_contract(contract_output, library_name, target,
+                       dict(program.library_unit_documents), generated.assembly)
+    generated = replace(
         generated,
         notes=preprocessed.notes,
         warnings=preprocessed.warnings,
@@ -14753,4 +15918,15 @@ def compile_pascal_to_assembly(
                 list(linked_object_files) + list(program.unit_object_files)
             )
         ),
+    )
+    return _stage541_process_pascal_imports(
+        generated, source=source, filename=filename, target=target,
+        output_directory=output_directory,
+        import_cache_enabled=import_cache_enabled,
+        import_prune_unused=import_prune_unused,
+        import_cache_directory=import_cache_directory,
+        import_runtime_version=import_runtime_version,
+        optimization_level=optimization_level,
+        stack_protector=stack_protector,
+        no_stack_frames=no_stack_frames,
     )

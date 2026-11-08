@@ -17,6 +17,7 @@ const
     ID_BUTTON_INFO = 1001;
 
 type
+    {$export TApplication}
     TApplication = class(TObject)
     private
         FAppForm    : TForm;

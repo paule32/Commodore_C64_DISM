@@ -126,3 +126,131 @@ def optimize_assembler(lines: Iterable[str], source_map: Dict[int, int],
         if source_index in source_map:
             new_map[i] = source_map[source_index]
     return output_lines, new_map
+
+
+def omit_safe_pascal_stack_frames(lines, source_map, routine_labels, *, is_pe64=False):
+    """Stage 538: optional frame-pointer omission for *provably frame-free* routines.
+
+    Never change stack-cookie instrumentation, exceptions, stack variables,
+    frame-relative parameters, Win64 caller home/shadow space or non-leaf
+    AMD64 calls.  On x86 we preserve EBX/ESI/EDI through balanced PUSH/POP.
+    Original source-line associations are retained after rewriting.
+    """
+    source = list(lines)
+    recognized = set(routine_labels)
+    starts = [i for i, line in enumerate(source)
+              if line.strip().endswith(':') and line.strip()[:-1] in recognized]
+    if not starts:
+        return source, dict(source_map)
+    # Keep the source-map origin along with each instruction during edits.
+    records = [(line, idx + 1) for idx, line in enumerate(source)]
+    regions = []
+    for index, start in enumerate(starts):
+        stop = starts[index + 1] if index + 1 < len(starts) else len(records)
+        # The last routine is followed by metadata, export stubs and/or runtime.
+        for j in range(start + 1, stop):
+            op = records[j][0].strip().lower()
+            if (op.startswith('section ') or
+                    op.startswith('; stage 240: cdecl') or
+                    op.startswith('; stage 532:') or
+                    re.match(r'^__pas(?:_unit_[\w]+)?_(?:vmt|cookie|console|write|print|read|range|clear)_[\w]+:$', op)):
+                stop = j
+                break
+        regions.append((start, stop))
+
+    def safe_frame(segment):
+        if len(segment) < (7 if is_pe64 else 10):
+            return None
+        ins = [_instruction(line) for line, _ in segment]
+        # First instructions must be the exact compiler-emitted prologue.
+        required_prologue = (['push rbp', 'mov rbp, rsp'] if is_pe64
+                             else ['push ebp', 'mov ebp, esp'])
+        if ins[1:3] != required_prologue:
+            return None
+        if any('cookie' in op or 'exception' in op or 'try_handler' in op
+               for op in ins):
+            return None
+        if is_pe64:
+            # Win64 method functions modify nonvolatile RSI, which requires
+            # valid unwind metadata. Without an emitted UNWIND_INFO record, do
+            # not turn these routines into apparent frameless leaf functions.
+            if '_method_' in ins[0]:
+                return None
+            pro_end = 3
+            epilogue = ['mov rsp, rbp', 'pop rbp']
+            # Win64 requires stack alignment + shadow space for CALL; do not
+            # rewrite any routine performing a call (including indirect calls).
+            if any(re.match(r'^(call|syscall|int)\b', op) for op in ins[pro_end:]):
+                return None
+        else:
+            if ins[3:6] != ['push ebx', 'push esi', 'push edi']:
+                return None
+            pro_end = 6
+            epilogue = [
+                'mov ebx, dword ptr [ebp-4]',
+                'mov esi, dword ptr [ebp-8]',
+                'mov edi, dword ptr [ebp-12]',
+                'mov esp, ebp', 'pop ebp',
+            ]
+
+        end_positions = set()
+        for i, op in enumerate(ins):
+            if re.fullmatch(r'ret(?: \d+)?', op):
+                begin = i - len(epilogue)
+                if begin < pro_end or ins[begin:i] != epilogue:
+                    return None
+                end_positions.update(range(begin, i))
+        if not end_positions:
+            return None
+        for i, op in enumerate(ins):
+            if i in end_positions or i in (1, 2):
+                continue
+            if not is_pe64 and i in (3, 4, 5):
+                continue
+            if re.search(r'\b(?:ebp|rbp)\b', op):
+                return None
+            # No local stack allocations or hidden stack-frame manipulations.
+            if re.search(r'\b(?:sub|and|mov|lea|xchg|leave)\s+(?:e|r)sp\b', op):
+                return None
+            if is_pe64 and re.search(r'\b(?:rsp|esp)\b', op):
+                return None
+            if not is_pe64:
+                # IA-32: deliberately restrict omission to leaf code without
+                # dynamic PUSH/POP. Frame teardown must not mask imbalanced
+                # stack use in a CALL, an early branch, or exception cleanup.
+                if re.match(r'^(?:call|push|pop|enter|leave|int|syscall)\b', op):
+                    return None
+                if '_jit_exception_' in op or '_jit_raise' in op:
+                    return None
+        return pro_end, epilogue, end_positions
+
+    output = []
+    previous = 0
+    for start, stop in regions:
+        output.extend(records[previous:start])
+        segment = records[start:stop]
+        proof = safe_frame(segment)
+        if proof is None:
+            output.extend(segment)
+        else:
+            pro_end, epilogue, ends = proof
+            skip = set((1, 2)) | ends
+            for i, (line, origin) in enumerate(segment):
+                if i in skip:
+                    # Replace the x86 saved-register loads with matching POPs.
+                    if not is_pe64 and i == 0:
+                        pass
+                    if i in ends and _instruction(line) == epilogue[0]:
+                        if not is_pe64:
+                            # At the beginning of each epilogue, restore registers.
+                            output.extend((f'    pop {reg}', origin)
+                                          for reg in ('edi', 'esi', 'ebx'))
+                    continue
+                output.append((line, origin))
+        previous = stop
+    output.extend(records[previous:])
+    new_map = {}
+    for index, (_, origin) in enumerate(output, 1):
+        if origin in source_map:
+            new_map[index] = source_map[origin]
+    return [line for line, _ in output], new_map

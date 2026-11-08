@@ -32954,6 +32954,9 @@ class PascalPreprocessResult:
     original_line_count: int
     output_line_count: int
     link_files: Tuple[str, ...] = ()
+    # DLL dependencies are PE imports, not COFF object/archive inputs.
+    # Kept separate so the compiler can resolve Stage-545 .paslib/.pui contracts.
+    link_dlls: Tuple[str, ...] = ()
 
 
 def _pascal_pp_key(name: str) -> str:
@@ -33185,6 +33188,7 @@ def preprocess_pascal_source(
     directives: List[str] = []
     warnings: List[str] = []
     link_files: List[str] = []
+    link_dlls: List[str] = []
     normalized_link_search_paths: List[Path] = []
     for _item in link_search_paths or ():
         try:
@@ -33343,10 +33347,10 @@ def preprocess_pascal_source(
             )
             return
 
-        # Stage 185: FreePascal/Delphi-style Linkdirektiven.
-        # {$L foo.o}/{$LINK foo.o} akzeptieren Objekte und Archive;
-        # {$LINKLIB foo.a} ist fuer Archive vorgesehen. Relative Namen werden
-        # zuerst neben der Quelle und danach in den Projekt-Suchpfaden gesucht.
+        # COFF object/archive files and Pascal DLL providers use different
+        # lists.  The IDE preprocessing must agree with c64pascal's own
+        # PascalPreprocessor: {$L Runtime} and {$L Runtime.dll} are DLL imports,
+        # whereas {$LINK ...}, {$LINKLIB ...} keep their old COFF-only semantics.
         if command in {"l", "link", "linklib"}:
             link_name = argument.strip()
             if (
@@ -33359,44 +33363,60 @@ def preprocess_pascal_source(
                 raise PascalPreprocessorError(
                     "{$L}/{$LINK}/{$LINKLIB} erwartet eine Datei.", line_number
                 )
-            _allowed = {".a", ".lib"} if command == "linklib" else {
+            candidate = Path(link_name).expanduser()
+            suffix = candidate.suffix.casefold()
+            is_dll = command == "l" and suffix in {"", ".dll"}
+            allowed = {".a", ".lib"} if command == "linklib" else {
                 ".o", ".obj", ".a", ".lib"
             }
-            _candidate = Path(link_name).expanduser()
-            if _candidate.suffix.casefold() not in _allowed:
+            if not is_dll and suffix not in allowed:
                 raise PascalPreprocessorError(
                     f"{{${body.split(None, 1)[0]}}} erwartet "
-                    + (".a/.lib" if command == "linklib" else ".o/.obj/.a/.lib")
+                    + (".a/.lib" if command == "linklib" else ".o/.obj/.a/.lib/.dll oder DLL-Modulname")
                     + f": {link_name}.",
                     line_number,
                 )
-            _candidates: List[Path] = []
-            if _candidate.is_absolute():
-                _candidates.append(_candidate)
+            if is_dll and not suffix:
+                candidate = candidate.with_suffix(".dll")
+            candidates: List[Path] = []
+            if candidate.is_absolute():
+                candidates.append(candidate)
             else:
                 try:
-                    _source_path = Path(filename).expanduser()
-                    _base_dir = (
-                        _source_path.resolve().parent
+                    source_path = Path(filename).expanduser()
+                    base_dir = (
+                        source_path.resolve().parent
                         if not str(filename).startswith("<")
                         else Path.cwd()
                     )
                 except (OSError, RuntimeError, ValueError):
-                    _base_dir = Path.cwd()
-                _candidates.append(_base_dir / _candidate)
-                for _directory in normalized_link_search_paths:
-                    _candidates.append(_directory / _candidate)
-            _chosen = next(
-                (path for path in _candidates if path.is_file()),
-                _candidates[0],
-            )
+                    base_dir = Path.cwd()
+                if is_dll:
+                    # Stage 548: the project DLL output path wins over an
+                    # outdated DLL next to the currently edited Pascal source.
+                    candidates.extend(directory / candidate for directory in normalized_link_search_paths)
+                    candidates.append(base_dir / candidate)
+                else:
+                    candidates.append(base_dir / candidate)
+                    candidates.extend(directory / candidate for directory in normalized_link_search_paths)
+            chosen = next((path for path in candidates if path.is_file()), candidates[0])
             try:
-                link_path = _chosen.resolve()
+                link_path = chosen.resolve()
             except (OSError, RuntimeError):
-                link_path = _chosen.absolute()
+                link_path = chosen.absolute()
+            dest = link_dlls if is_dll else link_files
             key = str(link_path).casefold()
-            if all(str(Path(item)).casefold() != key for item in link_files):
-                link_files.append(str(link_path))
+            if all(str(item).casefold() != key for item in dest):
+                dest.append(str(link_path))
+            return
+
+        # Export markers must survive the IDE's lexical preprocessing so the
+        # Pascal PUI scanner can associate {$export TFoo} with the next class.
+        if command == "export":
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", argument):
+                raise PascalPreprocessorError(
+                    "{$export} erwartet genau einen Klassennamen.", line_number
+                )
             return
 
         # Recognized non-conditional compiler switches are intentionally
@@ -33462,7 +33482,12 @@ def preprocess_pascal_source(
                 )
             fragment = text[index:end + 1]
             process_directive(fragment[1:-1], line)
-            output.append(blank_fragment(fragment))
+            # ANTLR ignores this directive as a comment, but the DLL export
+            # scanner reads it from the source before parsing.
+            keep_export = is_active and re.match(
+                r"\{\s*\$\s*export\s+", fragment, re.IGNORECASE
+            ) is not None
+            output.append(fragment if keep_export else blank_fragment(fragment))
             line += fragment.count("\n")
             index = end + 1
             continue
@@ -33476,7 +33501,10 @@ def preprocess_pascal_source(
                 )
             fragment = text[index:end + 2]
             process_directive(fragment[2:-2], line)
-            output.append(blank_fragment(fragment))
+            keep_export = is_active and re.match(
+                r"\(\*\s*\$\s*export\s+", fragment, re.IGNORECASE
+            ) is not None
+            output.append(fragment if keep_export else blank_fragment(fragment))
             line += fragment.count("\n")
             index = end + 2
             continue
@@ -33566,6 +33594,7 @@ def preprocess_pascal_source(
         original_line_count=original_lines,
         output_line_count=output_lines,
         link_files=tuple(link_files),
+        link_dlls=tuple(link_dlls),
     )
 
 
@@ -35398,6 +35427,7 @@ class PE32Program:
     entry_offset: int
     instruction_count: int
     symbols: Dict[str, int] = field(default_factory=dict)
+    import_manifest: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -37569,10 +37599,16 @@ def _build_pe32_mszip_loader(
     loader_rva: int = 0,
     peb_resolver: bool = False,
     compatibility: Optional[Dict[str, object]] = None,
+    ces_enabled: Optional[bool] = None,
 ) -> bytes:
     compatibility_values = dict(compatibility or _pe_import_packer_settings("pe32"))
     exact_runtime = bool(compatibility_values.get("exact_runtime_check", False))
-    ces_enabled = bool(stage527_debug_options().ces)
+    # Stage 549: the linker's explicit, per-build value wins.  Do not read a
+    # mutable global setting halfway through the D64I/second-stage rebuild.
+    # The fallback preserves standalone/legacy callers of this low-level API.
+    if ces_enabled is None:
+        ces_enabled = bool(stage527_debug_options().ces)
+    ces_enabled = bool(ces_enabled) and bool(d64i_rva)
     required = (() if bool(peb_resolver) else (
         _pe_d64i_bootstrap_imports(exact_runtime)
         if int(d64i_rva)
@@ -38051,6 +38087,253 @@ def _build_pe32_mszip_loader(
     return b.finish()
 
 
+# Stage 539: MSZIP-compressed second-stage Windows loader.
+# The OS entry point is always a small, UNCOMPRESSED bootstrap.  The actual
+# D64I import resolver/CES code is compressed independently of D64Z program code.
+# It is restored in the otherwise unused virtual tail of the .loader section.
+# This keeps .text, .ztext, .idata and (critically) the COFF .bss RVAs stable.
+PE_LOADER_COMPRESSION_LAST_DECISION: Dict[str, object] = {}
+
+
+def _pe32_build_second_stage_bootstrap(
+    *, image_base: int, loader_rva: int, packed_rva: int, packed_size: int,
+    target_rva: int, expanded_size: int, iat_rvas: Dict[str, int],
+) -> bytes:
+    b = _PE32LoaderBuilder(int(image_base) + int(loader_rva))
+
+    def api(name: str) -> None:
+        b.emit(b'\xFF\x15')
+        b.u32(int(image_base) + int(iat_rvas['__d64_loader_' + name]))
+
+    # EBP-4: decompressor handle; -8: written; -12: old protection;
+    # -16: temporary protection.  The bootstrap never changes EBX/ESI/EDI.
+    b.emit(b'\x55\x8B\xEC\x83\xEC\x10')
+    b.emit(b'\xC7\x45\xFC\x00\x00\x00\x00')
+    b.emit(b'\x8D\x45\xFC\x50\x6A\x00\x6A\x02')
+    api('CreateDecompressor')
+    b.emit(b'\x85\xC0')
+    b.jcc(0x84, 'error')
+
+    b.emit(b'\x8D\x45\xF4\x50\x6A\x40\x68')
+    b.u32(expanded_size)
+    b.emit(b'\x68')
+    b.u32(int(image_base) + int(target_rva))
+    api('VirtualProtect')
+    b.emit(b'\x85\xC0')
+    b.jcc(0x84, 'error')
+
+    b.emit(b'\x8D\x45\xF8\x50\x68')
+    b.u32(expanded_size)
+    b.emit(b'\x68')
+    b.u32(int(image_base) + int(target_rva))
+    b.emit(b'\x68')
+    b.u32(packed_size)
+    b.emit(b'\x68')
+    b.u32(int(image_base) + int(packed_rva))
+    b.emit(b'\xFF\x75\xFC')
+    api('Decompress')
+    b.emit(b'\x85\xC0')
+    b.jcc(0x84, 'error')
+    b.emit(b'\x81\x7D\xF8')
+    b.u32(expanded_size)
+    b.jcc(0x85, 'error')
+
+    b.emit(b'\xFF\x75\xFC')
+    api('CloseDecompressor')
+    b.emit(b'\x68')
+    b.u32(expanded_size)
+    b.emit(b'\x68')
+    b.u32(int(image_base) + int(target_rva))
+    b.emit(b'\x6A\xFF')
+    api('FlushInstructionCache')
+    b.emit(b'\x85\xC0')
+    b.jcc(0x84, 'error')
+
+    b.emit(b'\x8D\x45\xF0\x50\xFF\x75\xF4\x68')
+    b.u32(expanded_size)
+    b.emit(b'\x68')
+    b.u32(int(image_base) + int(target_rva))
+    api('VirtualProtect')
+    b.emit(b'\x85\xC0')
+    b.jcc(0x84, 'error')
+    b.emit(b'\x8B\xE5\x5D\xB8')
+    b.u32(int(image_base) + int(target_rva))
+    b.emit(b'\xFF\xE0')  # jmp eax -- original main-loader calling state
+    b.label('error')
+    b.emit(b'\x68')
+    b.u32(0xD6400001)
+    api('ExitProcess')
+    b.emit(b'\xCC')
+    return b.finish()
+
+
+def _pe64_build_second_stage_bootstrap(
+    *, loader_rva: int, packed_rva: int, packed_size: int,
+    target_rva: int, expanded_size: int, iat_rvas: Dict[str, int],
+) -> bytes:
+    b = _PE64LoaderBuilder(int(loader_rva))
+    def api(name: str) -> None:
+        b.call_iat(int(iat_rvas['__d64_loader_' + name]))
+
+    # Win64 entry RSP%16 == 8. Save RBP, allocate 0x70 bytes including
+    # the 32-byte shadow space, two stack args, and four qword locals.
+    b.emit(b'\x55\x48\x89\xE5\x48\x83\xEC\x70')
+    b.emit(b'\x48\xC7\x45\xF8\x00\x00\x00\x00')
+    b.emit(b'\xB9\x02\x00\x00\x00\x31\xD2\x4C\x8D\x45\xF8')
+    api('CreateDecompressor')
+    b.emit(b'\x85\xC0')
+    b.jcc(0x84, 'error')
+
+    b.rip32(b'\x48\x8D\x0D', int(target_rva))
+    b.emit(b'\xBA')
+    b.u32(expanded_size)
+    b.emit(b'\x41\xB8\x40\x00\x00\x00\x4C\x8D\x4D\xF0')
+    api('VirtualProtect')
+    b.emit(b'\x85\xC0')
+    b.jcc(0x84, 'error')
+
+    b.emit(b'\x48\x8B\x4D\xF8')
+    b.rip32(b'\x48\x8D\x15', int(packed_rva))
+    b.emit(b'\x41\xB8')
+    b.u32(packed_size)
+    b.rip32(b'\x4C\x8D\x0D', int(target_rva))
+    b.emit(b'\x48\xB8')
+    b.u64(expanded_size)
+    b.emit(b'\x48\x89\x44\x24\x20\x48\x8D\x45\xE8\x48\x89\x44\x24\x28')
+    api('Decompress')
+    b.emit(b'\x85\xC0')
+    b.jcc(0x84, 'error')
+    b.emit(b'\x48\x81\x7D\xE8')  # CMP QWORD [RBP-24], imm32 sign-extended
+    b.u32(expanded_size)
+    b.jcc(0x85, 'error')
+
+    b.emit(b'\x48\x8B\x4D\xF8')
+    api('CloseDecompressor')
+    b.emit(b'\x48\xC7\xC1\xFF\xFF\xFF\xFF')
+    b.rip32(b'\x48\x8D\x15', int(target_rva))
+    b.emit(b'\x41\xB8')
+    b.u32(expanded_size)
+    api('FlushInstructionCache')
+    b.emit(b'\x85\xC0')
+    b.jcc(0x84, 'error')
+
+    b.rip32(b'\x48\x8D\x0D', int(target_rva))
+    b.emit(b'\xBA')
+    b.u32(expanded_size)
+    b.emit(b'\x4C\x8B\x45\xF0\x4C\x8D\x4D\xE0')
+    api('VirtualProtect')
+    b.emit(b'\x85\xC0')
+    b.jcc(0x84, 'error')
+    b.emit(b'\x48\x89\xEC\x5D')
+    b.jmp_rva(int(target_rva))
+    b.label('error')
+    b.emit(b'\xB9')
+    b.u32(0xD6400002)
+    api('ExitProcess')
+    b.emit(b'\xCC')
+    return b.finish()
+
+
+def _pe_try_compress_second_stage_loader(
+    *, target: str, loader: bytes, loader_rva: int,
+    ztext_rva: int, iat_rvas: Dict[str, int],
+    rebuild_loader, image_base: int = PE32_IMAGE_BASE,
+    file_alignment: int = PE32_FILE_ALIGNMENT,
+    peb_resolver: bool = False,
+) -> Tuple[bytes, int]:
+    """Return (raw .loader, virtual size); preserve the old layout if not smaller.
+
+    Compressed loader bytes are kept in .loader; the independent compressed
+    application remains in .ztext. A tiny Win32/Win64 entry stub stays raw.
+    The original loader is *rebuilt* at its expansion RVA so absolute fixups
+    and PE64 RIP-relative references remain valid after decompression.
+    """
+    original = bytes(loader)
+    original_size = len(original)
+    # Keep the D64L signature/version readable in the raw PE file. Its
+    # existing scanner deliberately does not unpack MSZIP streams.
+    marker_size = PE_D64_LOADER_INFO.size
+    marker = (original[-marker_size:] if len(original) >= marker_size
+              and original[-marker_size:-marker_size + 4] == PE_D64_LOADER_MAGIC
+              else b'')
+    info = {
+        'target': str(target), 'enabled': False, 'raw_before': original_size,
+        'raw_after': original_size, 'reason': 'Keine Einsparung',
+    }
+    PE_LOADER_COMPRESSION_LAST_DECISION[str(target)] = info
+    if bool(peb_resolver):
+        info['reason'] = 'Importloser PEB-Bootstrap bleibt unkomprimiert'
+        return original, original_size
+    if not original or not iat_rvas:
+        info['reason'] = 'Keine Importtabelle/Loaderdaten'
+        return original, original_size
+    required = ('CreateDecompressor', 'Decompress', 'CloseDecompressor',
+                'VirtualProtect', 'FlushInstructionCache', 'ExitProcess')
+    if any('__d64_loader_' + name not in iat_rvas for name in required):
+        info['reason'] = 'Bootstrap-API fehlt'
+        return original, original_size
+    if int(ztext_rva) <= int(loader_rva):
+        info['reason'] = 'Ungueltiger Loader-RVA-Bereich'
+        return original, original_size
+
+    build_stub = (_pe64_build_second_stage_bootstrap if str(target) == 'pe64'
+                  else _pe32_build_second_stage_bootstrap)
+    # The bootstrap instruction widths are independent of the input RVAs.
+    # Rebuild after computing the destination because CES uses absolute local
+    # string addresses and PE64 uses RIP-relative addressing.
+    stub_probe = build_stub(
+        **({'image_base': int(image_base)} if str(target) == 'pe32' else {}),
+        loader_rva=loader_rva, packed_rva=loader_rva,
+        packed_size=1, target_rva=loader_rva,
+        expanded_size=original_size, iat_rvas=iat_rvas,
+    )
+    packed = _pe32_mszip_compress_buffer(original)
+    destination_rva = 0
+    expanded = original
+    for _ in range(8):
+        # The compressed stream starts immediately after the raw stub. The
+        # destination starts after the file-backed portion, never inside it.
+        next_destination = int(loader_rva) + _align_up(
+            len(stub_probe) + len(packed) + len(marker), int(file_alignment))
+        expanded = bytes(rebuild_loader(next_destination))
+        next_packed = _pe32_mszip_compress_buffer(expanded)
+        if next_destination == destination_rva and next_packed == packed:
+            break
+        destination_rva = next_destination
+        packed = next_packed
+    else:
+        info['reason'] = 'Loader-Rebase/Kompression nicht stabil'
+        return original, original_size
+
+    packed_rva = int(loader_rva) + len(stub_probe)
+    destination_rva = int(loader_rva) + _align_up(
+        len(stub_probe) + len(packed) + len(marker), int(file_alignment))
+    virtual_size = destination_rva - int(loader_rva) + len(expanded)
+    raw_size = len(stub_probe) + len(packed) + len(marker)
+    if destination_rva + len(expanded) > int(ztext_rva):
+        info['reason'] = 'Kein kollisionsfreier virtueller Loader-Platz'
+        return original, original_size
+    if _align_up(raw_size, int(file_alignment)) >= _align_up(original_size, int(file_alignment)):
+        info['reason'] = 'Keine Einsparung in ausgerichteten PE-Dateibloecken'
+        return original, original_size
+
+    stub = build_stub(
+        **({'image_base': int(image_base)} if str(target) == 'pe32' else {}),
+        loader_rva=loader_rva, packed_rva=packed_rva,
+        packed_size=len(packed), target_rva=destination_rva,
+        expanded_size=len(expanded), iat_rvas=iat_rvas,
+    )
+    if len(stub) != len(stub_probe):
+        info['reason'] = 'Bootstrapgroesse unerwartet geaendert'
+        return original, original_size
+    info.update(enabled=True, reason='Komprimierter zweiter Loader im virtuellen .loader-Tail',
+                raw_after=raw_size, packed_size=len(packed),
+                uncompressed_size=len(expanded), bootstrap_size=len(stub),
+                destination_rva=destination_rva)
+    return bytes(stub) + packed + marker, virtual_size
+
+
+
 def _pe32_rebuild_with_mszip_loader(
     stage167_image: bytes,
     patched_text: bytes,
@@ -38059,6 +38342,8 @@ def _pe32_rebuild_with_mszip_loader(
     original_entry_rva: int,
     image_base: int,
 ) -> Tuple[bytes, bytes]:
+    # Stage 549: a stable CES choice for both probe and final loader.
+    ces_enabled = bool(stage527_debug_options("pe32").ces)
     image = bytes(stage167_image)
     text = bytes(patched_text)
     if len(image) < 0x100 or image[:2] != b"MZ":
@@ -38144,6 +38429,7 @@ def _pe32_rebuild_with_mszip_loader(
         packed_size=packed_size,
         original_entry_rva=int(original_entry_rva),
         iat_rvas=iat_rvas,
+        ces_enabled=ces_enabled,
     )
     ztext_rva = _align_up(loader_rva + max(1, len(probe)), section_alignment)
     loader = _build_pe32_mszip_loader(
@@ -38154,6 +38440,20 @@ def _pe32_rebuild_with_mszip_loader(
         packed_size=packed_size,
         original_entry_rva=int(original_entry_rva),
         iat_rvas=iat_rvas,
+        ces_enabled=ces_enabled,
+    )
+
+    loader, loader_virtual_size = _pe_try_compress_second_stage_loader(
+        target="pe32", loader=loader, loader_rva=loader_rva,
+        ztext_rva=ztext_rva, iat_rvas=iat_rvas, image_base=image_base,
+        file_alignment=file_alignment,
+        rebuild_loader=lambda destination_rva: _build_pe32_mszip_loader(
+            image_base=image_base, text_rva=text_rva, text_size=len(text),
+            ztext_rva=ztext_rva, packed_size=packed_size,
+            original_entry_rva=int(original_entry_rva), iat_rvas=iat_rvas,
+            loader_rva=destination_rva,
+            ces_enabled=ces_enabled,
+        ),
     )
 
     text_section["raw_block"] = b""
@@ -38163,7 +38463,7 @@ def _pe32_rebuild_with_mszip_loader(
     sections.append({
         "header": None,
         "name": b".loader",
-        "virtual_size": len(loader),
+        "virtual_size": loader_virtual_size,
         "rva": loader_rva,
         "chars": 0x60000020,
         "raw_block": loader,
@@ -39078,6 +39378,7 @@ def link_coff32_objects(
             loader_rva=loader_rva,
             peb_resolver=peb_resolver,
             compatibility=_pe32_link_packer,
+            ces_enabled=bool(stage527_debug_options("pe32").ces),
         )
         ztext_rva = _align_up(
             loader_rva + max(1, len(loader_probe)),
@@ -39205,11 +39506,13 @@ def link_coff32_objects(
         base_relocations=base_relocations,
         bss_size=total_bss_size,
     )
+    from pascal_import_manager import link_manifest_from_parsed_objects
     return PE32Program(
         executable=executable,
         code=patched_code,
         entry_offset=int(entry or 0),
         instruction_count=0,
+        import_manifest=link_manifest_from_parsed_objects(parsed, "pe32", import_specs),
         symbols={
             **globals_map,
             **{
@@ -39586,6 +39889,7 @@ class PE64Program:
     entry_offset: int
     instruction_count: int
     symbols: Dict[str, int] = field(default_factory=dict)
+    import_manifest: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -40283,7 +40587,12 @@ def _pe64_import_adapter_bytes(arg_count: int, caller_cleanup: bool):
 def link_coff64_objects(objects: Sequence[bytes], *, entry_symbol="_start", gui=False, dll=False, imports=None, exports=None, dll_name=None) -> PE64Program:
     parsed=[parse_coff64_object(x) for x in objects]; code=bytearray(); bases=[]; globals_map={}; declared_imports={}; declared_exports={}; declared_dll=None
     for obj in parsed:
-        declared_imports.update(obj.imports); declared_exports.update(obj.exports); declared_dll=obj.dll_name or declared_dll
+        for symbol, spec in obj.imports.items():
+            key = str(symbol).casefold()
+            if key in declared_imports and declared_imports[key] != spec:
+                raise PE64AssemblerError(f"COFF64-Import {symbol} besitzt widersprüchliche DLL-Ziele.")
+            declared_imports[key] = spec
+        declared_exports.update(obj.exports); declared_dll=obj.dll_name or declared_dll
     for s,v in (imports or {}).items(): declared_imports[str(s).casefold()]=(str(v[0]),str(v[1]))
     for p,i in (exports or {}).items(): declared_exports[str(p)]=str(i).casefold()
     if dll_name: declared_dll=str(dll_name)
@@ -40346,7 +40655,10 @@ def link_coff64_objects(objects: Sequence[bytes], *, entry_symbol="_start", gui=
         export_offsets[public]=globals_map[internal.casefold()]
     effective_dll=bool(effective_dll or export_offsets); final_name=declared_dll or "library.dll"
     image,patched=build_pe64_image_with_imports_exports(bytes(code),entry,import_specs,iat_patches,exports=export_offsets,dll_name=final_name,gui=gui,dll=effective_dll,image_base=image_base,base_relocations=base_relocs)
-    return PE64Program(image,patched,int(entry or 0),0,globals_map)
+    from pascal_import_manager import link_manifest_from_parsed_objects
+    return PE64Program(
+        image, patched, int(entry or 0), 0, globals_map,
+        link_manifest_from_parsed_objects(parsed, "pe64", import_specs))
 
 
 def link_coff64_inputs(paths: Sequence[Path], *, entry_symbol="_start", gui=False, dll=False, imports=None, exports=None, dll_name=None) -> PE64Program:
@@ -41760,6 +42072,17 @@ def _pe64_rebuild_with_mszip_loader(
         iat_rvas=iat_rvas,
     )
 
+    loader, loader_virtual_size = _pe_try_compress_second_stage_loader(
+        target="pe64", loader=loader, loader_rva=loader_rva,
+        ztext_rva=ztext_rva, iat_rvas=iat_rvas, image_base=PE64_IMAGE_BASE,
+        file_alignment=file_alignment,
+        rebuild_loader=lambda destination_rva: _build_pe64_mszip_loader(
+            loader_rva=destination_rva, text_rva=text_rva, text_size=len(text),
+            ztext_rva=ztext_rva, packed_size=packed_size,
+            original_entry_rva=int(original_entry_rva), iat_rvas=iat_rvas,
+        ),
+    )
+
     text_section["raw_block"] = b""
     text_section["raw_size"] = 0
     text_section["virtual_size"] = max(1, len(text))
@@ -41767,7 +42090,7 @@ def _pe64_rebuild_with_mszip_loader(
     sections.append({
         "header": None,
         "name": b".loader",
-        "virtual_size": len(loader),
+        "virtual_size": loader_virtual_size,
         "rva": loader_rva,
         "chars": 0x60000020,
         "raw_block": loader,
@@ -41935,7 +42258,11 @@ def link_coff64_objects(
     global_refs: Dict[str, Tuple[str, int]] = {}
     declared_imports = {}; declared_exports = {}; declared_dll = None
     for obj in parsed:
-        declared_imports.update(obj.imports)
+        for _symbol, _spec in obj.imports.items():
+            _key = _symbol.casefold()
+            if (_key in declared_imports and declared_imports[_key] != _spec):
+                raise PE64AssemblerError(f"COFF64-Import {_symbol}: widersprüchliche DLL-Ziele")
+            declared_imports[_key] = _spec
         declared_exports.update(obj.exports)
         declared_dll = obj.dll_name or declared_dll
     for s, v in (imports or {}).items():
@@ -42097,7 +42424,9 @@ def link_coff64_objects(
         base = {".text": text_rva, ".data": data_rva, ".bss": bss_rva}.get(sec, text_rva)
         public_symbols[name] = base - text_rva + off
 
-    return PE64Program(image, patched, int(entry or 0), 0, public_symbols)
+    from pascal_import_manager import link_manifest_from_parsed_objects
+    return PE64Program(image, patched, int(entry or 0), 0, public_symbols,
+                       link_manifest_from_parsed_objects(parsed, "pe64", import_specs))
 
 
 # ---------------------------------------------------------------------------
@@ -42598,6 +42927,26 @@ PROJECT_WINDOWS_COMPILER_PARALLEL_KEYS = {
 }
 
 
+# Stage 541: per-architecture Pascal import cache and import pruning.
+PROJECT_WINDOWS_PASCAL_IMPORT_KEYS = {
+    "pe32": "__stage541_pascal_imports_pe32__",
+    "pe64": "__stage541_pascal_imports_pe64__",
+}
+
+
+def stage541_import_options(raw=None) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    return {
+        "cache_enabled": _parse_project_bool(raw.get("cache_enabled", True), True),
+        "prune_unused": _parse_project_bool(raw.get("prune_unused", True), True),
+        "externalize": _parse_project_bool(raw.get("externalize", False), False),
+    }
+
+
+def stage541_default_pascal_import_options() -> dict:
+    return {target: stage541_import_options() for target in ("pe32", "pe64")}
+
+
 # Stage 537: architecture-specific Pascal optimizer profiles.
 PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS = {
     "pe32": "__stage537_pascal_optimization_pe32__",
@@ -42606,13 +42955,27 @@ PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS = {
 
 
 def stage537_default_pascal_optimization_options() -> Dict[str, dict]:
-    return {"pe32": {"level": 0}, "pe64": {"level": 0}}
+    return {"pe32": {"level": 0, "no_stack_frames": False}, "pe64": {"level": 0, "no_stack_frames": False}}
 
 
 def _stage537_optimizer_level(options) -> int:
     from pascal_optimizer import normalize_optimization_level
     return normalize_optimization_level(
         options.get("level", 0) if isinstance(options, dict) else options)
+
+
+def stage538_no_stack_frames(options) -> bool:
+    return _parse_project_bool(
+        options.get("no_stack_frames", False) if isinstance(options, dict) else False,
+        False,
+    )
+
+
+def stage538_pascal_optimizer_options(options) -> dict:
+    return {
+        "level": _stage537_optimizer_level(options),
+        "no_stack_frames": stage538_no_stack_frames(options),
+    }
 
 
 def stage536_default_parallel_options() -> Dict[str, dict]:
@@ -43645,6 +44008,7 @@ def _pe_emit_stage170_image(
     entry_rva: int,
     idata_virtual_size: int = 0,
     loader_writable: bool = False,
+    loader_virtual_size: int = 0,
     gui: bool,
     data_rva: int = 0,
     data: bytes = b"",
@@ -43672,7 +44036,7 @@ def _pe_emit_stage170_image(
         {
             "name": b".loader",
             "data": bytes(loader),
-            "virtual_size": len(loader),
+            "virtual_size": max(len(loader), int(loader_virtual_size)),
             "rva": int(loader_rva),
             "chars": (0xE0000020 if loader_writable else 0x60000020),
             "raw": True,
@@ -43917,6 +44281,7 @@ def build_pe32_image_with_imports_exports(
         compress_text_mszip = _pe_packing_enabled("pe32")
 
     _import_packer = _pe_import_packer_settings("pe32")
+    ces_enabled = bool(stage527_debug_options("pe32").ces)
     peb_resolver = bool(_import_packer.get("peb_resolver", False))
     exact_runtime = bool(_import_packer.get("exact_runtime_check", False))
     bootstrap_imports = _pe_d64i_bootstrap_imports(exact_runtime)
@@ -44006,6 +44371,7 @@ def build_pe32_image_with_imports_exports(
         loader_rva=loader_rva,
         peb_resolver=peb_resolver,
         compatibility=_import_packer,
+        ces_enabled=ces_enabled,
     )
     ztext_rva = _align_up(
         loader_rva + max(1, len(probe)),
@@ -44089,6 +44455,23 @@ def build_pe32_image_with_imports_exports(
         loader_rva=loader_rva,
         peb_resolver=peb_resolver,
         compatibility=_import_packer,
+        ces_enabled=ces_enabled,
+    )
+
+    loader, loader_virtual_size = _pe_try_compress_second_stage_loader(
+        target="pe32", loader=loader, loader_rva=loader_rva,
+        ztext_rva=ztext_rva, iat_rvas=bootstrap_iat_rvas,
+        image_base=image_base, file_alignment=PE32_FILE_ALIGNMENT,
+        peb_resolver=peb_resolver,
+        rebuild_loader=lambda destination_rva: _build_pe32_mszip_loader(
+            image_base=image_base, text_rva=text_rva, text_size=len(packed_source),
+            ztext_rva=ztext_rva, packed_size=packed_size,
+            original_entry_rva=original_entry_rva,
+            iat_rvas=bootstrap_iat_rvas,
+            d64i_rva=text_rva + program_text_size, loader_rva=destination_rva,
+            peb_resolver=peb_resolver, compatibility=_import_packer,
+            ces_enabled=ces_enabled,
+        ),
     )
 
     image = _pe_emit_stage170_image(
@@ -44098,6 +44481,7 @@ def build_pe32_image_with_imports_exports(
         text_virtual_size=len(packed_source),
         loader_rva=loader_rva,
         loader=loader,
+        loader_virtual_size=loader_virtual_size,
         ztext_rva=ztext_rva,
         ztext=ztext,
         ztext_virtual_size=ztext_virtual_size,
@@ -44236,7 +44620,11 @@ def link_coff64_objects(
     declared_dll = None
 
     for obj in parsed:
-        declared_imports.update(obj.imports)
+        for _symbol, _spec in obj.imports.items():
+            _key = _symbol.casefold()
+            if (_key in declared_imports and declared_imports[_key] != _spec):
+                raise PE64AssemblerError(f"COFF64-Import {_symbol}: widersprüchliche DLL-Ziele")
+            declared_imports[_key] = _spec
         declared_dll = obj.dll_name or declared_dll
 
     for symbol, raw_spec in (imports or {}).items():
@@ -44542,6 +44930,20 @@ def link_coff64_objects(
         compatibility=_import_packer,
     )
 
+    loader, loader_virtual_size = _pe_try_compress_second_stage_loader(
+        target="pe64", loader=loader, loader_rva=loader_rva,
+        ztext_rva=ztext_rva, iat_rvas=bootstrap_iat_rvas,
+        image_base=image_base, file_alignment=PE64_FILE_ALIGNMENT,
+        peb_resolver=peb_resolver,
+        rebuild_loader=lambda destination_rva: _build_pe64_mszip_loader(
+            loader_rva=destination_rva, text_rva=text_rva, text_size=len(packed_source),
+            ztext_rva=ztext_rva, packed_size=packed_size,
+            original_entry_rva=original_entry_rva, iat_rvas=bootstrap_iat_rvas,
+            d64i_rva=text_rva + program_text_size, image_base=image_base,
+            peb_resolver=peb_resolver, compatibility=_import_packer,
+        ),
+    )
+
     image = _pe_emit_stage170_image(
         machine=IMAGE_FILE_MACHINE_AMD64,
         image_base=image_base,
@@ -44549,6 +44951,7 @@ def link_coff64_objects(
         text_virtual_size=len(packed_source),
         loader_rva=loader_rva,
         loader=loader,
+        loader_virtual_size=loader_virtual_size,
         ztext_rva=ztext_rva,
         ztext=ztext,
         ztext_virtual_size=ztext_virtual_size,
@@ -44575,12 +44978,14 @@ def link_coff64_objects(
         }.get(sec, text_rva)
         public_symbols[name] = int(base_rva) - text_rva + int(off)
 
+    from pascal_import_manager import link_manifest_from_parsed_objects
     packed_program = PE64Program(
         image,
         bytes(text),
         entry,
         0,
         public_symbols,
+        link_manifest_from_parsed_objects(parsed, "pe64", program_import_specs),
     )
     if bool(_import_packer["require_savings"]):
         baseline_program = _link_coff64_objects_stage169_layout(
@@ -50252,15 +50657,12 @@ def _project_document_output_path(document, filename: str) -> Path:
                 setting = {}
             value = str(setting.get(target, "") or "").strip()
             if value:
-                destination = Path(value).expanduser().resolve()
-                relative = getattr(owner, "project_windows_relative_paths", {}).get(target, {}).get("output", True)
-                project_base_fn = getattr(owner, "_project_windows_base_directory", None)
-                if relative and callable(project_base_fn):
-                    try:
-                        rel = os.path.relpath(str(destination), str(project_base_fn()))
-                        destination = (Path(source_path).resolve().parent / rel).resolve()
-                    except (OSError, ValueError):
-                        pass
+                # Stage 548: relative settings belong to pascal.pro, never to
+                # the source file currently being compiled. The project settings
+                # cache may already contain an absolute path.
+                resolver = getattr(owner, "_project_windows_absolute_directory", None)
+                destination = (Path(resolver(value)) if callable(resolver)
+                               else Path(value).expanduser().resolve())
                 return destination / str(filename)
     if override:
         return Path(override).expanduser().resolve() / str(filename)
@@ -52059,6 +52461,18 @@ def format_project_ini(
         parser[f"Settings.Windows.{_suffix}.Compiler.Pascal.Optimierung"] = {
             "Title": f"Windows {_suffix} Pascal Optimierung",
             "Level": f"O{_level}",
+            "NoStackFrames": "true" if stage538_no_stack_frames(_rows[0] if _rows else {}) else "false",
+        }
+
+    # Stage 541: arch-specific import manager configuration.
+    for _target, _suffix in (("pe32", "32Bit"), ("pe64", "64Bit")):
+        _rows = entries.get(PROJECT_WINDOWS_PASCAL_IMPORT_KEYS[_target], ())
+        _values = stage541_import_options(_rows[0] if _rows else {})
+        parser[f"Settings.Windows.{_suffix}.Compiler.Pascal.Imports"] = {
+            "Title": f"Windows {_suffix} Pascal Imports",
+            "CacheEnabled": "true" if _values["cache_enabled"] else "false",
+            "PruneUnused": "true" if _values["prune_unused"] else "false",
+            "Externalize": "true" if _values["externalize"] else "false",
         }
 
     # Stage 536: independent PE32 and PE64 parallel compiler limits.
@@ -52110,7 +52524,19 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
         entries[PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS[_target]] = [{
             "level": _stage537_optimizer_level({"level": parser.get(
                 _section, "Level", fallback="O0")}) if parser.has_section(_section) else 0,
+            "no_stack_frames": _parse_project_bool(parser.get(
+                _section, "NoStackFrames", fallback="false"), False)
+                if parser.has_section(_section) else False,
         }]
+
+    # Stage 541: old projects default to safe cached import analysis.
+    for _target, _suffix in (("pe32", "32Bit"), ("pe64", "64Bit")):
+        _section = f"Settings.Windows.{_suffix}.Compiler.Pascal.Imports"
+        entries[PROJECT_WINDOWS_PASCAL_IMPORT_KEYS[_target]] = [stage541_import_options({
+            "cache_enabled": parser.get(_section, "CacheEnabled", fallback="true"),
+            "prune_unused": parser.get(_section, "PruneUnused", fallback="true"),
+            "externalize": parser.get(_section, "Externalize", fallback="false"),
+        } if parser.has_section(_section) else {})]
 
     # Stage 536: older .pro files get automatic CPU detection and max=2.
     for _target, _suffix in (("pe32", "32Bit"), ("pe64", "64Bit")):
@@ -72493,6 +72919,14 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
             return (
                 self.raw_editor.document().isModified()
                 or self.hex_editor.is_modified
+                or self.generated_assembly_editor.document().isModified()
+            )
+
+        @property
+        def source_is_modified(self) -> bool:
+            return (
+                self.raw_editor.document().isModified()
+                or self.hex_editor.is_modified
             )
 
         def text_for_saving(self, target_suffix: Optional[str] = None) -> str:
@@ -72647,6 +73081,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
         def _generated_assembly_text_changed(self) -> None:
             if self._syncing_generated_assembly:
                 return
+            self._view_modification_changed(True)
             self.invalidate_assembly_result("Assemblercode geändert")
             has_source = bool(
                 self.generated_assembly_editor.toPlainText().strip()
@@ -88965,10 +89400,9 @@ background:{field};color:{foreground};selection-background-color:{selection};
                 self.loaded_records
             )
 
-        def save_table(self) -> None:
+        def save_table(self) -> bool:
             if self.dbf_path is None:
-                self.save_table_as()
-                return
+                return bool(self.save_table_as())
 
             try:
                 fields = (
@@ -88996,7 +89430,7 @@ background:{field};color:{foreground};selection-background-color:{selection};
                     tr("DBF speichern"),
                     exc,
                 )
-                return
+                return False
 
             self._report_saved_id_counter(fields, records)
             self.title_changed.emit(
@@ -89008,8 +89442,9 @@ background:{field};color:{foreground};selection-background-color:{selection};
                 ),
                 5000,
             )
+            return True
 
-        def save_table_as(self) -> None:
+        def save_table_as(self) -> bool:
             start = self._dialog_directory()
             suggested = self.display_name()
             if not suggested.casefold().endswith(
@@ -89033,7 +89468,7 @@ background:{field};color:{foreground};selection-background-color:{selection};
                 )
             )
             if not filename:
-                return
+                return False
 
             path = Path(filename)
             if not path.suffix:
@@ -89069,7 +89504,7 @@ background:{field};color:{foreground};selection-background-color:{selection};
                     tr("DBF speichern unter"),
                     exc,
                 )
-                return
+                return False
 
             old_width_key = _dbase_table_width_key(self.dbf_path)
             new_width_key = _dbase_table_width_key(path)
@@ -89098,6 +89533,7 @@ background:{field};color:{foreground};selection-background-color:{selection};
                 ),
                 5000,
             )
+            return True
 
         def load_table_dialog(self) -> None:
             filename, _selected_filter = (
@@ -106050,6 +106486,59 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
 
 
+    class WindowsPascalImportPage(QScrollArea):
+        """Stage 541: import analysis / per-target cache controls."""
+        def __init__(self, target, parent=None):
+            super().__init__(parent)
+            self.target = "pe64" if str(target).casefold() == "pe64" else "pe32"
+            tag = "64" if self.target == "pe64" else "32"
+            self.setObjectName(f"project_windows_{tag}_pascal_import_page")
+            self.setWidgetResizable(True)
+            self.setFrameShape(QFrame.NoFrame)
+            body = QWidget(self)
+            layout = QVBoxLayout(body)
+            group = QGroupBox("Import-Manager / Cache:", body)
+            inner = QVBoxLayout(group)
+            self.cache_checkbox = QCheckBox("Import-Cache verwenden", group)
+            self.cache_checkbox.setObjectName(f"project_windows_{tag}_pascal_import_cache")
+            self.cache_checkbox.setChecked(True)
+            self.prune_checkbox = QCheckBox("Nicht verwendete Imports entfernen", group)
+            self.prune_checkbox.setObjectName(f"project_windows_{tag}_pascal_import_prune")
+            self.prune_checkbox.setChecked(True)
+            self.prune_checkbox.setToolTip(
+                "Nur sicher unbenutzte Deklarationen im Einzelmodul entfernen; "
+                "der COFF-Linker bestimmt die endgültigen Imports aller Units.")
+            inner.addWidget(self.cache_checkbox)
+            inner.addWidget(self.prune_checkbox)
+            self.externalize_checkbox = QCheckBox("Import-Deklarationen in .inc auslagern", group)
+            self.externalize_checkbox.setObjectName(
+                f"project_windows_{tag}_pascal_import_externalize")
+            self.externalize_checkbox.setChecked(False)
+            inner.addWidget(self.externalize_checkbox)
+            self.clear_cache_button = QPushButton("Cache für dieses Ziel löschen", group)
+            self.clear_cache_button.setObjectName(f"project_windows_{tag}_pascal_import_clear")
+            inner.addWidget(self.clear_cache_button)
+            layout.addWidget(group)
+            hint = QLabel("Die Metadaten werden architekturspezifisch im Projekt unter "
+                          "runtime/pascal/cache abgelegt. Windows-Funktionsadressen "
+                          "werden nicht zwischengespeichert.", body)
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+            layout.addStretch(1)
+            self.setWidget(body)
+
+        def options(self):
+            return {"cache_enabled": self.cache_checkbox.isChecked(),
+                    "prune_unused": self.prune_checkbox.isChecked(),
+                    "externalize": self.externalize_checkbox.isChecked()}
+
+        def set_options(self, options):
+            options = stage541_import_options(options)
+            self.cache_checkbox.setChecked(options["cache_enabled"])
+            self.prune_checkbox.setChecked(options["prune_unused"])
+            self.externalize_checkbox.setChecked(options["externalize"])
+
+
     class WindowsPascalOptimizationPage(QScrollArea):
         """Stage 537: 32/64-bit independent Pascal optimization level."""
         LEVELS = (
@@ -106083,6 +106572,18 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 self.level_buttons.append(radio)
             self.level_buttons[0].setChecked(True)
             layout.addWidget(self.level_group_box)
+            self.frame_group_box = QGroupBox("Stack: ", body)
+            frame_layout = QVBoxLayout(self.frame_group_box)
+            self.no_stack_frames_checkbox = QCheckBox("No Stack Frames", self.frame_group_box)
+            self.no_stack_frames_checkbox.setObjectName(
+                f"project_windows_{tag}_pascal_no_stack_frames")
+            self.no_stack_frames_checkbox.setChecked(False)
+            self.no_stack_frames_checkbox.setToolTip(
+                "Entfernt Prolog/Epilog nur bei nachweislich frame-unabhaengigen "
+                "Routinen. Stack-Cookies, lokale Stackvariablen, Parameterzugriffe "
+                "und Exception-Frames bleiben erhalten.")
+            frame_layout.addWidget(self.no_stack_frames_checkbox)
+            layout.addWidget(self.frame_group_box)
             note = QLabel(
                 "Die gewählte Stufe gilt für Pascal-Programme und Units dieses "
                 "Windows-Ziels. O0 erhält den bisherigen Code (abgesehen von "
@@ -106094,10 +106595,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
         def options(self) -> dict:
             level = self.level_button_group.checkedId()
-            return {"level": level if level in range(4) else 0}
+            return {"level": level if level in range(4) else 0,
+                    "no_stack_frames": self.no_stack_frames_checkbox.isChecked()}
 
         def set_options(self, options) -> None:
             self.level_buttons[_stage537_optimizer_level(options)].setChecked(True)
+            self.no_stack_frames_checkbox.setChecked(stage538_no_stack_frames(options))
 
 
     class WindowsCompilerParallelSettingsPage(QScrollArea):
@@ -106256,6 +106759,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.compiler_pascal_optimization_item.setData(
                 0, Qt.UserRole, "compiler.pascal.optimization")
             self.compiler_pascal_item.setExpanded(True)
+            self.compiler_pascal_import_item = QTreeWidgetItem(
+                self.compiler_pascal_item, ["Importe / Cache"])
+            self.compiler_pascal_import_item.setData(
+                0, Qt.UserRole, "compiler.pascal.imports")
             # Stage 287: Compiler -> Prolog -> Optimierung.
             self.compiler_prolog_item = QTreeWidgetItem(
                 self.nodes["compiler"], ["Prolog"]
@@ -106332,6 +106839,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.pascal_optimization_page = WindowsPascalOptimizationPage(
                 self.target, self.stack)
             self.stack.addWidget(self.pascal_optimization_page)
+
+            self.pascal_import_page = WindowsPascalImportPage(self.target, self.stack)
+            self.stack.addWidget(self.pascal_import_page)
 
             self.parallel_page = WindowsCompilerParallelSettingsPage(
                 self.target, self.stack)
@@ -108097,6 +108607,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 page = self.parallel_page
             elif key in ("compiler.pascal", "compiler.pascal.optimization"):
                 page = self.pascal_optimization_page
+            elif key == "compiler.pascal.imports":
+                page = self.pascal_import_page
             elif key == "assembler":
                 page = self.assembler_mode_page
             elif key == "compiler.dbase.optimization":
@@ -109970,10 +110482,24 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe64": self.windows_pe64_page.pascal_optimization_page,
             }
             for _target, _page in self._pascal_optimization_pages.items():
+                _page.no_stack_frames_checkbox.toggled.connect(
+                    lambda _checked, target=_target: self._pascal_optimization_changed(target))
                 for _radio in _page.level_buttons:
                     _radio.toggled.connect(
                         lambda checked, target=_target: self._pascal_optimization_changed(target)
                         if checked else None)
+
+            self._pascal_import_pages = {
+                "pe32": self.windows_pe32_page.pascal_import_page,
+                "pe64": self.windows_pe64_page.pascal_import_page,
+            }
+            for _target, _page in self._pascal_import_pages.items():
+                for checkbox in (_page.cache_checkbox, _page.prune_checkbox,
+                                 _page.externalize_checkbox):
+                    checkbox.toggled.connect(
+                        lambda _checked, target=_target: self._pascal_import_changed(target))
+                _page.clear_cache_button.clicked.connect(
+                    lambda _checked=False, target=_target: self._clear_pascal_import_cache(target))
 
             # Stage 536: no cross-architecture synchronization.
             self._parallel_pages = {
@@ -110034,9 +110560,35 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             settings = getattr(self.owner, "project_debug_options", None)
             if not isinstance(settings, dict):
                 settings = stage530_default_debug_options()
+            # Stage 549: CES changes the *linked loader*, not the Pascal ASM.
+            # Invalidate the old EXE so Start cannot silently run the image
+            # built with the previous CES setting.
+            previous = settings.get(target, DebugOptions())
+            ces_changed = bool(previous.ces) != bool(options.ces)
             settings[target] = options
             self.owner.project_debug_options = settings
             stage527_set_debug_options(options, target=target)
+            if ces_changed:
+                tabs = getattr(self.owner, "document_tabs", None)
+                if tabs is not None:
+                    for index in range(tabs.count()):
+                        document = tabs.widget(index)
+                        if (
+                            isinstance(document, DocumentEditor)
+                            and str(getattr(document, "build_target", "")).casefold() == target
+                        ):
+                            document.invalidate_assembly_result(
+                                "CES-Einstellung geändert: neu assemblieren/linken"
+                            )
+                form_document = getattr(self.owner, "dbase_form_build_document", None)
+                if (
+                    form_document is not None
+                    and isinstance(form_document, DocumentEditor)
+                    and str(getattr(form_document, "build_target", "")).casefold() == target
+                ):
+                    form_document.invalidate_assembly_result(
+                        "CES-Einstellung geändert: neu assemblieren/linken"
+                    )
             if hasattr(self.owner, "set_project_modified"):
                 self.owner.set_project_modified(True)
 
@@ -110099,11 +110651,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         def set_pascal_optimization_options(self, values) -> None:
             values = values if isinstance(values, dict) else {}
             for target, page in self._pascal_optimization_pages.items():
-                signals = [button.blockSignals(True) for button in page.level_buttons]
+                controls = list(page.level_buttons) + [page.no_stack_frames_checkbox]
+                signals = [button.blockSignals(True) for button in controls]
                 try:
                     page.set_options(values.get(target, {"level": 0}))
                 finally:
-                    for button, prior in zip(page.level_buttons, signals):
+                    for button, prior in zip(controls, signals):
                         button.blockSignals(prior)
             self.owner.project_windows_pascal_optimization_options = self.pascal_optimization_options()
 
@@ -110111,6 +110664,49 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             if target is not None:
                 return self._pascal_optimization_pages[self._target_key(target)].options()
             return {target: page.options() for target, page in self._pascal_optimization_pages.items()}
+
+        def _pascal_import_changed(self, target: str) -> None:
+            state = getattr(self.owner, "project_windows_pascal_import_options", None)
+            if not isinstance(state, dict):
+                state = stage541_default_pascal_import_options()
+            state[target] = self._pascal_import_pages[target].options()
+            self.owner.project_windows_pascal_import_options = state
+            if hasattr(self.owner, "set_project_modified"):
+                self.owner.set_project_modified(True)
+
+        def set_pascal_import_options(self, values) -> None:
+            values = values if isinstance(values, dict) else {}
+            for target, page in self._pascal_import_pages.items():
+                controls = (page.cache_checkbox, page.prune_checkbox,
+                            page.externalize_checkbox)
+                blocked = [control.blockSignals(True) for control in controls]
+                try:
+                    page.set_options(values.get(target, {}))
+                finally:
+                    for control, original in zip(controls, blocked):
+                        control.blockSignals(original)
+            self.owner.project_windows_pascal_import_options = self.pascal_import_options()
+
+        def pascal_import_options(self, target=None):
+            if target is not None:
+                return self._pascal_import_pages[self._target_key(target)].options()
+            return {target: page.options() for target, page in self._pascal_import_pages.items()}
+
+        def _clear_pascal_import_cache(self, target: str) -> None:
+            from pascal_import_manager import clear_cache
+            project_path = getattr(self.owner, "current_project_path", None)
+            if project_path is None:
+                QMessageBox.information(self, "Import-Cache",
+                                        "Bitte zuerst ein Projekt öffnen.")
+                return
+            root = Path(project_path).resolve().parent / "runtime" / "pascal" / "cache"
+            try:
+                removed = clear_cache(root, target)
+            except OSError as exc:
+                QMessageBox.warning(self, "Import-Cache", str(exc))
+                return
+            QMessageBox.information(self, "Import-Cache",
+                                    f"{removed} Cacheeinträge für {target.upper()} entfernt.")
 
         def _parallel_options_changed(self, target: str) -> None:
             state = getattr(self.owner, "project_windows_pascal_parallel_options", None)
@@ -110544,7 +111140,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             self.save_action = self._make_action(
                 "Speichern", "HTML-Datei speichern", self.save_document,
-                shortcut=QKeySequence.Save, object_name="html_editor_save_action",
+                object_name="html_editor_save_action",
             )
             self.save_as_action = self._make_action(
                 "Speichern unter ...", "HTML-Datei unter neuem Namen speichern",
@@ -111867,6 +112463,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._dbase_form_progress_last_paint = 0.0
             self._dbase_form_workspace_active = False
             self._dbase_form_workspace_state = {}
+            self._save_all_in_progress = False
             self.dbase_table_designer_dock = None
             self.dbase_table_designer_widget = None
             self.project_dbase_data_column_widths = {}
@@ -112133,6 +112730,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
             self.project_windows_pascal_optimization_options = stage537_default_pascal_optimization_options()
+            self.project_windows_pascal_import_options = stage541_default_pascal_import_options()
             self.project_modified = False
             # Stage ASM 70: projektspezifische Session-Geometrie/MRU.
             self._last_opened_c64_basic_path = None
@@ -113008,8 +113606,12 @@ border-radius: 7px;}}"""
 
             self.save_file_action = QAction(
                 self.style().standardIcon(QStyle.SP_DialogSaveButton),
-                "Speichern",
+                "Alle speichern",
                 self,
+            )
+            self.save_file_action.setObjectName("save_all_open_documents_action")
+            self.save_file_action.setStatusTip(
+                "Alle geänderten geöffneten Editoren und Projektdaten speichern"
             )
             self.save_file_action.setShortcut(QKeySequence.Save)
             self.save_file_action.triggered.connect(self._save_file_contextual)
@@ -123604,11 +124206,19 @@ border-radius: 7px;}}"""
                 self.new_source_document("text")
 
         def _save_file_contextual(self) -> None:
+            # Strg+S/Toolbar/Hauptmenü verwenden dieselbe zentrale Routine.
+            # Der DBF-Zell-Delegate muss zuvor seine aktuelle Eingabe committen.
             page = self._focused_dbase_table_page()
             if page is not None:
-                page._shortcut_save_table()
-            else:
-                self.save_current_document()
+                def _save_after_dbf_commit():
+                    ok = bool(page.save_table())
+                    self.save_all_open_documents(
+                        additional_failures=() if ok else ("dBase-Tabelle",),
+                        additional_saved=1 if ok else 0,
+                    )
+                page._run_after_data_editor_commit(_save_after_dbf_commit)
+                return
+            self.save_all_open_documents()
 
         def _ensure_dbase_table_designer(self) -> None:
             if self.dbase_table_designer_widget is not None:
@@ -124249,6 +124859,10 @@ border-radius: 7px;}}"""
             panel.set_pascal_optimization_options(getattr(
                 self, "project_windows_pascal_optimization_options",
                 stage537_default_pascal_optimization_options(),
+            ))
+            panel.set_pascal_import_options(getattr(
+                self, "project_windows_pascal_import_options",
+                stage541_default_pascal_import_options(),
             ))
             # Unterhalb dieser Groesse scrollt der Viewport, statt das
             # Hauptfenster oder den Dock-Bereich breiter zu machen.
@@ -126536,12 +127150,41 @@ border-radius: 7px;}}"""
             target_key = self._project_windows_target_key(target)
             result: List[Path] = []
             for value in self.project_windows_search_paths.get(target_key, ()):
-                try:
-                    path = Path(value).expanduser().resolve()
-                except (OSError, RuntimeError, ValueError):
-                    path = Path(value).expanduser().absolute()
-                if path not in result:
+                text = self._project_windows_absolute_directory(value)
+                if text:
+                    path = Path(text)
+                    if path not in result:
+                        result.append(path)
+            return tuple(result)
+
+        def _project_windows_pascal_library_search_paths(self, document) -> Tuple[Path, ...]:
+            """DLL/contract lookup for {$L Foo.dll}; use the active project's ABI.
+
+            The configured executable directory is the *first* project build
+            root, followed by the Unit/COFF directory and user input paths.
+            This ordering is shared by normal and parallel Pascal builds.
+            """
+            target = self._project_windows_target_key(document.build_target)
+            if target not in {"pe32", "pe64"}:
+                return ()
+            directories = [
+                self._document_windows_output_path(document),
+                self._document_windows_pascal_unit_output_path(document),
+                self._project_windows_base_directory(),
+            ]
+            if document.path is not None:
+                directories.append(Path(document.path).expanduser().resolve().parent)
+            directories.extend(self._project_windows_link_search_paths(target))
+            result: List[Path] = []
+            seen = set()
+            for directory in directories:
+                if directory is None:
+                    continue
+                path = Path(directory).expanduser().resolve()
+                key = str(path).casefold()
+                if key not in seen:
                     result.append(path)
+                    seen.add(key)
             return tuple(result)
 
         def _project_windows_asm_include_paths(self, target: str) -> Tuple[Path, ...]:
@@ -126621,11 +127264,7 @@ border-radius: 7px;}}"""
             ).strip()
             if not value:
                 return None
-            try:
-                path = Path(value).expanduser().resolve()
-            except (OSError, RuntimeError, ValueError):
-                path = Path(value).expanduser().absolute()
-            return path
+            return Path(self._project_windows_absolute_directory(value))
 
         def _document_windows_output_path(
             self,
@@ -126642,12 +127281,8 @@ border-radius: 7px;}}"""
                     return Path(override).expanduser().resolve()
                 except (OSError, RuntimeError, ValueError):
                     return Path(override).expanduser().absolute()
-            if output is not None and document.path is not None and self.project_windows_relative_paths.get(document.build_target, {}).get("output", True):
-                try:
-                    sub = os.path.relpath(str(output), str(self._project_windows_base_directory()))
-                    return (Path(document.path).resolve().parent / sub).resolve()
-                except (OSError, ValueError):
-                    pass
+            # Relative paths are resolved once against the project directory.
+            # Moving them a second time under document.path duplicates folders.
             return output
 
         def _document_windows_pascal_unit_output_path(self, document) -> Optional[Path]:
@@ -126656,15 +127291,7 @@ border-radius: 7px;}}"""
             raw = str(self.project_windows_pascal_unit_output_directories.get(key, "") or "").strip()
             if not raw:
                 return self._document_windows_output_path(document)
-            destination = Path(raw).expanduser().resolve()
-            if (document.path is not None and
-                    self.project_windows_relative_paths.get(key, {}).get("output", True)):
-                try:
-                    sub = os.path.relpath(str(destination), str(self._project_windows_base_directory()))
-                    destination = (Path(document.path).resolve().parent / sub).resolve()
-                except (OSError, ValueError):
-                    pass
-            return destination
+            return Path(self._project_windows_absolute_directory(raw))
 
         def _project_generated_object_path(
             self,
@@ -126682,14 +127309,7 @@ border-radius: 7px;}}"""
                 raw = str(self.project_windows_pascal_unit_output_directories.get(
                     self._project_windows_target_key(target), "") or "").strip()
                 if raw:
-                    output = Path(raw).expanduser().resolve()
-                    if self.project_windows_relative_paths.get(
-                        self._project_windows_target_key(target), {}).get("output", True):
-                        try:
-                            sub = os.path.relpath(str(output), str(self._project_windows_base_directory()))
-                            output = (source.parent / sub).resolve()
-                        except (OSError, ValueError):
-                            pass
+                    output = Path(self._project_windows_absolute_directory(raw))
             return (
                 (output / source.with_suffix(".o").name).resolve()
                 if output is not None
@@ -126723,15 +127343,14 @@ border-radius: 7px;}}"""
             _raw_units = str(self.project_windows_pascal_unit_output_directories.get(
                 self._project_windows_target_key(target), "") or "").strip()
             if _raw_units:
-                _candidate_dir = Path(_raw_units).expanduser().resolve()
+                _candidate_dir = Path(self._project_windows_absolute_directory(_raw_units))
                 candidates.append(_candidate_dir / leaf)
-                if source_path is not None and self.project_windows_relative_paths.get(
-                    self._project_windows_target_key(target), {}).get("output", True):
-                    try:
-                        _rel = os.path.relpath(str(_candidate_dir), str(self._project_windows_base_directory()))
-                        candidates.append(Path(source_path).resolve().parent / _rel / leaf)
-                    except (OSError, ValueError):
-                        pass
+            # Stage 548: link inputs can also be placed next to the final
+            # executable/DLL (Compiler -> Ausgabe-Verzeichnis), not only in
+            # the Unit/COFF directory or explicit input search paths.
+            executable_output = self._project_windows_output_path(target)
+            if executable_output is not None:
+                candidates.append(executable_output / leaf)
             for directory in self._project_windows_link_search_paths(target):
                 candidates.append(directory / leaf)
             for path in candidates:
@@ -131206,12 +131825,21 @@ border: 2px solid #2a69aa;
 
         def _update_document_actions(self) -> None:
             has_document = self.current_document() is not None
+            # Ctrl+S ist jetzt global: auch nicht aktive Dokument-Tabs dürfen
+            # die Aktion aktiv halten (z.B. bei aktivem Tabellen-Designer).
+            tabs = getattr(self, "document_tabs", None)
+            has_open_documents = bool(tabs is not None and any(
+                isinstance(tabs.widget(index), DocumentEditor)
+                for index in range(tabs.count())
+            ))
             has_form = self._dbase_form_is_active()
             has_e_baukasten = self._e_baukasten_is_active()
             has_resource_editor = self._windows_resource_editor_is_active()
             has_apache_config = self._apache_config_editor_is_active()
             self.save_file_action.setEnabled(
-                has_document or has_form or has_e_baukasten or has_resource_editor or has_apache_config
+                has_open_documents or has_form or has_e_baukasten
+                or has_resource_editor or has_apache_config
+                or bool(getattr(self, "project_modified", False))
             )
             self.save_as_action.setEnabled(
                 has_document or has_form or has_e_baukasten or has_resource_editor or has_apache_config
@@ -131268,6 +131896,197 @@ border: 2px solid #2a69aa;
                 f"BASIC aktualisiert, Ausdrucke formatiert und gespeichert: {scheme}"
             )
 
+        @staticmethod
+        def _write_editor_bytes_verified(target: Path, data: bytes) -> None:
+            """Atomar schreiben und den Dateistand vor dem Clean-Mark verifizieren."""
+            target = Path(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, name = tempfile.mkstemp(
+                prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent),
+            )
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(name, target)
+            except BaseException:
+                try:
+                    os.unlink(name)
+                except OSError:
+                    pass
+                raise
+            # Erst danach dürfen die Modified-Flags zurückgesetzt werden.
+            if target.read_bytes() != data:
+                raise OSError(f"Dateiinhalt stimmt nach dem Schreiben nicht überein: {target}")
+
+        def _save_generated_assembly_editor(self, document: DocumentEditor) -> bool:
+            editor = document.generated_assembly_editor
+            if not editor.document().isModified():
+                return True
+            target = getattr(document, "generated_assembly_path", None)
+            if target is None:
+                if document.path is None:
+                    self.show_error(
+                        "Assembler speichern",
+                        "Die Quelldatei benötigt zuerst einen Dateinamen.",
+                    )
+                    return False
+                suffix = ".generated.pe64.asm" if document.build_target == "pe64" else (
+                    ".generated.pe32.asm" if document.build_target == "pe32"
+                    else ".generated.asm"
+                )
+                target = document.path.with_name(document.path.stem + suffix)
+            target = Path(target).resolve()
+            if document.path is not None and target == document.path.resolve():
+                self.show_error("Assembler speichern", "Assembler- und Quelldateipfad sind identisch.")
+                return False
+            conflicting = self._find_open_document(target)
+            if conflicting is not None and conflicting is not document:
+                self.show_error("Assembler speichern", f"Datei ist in einem anderen Tab geöffnet: {target}")
+                return False
+            try:
+                self._write_editor_bytes_verified(
+                    target, editor.toPlainText().encode("utf-8")
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                self.show_error("Assembler konnte nicht gespeichert werden", f"{target}\n\n{exc}")
+                return False
+            document.generated_assembly_path = target
+            editor.document().setModified(False)
+            document._view_modification_changed(False)
+            self._update_document_tab(document)
+            self.log(f"Assembler gespeichert: {target}")
+            return True
+
+        def _save_editor_document_parts(self, document: DocumentEditor) -> bool:
+            """Quelltext/Hex und manuell bearbeitetes ASM getrennt sichern."""
+            needs_source = bool(
+                document.source_is_modified
+                or document.path is None and document.generated_assembly_editor.document().isModified()
+                or getattr(document, "_is_new_c64_project_file", False)
+            )
+            source_ok = (
+                bool(self._save_document(document, save_as=False))
+                if needs_source else True
+            )
+            # Bei einem vorhandenen Quellpfad darf ein gescheiterter
+            # Quellspeichervorgang den ASM-Speichervorgang nicht überspringen.
+            if document.path is None and not source_ok:
+                return False
+            assembly_ok = self._save_generated_assembly_editor(document)
+            return bool(source_ok and assembly_ok)
+
+        def save_all_open_documents(
+            self, *, save_project_if_open: bool = False, quiet: bool = False,
+            additional_failures=(), additional_saved: int = 0,
+        ) -> bool:
+            """Zentrale Sicherung ALLER geöffneten, geänderten Editoren.
+
+            Niemals einen Tab durch den aktuell selektierten Tab ersetzen; nur
+            ein erfolgreicher Schreibvorgang setzt dessen Modified-Flag zurück.
+            Fehler werden gesammelt, damit andere Dokumente nicht ausfallen.
+            """
+            if getattr(self, "_save_all_in_progress", False):
+                return False
+            self._save_all_in_progress = True
+            succeeded = max(0, int(additional_saved))
+            failed = list(additional_failures)
+            tabs = getattr(self, "document_tabs", None)
+            selected = tabs.currentWidget() if tabs is not None else None
+            first_failed_document = None
+
+            def perform(label, save):
+                nonlocal succeeded
+                try:
+                    if bool(save()):
+                        succeeded += 1
+                    else:
+                        failed.append(label)
+                        self.log(f"Speichern fehlgeschlagen/abgebrochen: {label}")
+                except Exception as exc:
+                    failed.append(label)
+                    self.log(f"Speicherfehler {label}: {exc}")
+                    self.show_error("Datei konnte nicht gespeichert werden", f"{label}\n\n{exc}")
+
+            try:
+                # Snapshot: Fokuswechsel/Speichern-unter darf keine Tabs überspringen.
+                documents = (
+                    [tabs.widget(i) for i in range(tabs.count())]
+                    if tabs is not None else []
+                )
+                for document in documents:
+                    if not isinstance(document, DocumentEditor):
+                        continue
+                    if not document.is_modified and not getattr(document, "_is_new_c64_project_file", False):
+                        continue
+                    label = str(document.path or document.display_name)
+                    before = len(failed)
+                    perform(label, lambda doc=document: self._save_editor_document_parts(doc))
+                    if len(failed) != before and first_failed_document is None:
+                        first_failed_document = document
+
+                # Die anderen IDE-Editoren sind keine DocumentEditor-Tabs.
+                if bool(getattr(self, "dbase_form_modified", False)):
+                    perform("dBase-Formular", lambda: self.save_dbase_form(save_as=False))
+                asm_tabs = getattr(self, "dbase_form_assembly_tabs", None)
+                if asm_tabs is not None:
+                    for index in range(asm_tabs.count()):
+                        widget = asm_tabs.widget(index)
+                        editor = getattr(self, "_dbase_form_asm_editors", {}).get(widget)
+                        if editor is None or not editor.document().isModified():
+                            continue
+                        perform(
+                            f"dBase-Assembler-Tab {index + 1}",
+                            lambda page=widget: self._dbase_form_asm_save_widget(page),
+                        )
+
+                html = getattr(self, "html_editor_widget", None)
+                if html is not None and html.editor.document().isModified():
+                    perform("HTML-Editor", html.save_document)
+                resource = getattr(self, "windows_resource_editor_widget", None)
+                if resource is not None and bool(getattr(resource, "_dirty", False)):
+                    perform("Ressourcen-Editor", resource.save)
+                apache = getattr(self, "apache_server_widget", None)
+                config = getattr(apache, "apache_config_editor", None) if apache is not None else None
+                if config is not None and config.document().isModified():
+                    perform("Apache-Konfiguration", apache.save_current_config)
+                circuit = getattr(self, "e_baukasten_widget", None)
+                if circuit is not None and bool(getattr(circuit, "dirty", False)):
+                    perform("E-Baukasten", lambda: circuit.save_file(False))
+
+                # Projektdatei zuletzt, damit neu zugewiesene Pfade enthalten sind.
+                if bool(getattr(self, "project_modified", False)) or (
+                    save_project_if_open and (
+                        getattr(self, "current_project_path", None) is not None
+                        or self.project_has_entries()
+                    )
+                ):
+                    perform("Projektdatei", self.save_project)
+            finally:
+                self._save_all_in_progress = False
+                if tabs is not None:
+                    restore = first_failed_document or selected
+                    if restore is not None and tabs.indexOf(restore) >= 0:
+                        tabs.setCurrentWidget(restore)
+
+            if failed:
+                message = (
+                    f"{succeeded} Dokument(e) gespeichert, {len(failed)} fehlgeschlagen/abgebrochen: "
+                    + ", ".join(failed)
+                )
+                self.log(message)
+                self.statusBar().showMessage(message, 12000)
+                return False
+            message = (
+                f"Alle Änderungen gespeichert ({succeeded} Dokument(e))."
+                if succeeded else "Keine ungespeicherten Änderungen gefunden."
+            )
+            self.log(message)
+            if not quiet:
+                self.statusBar().showMessage(message, 7000)
+            return True
+
         def save_current_document(self) -> bool:
             if self._apache_config_editor_is_active():
                 return bool(self.apache_server_widget.save_current_config())
@@ -131280,7 +132099,7 @@ border: 2px solid #2a69aa;
             document = self.current_document()
             if document is None:
                 return False
-            return self._save_document(document, save_as=False)
+            return self._save_editor_document_parts(document)
 
         def save_current_document_as(self) -> bool:
             if self._apache_config_editor_is_active():
@@ -131428,24 +132247,7 @@ border: 2px solid #2a69aa;
                     data = document.data_for_saving(
                         target.suffix.casefold()
                     )
-                target.parent.mkdir(parents=True, exist_ok=True)
-                file_descriptor, temporary_name = tempfile.mkstemp(
-                    prefix=f".{target.name}.",
-                    suffix=".tmp",
-                    dir=str(target.parent),
-                )
-                try:
-                    with os.fdopen(file_descriptor, "wb") as stream:
-                        stream.write(data)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    os.replace(temporary_name, target)
-                except Exception:
-                    try:
-                        os.unlink(temporary_name)
-                    except OSError:
-                        pass
-                    raise
+                self._write_editor_bytes_verified(target, data)
             except (OSError, UnicodeError, ValueError) as exc:
                 self.show_error(
                     "Datei konnte nicht gespeichert werden",
@@ -131754,6 +132556,16 @@ border: 2px solid #2a69aa;
                 self.show_error("ASM-Ausgabe kann nicht ersetzt werden", message)
                 return False
 
+            if (document.is_pascal_document and document.build_target in {"pe32", "pe64"}
+                    and stage541_import_options(getattr(
+                        self, "project_windows_pascal_import_options", {}).get(
+                            document.build_target, {}))["externalize"]):
+                from pascal_import_manager import externalize_declarations
+                _small_asm, _include_path, _include_text = externalize_declarations(
+                    generated.assembly, assembly_path)
+                if _include_path is not None:
+                    generated = replace(generated, assembly=_small_asm)
+                    _asm_import_include = (_include_path, _include_text)
             try:
                 if _asm_import_include is not None:
                     _inc_path, _inc_text = _asm_import_include
@@ -131765,6 +132577,15 @@ border: 2px solid #2a69aa;
                     assembly_path,
                     generated.assembly.encode("utf-8"),
                 )
+                if (document.is_pascal_document
+                        and document.build_target in {"pe32", "pe64"}
+                        and getattr(generated, "import_manifest", None) is not None):
+                    from pascal_import_manager import write_manifest
+                    write_manifest(str(assembly_path) + ".imports.json",
+                                   generated.import_manifest)
+                    self.log("PASCAL IMPORT-CACHE: " +
+                             ("HIT" if generated.import_manifest.get("cache_hit") else "MISS") +
+                             f" · {generated.import_manifest.get('used', 0)} benötigte Symbole")
             except OSError as exc:
                 message = (
                     "Die erzeugte Assemblerdatei konnte nicht gespeichert werden:\n"
@@ -132234,6 +133055,21 @@ border: 2px solid #2a69aa;
                     if "fpu_model" in parameter_map:
                         compiler_kwargs["fpu_model"] = document.amiga_fpu_model
                 if document.build_target in {"pe32", "pe64"}:
+                    if "no_stack_frames" in parameter_map:
+                        compiler_kwargs["no_stack_frames"] = stage538_no_stack_frames(
+                            getattr(self, "project_windows_pascal_optimization_options", {})
+                            .get(document.build_target, {}))
+                    _import_settings = stage541_import_options(
+                        getattr(self, "project_windows_pascal_import_options", {})
+                        .get(document.build_target, {}))
+                    for _param, _value in (
+                        ("import_cache_enabled", _import_settings["cache_enabled"]),
+                        ("import_prune_unused", _import_settings["prune_unused"]),
+                        ("import_cache_directory", str(self.current_project_path.parent /
+                            "runtime" / "pascal" / "cache") if self.current_project_path else None),
+                    ):
+                        if _param in parameter_map:
+                            compiler_kwargs[_param] = _value
                     if "optimization_level" in parameter_map:
                         compiler_kwargs["optimization_level"] = _stage537_optimizer_level(
                             getattr(self, "project_windows_pascal_optimization_options", {})
@@ -132295,7 +133131,7 @@ border: 2px solid #2a69aa;
                                 + ", ".join(str(line) for line in _breakpoint_lines)
                             )
                 _project_link_search_paths = (
-                    self._project_windows_link_search_paths(document.build_target)
+                    self._project_windows_pascal_library_search_paths(document)
                     if document.build_target in {"pe32", "pe64"}
                     else ()
                 )
@@ -132334,6 +133170,10 @@ border: 2px solid #2a69aa;
                 if "linked_object_files" in parameter_map:
                     compiler_kwargs["linked_object_files"] = tuple(
                         getattr(pascal_preprocessed, "link_files", ()) or ()
+                    )
+                if "linked_dll_files" in parameter_map:
+                    compiler_kwargs["linked_dll_files"] = tuple(
+                        getattr(pascal_preprocessed, "link_dlls", ()) or ()
                     )
                 pascal_progress_sources = self._pascal_progress_source_files(
                     document
@@ -132809,6 +133649,25 @@ border: 2px solid #2a69aa;
                 self.populate_file_list()
             return True
 
+        def _stage549_sync_debug_options_for_build(self, target: str) -> bool:
+            """Snapshot the selected architecture's *current* Debug page at link time.
+
+            Stage 527's loader used process-global settings; after changing
+            projects/architectures they could be stale when building an image.
+            """
+            target = str(target or "").casefold()
+            if target not in ("pe32", "pe64"):
+                return False
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                options = panel.debug_options(target)
+            else:
+                options = (getattr(self, "project_debug_options", None) or {}).get(
+                    target, DebugOptions()
+                )
+            stage527_set_debug_options(options, target=target)
+            return bool(options.ces)
+
         def assemble_generated_document(
             self,
             document: DocumentEditor,
@@ -132822,6 +133681,8 @@ border: 2px solid #2a69aa;
             """
             if not isinstance(document, DocumentEditor):
                 return False
+            if document.build_target in {"pe32", "pe64"}:
+                self._stage549_sync_debug_options_for_build(document.build_target)
             # WFM uses a hidden DocumentEditor whose source/ASM widgets are
             # embedded in the form designer rather than in document_tabs.
             # setCurrentWidget() with that hidden page can disturb menu focus.
@@ -133121,6 +133982,33 @@ border: 2px solid #2a69aa;
                     else program.prg
                 )
                 self._write_assembled_program(output_path, program_data)
+                # Pascal DLL ownership contract must accompany the final
+                # linked DLL, not only the intermediate Unit/PUI directory.
+                if (document.is_pascal_document
+                        and document.build_target in {"pe32", "pe64"}
+                        and str(getattr(document, "generated_source_kind", "")).casefold() == "library"):
+                    from shutil import copyfile
+                    contract_name = output_path.stem + ".paslib.json"
+                    unit_output = self._document_windows_pascal_unit_output_path(document)
+                    candidates = ([Path(unit_output) / contract_name] if unit_output else [])
+                    candidates.append(document.path.parent / contract_name)
+                    for contract_source in candidates:
+                        if contract_source.is_file():
+                            target_contract = output_path.parent / contract_name
+                            if contract_source.resolve() != target_contract.resolve():
+                                copyfile(contract_source, target_contract)
+                            break
+                # Stage 541: link-wide imports are recorded AFTER COFF symbol
+                # resolution, not guessed from the main source's declarations.
+                if (document.is_pascal_document
+                        and document.build_target in {"pe32", "pe64"}
+                        and getattr(program, "import_manifest", None) is not None):
+                    from pascal_import_manager import write_manifest
+                    try:
+                        write_manifest(str(output_path) + ".imports.json",
+                                       program.import_manifest)
+                    except OSError as exc:
+                        self.log(f"PASCAL IMPORT-MANIFEST: {exc}")
                 if (document.build_target in {"linux32", "linux64"}
                         and getattr(document, "is_dbase_document", False)
                         and str(getattr(document, "generated_source_kind", "")).casefold() in {"form", "program"}):
@@ -133896,6 +134784,8 @@ border: 2px solid #2a69aa;
             """Compile für BASIC/C/Pascal/LISP/PROLOG/LOGO/dBase oder Assemble für ASM."""
             if not isinstance(document, DocumentEditor):
                 return False
+            if document.build_target in {"pe32", "pe64"}:
+                self._stage549_sync_debug_options_for_build(document.build_target)
             self.document_tabs.setCurrentWidget(document)
             if document.is_build_document and document.path is None:
                 # Neue Dokumente aus Datei -> Neu erhalten vor dem ersten
@@ -136313,7 +137203,7 @@ border: 2px solid #2a69aa;
             )
             if answer == QMessageBox.Save:
                 self.document_tabs.setCurrentWidget(document)
-                return self._save_document(document, save_as=False)
+                return self._save_editor_document_parts(document)
             return answer == QMessageBox.Discard
 
         def close_current_document(self) -> bool:
@@ -138928,11 +139818,23 @@ border: 2px solid #2a69aa;
             if not isinstance(optimizer_by_target, dict):
                 optimizer_by_target = stage537_default_pascal_optimization_options()
             self.project_windows_pascal_optimization_options = {
-                target: {"level": _stage537_optimizer_level(optimizer_by_target.get(target, {}))}
+                target: stage538_pascal_optimizer_options(optimizer_by_target.get(target, {}))
                 for target in ("pe32", "pe64")
             }
             for target, options in self.project_windows_pascal_optimization_options.items():
                 entries[PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS[target]] = [dict(options)]
+            # Stage 541: persist independent import cache settings.
+            import_profiles = (
+                panel.pascal_import_options() if panel is not None else
+                getattr(self, "project_windows_pascal_import_options",
+                        stage541_default_pascal_import_options())
+            )
+            self.project_windows_pascal_import_options = {
+                target: stage541_import_options(import_profiles.get(target, {}))
+                for target in ("pe32", "pe64")
+            }
+            for target, options in self.project_windows_pascal_import_options.items():
+                entries[PROJECT_WINDOWS_PASCAL_IMPORT_KEYS[target]] = [dict(options)]
             # Stage 536: preserve separate per-architecture parallel settings.
             parallel_by_target = (
                 panel.parallel_options() if panel is not None
@@ -139037,68 +139939,21 @@ border: 2px solid #2a69aa;
                     if isinstance(document, DocumentEditor) and document.is_modified:
                         return True
 
+            for editor in getattr(self, "_dbase_form_asm_editors", {}).values():
+                if editor.document().isModified():
+                    return True
+            resource = getattr(self, "windows_resource_editor_widget", None)
+            if resource is not None and bool(getattr(resource, "_dirty", False)):
+                return True
+            apache = getattr(self, "apache_server_widget", None)
+            config = getattr(apache, "apache_config_editor", None) if apache is not None else None
+            if config is not None and config.document().isModified():
+                return True
             return False
 
         def _save_project_close_changes(self) -> bool:
-            """Speichert alle erkennbar geaenderten Inhalte vor Projekt schließen.
-
-            Jeder Teil liefert False zurueck, wenn der Benutzer einen notwendigen
-            Speichern-unter-Dialog abbricht oder der Schreibvorgang fehlschlaegt.
-            In diesem Fall bleibt das Projekt vollstaendig geoeffnet.
-            """
-            # Der Formular-Designer ist ein projektbezogenes Dock und besitzt
-            # eine eigene Modified-Kennung.
-            if bool(getattr(self, "dbase_form_modified", False)):
-                if not self.save_dbase_form(save_as=False):
-                    return False
-
-            # E-Baukasten-Schaltungen werden unabhaengig von der *.pro-Datei
-            # gespeichert. Erst danach darf der Projektbaum gesichert werden.
-            e_baukasten = getattr(self, "e_baukasten_widget", None)
-            if e_baukasten is not None and bool(getattr(e_baukasten, "dirty", False)):
-                if not bool(e_baukasten.save_file(False)):
-                    return False
-
-            # Der HTML-Editor hat ebenfalls eine eigene Dokument-Modified-Flag.
-            html_editor = getattr(self, "html_editor_widget", None)
-            if html_editor is not None:
-                try:
-                    html_modified = bool(html_editor.editor.document().isModified())
-                except (AttributeError, RuntimeError):
-                    html_modified = False
-                if html_modified and not bool(html_editor.save_document()):
-                    return False
-
-            # Auch geaenderte normale Projekt-/Quelltext-Tabs werden bei \"Ja\"
-            # gespeichert. Untitled-Dateien duerfen dazu ihren vorhandenen
-            # Speichern-unter-Dialog oeffnen.
-            document_tabs = getattr(self, "document_tabs", None)
-            if document_tabs is not None:
-                documents = [
-                    document_tabs.widget(index)
-                    for index in range(document_tabs.count())
-                ]
-                for document in documents:
-                    if not isinstance(document, DocumentEditor):
-                        continue
-                    if not document.is_modified:
-                        continue
-                    if not self._save_document(document, save_as=False):
-                        return False
-
-            # Die Projektdatei wird zuletzt geschrieben, damit neu gespeicherte
-            # Ressourcen/Pfade bereits im Projektbaum enthalten sind. Wichtig:
-            # dies geschieht VOR dem Ausblenden der Docks, sonst wuerde der
-            # kuenstliche \"alles geschlossen\"-Zustand persistiert.
-            if (
-                self.current_project_path is not None
-                or self.project_modified
-                or self.project_has_entries()
-            ):
-                if not bool(self.save_project()):
-                    return False
-
-            return True
+            """Projekt-Schließen benutzt denselben vollständigen Speicherdurchlauf."""
+            return self.save_all_open_documents(save_project_if_open=True, quiet=True)
 
         def _close_all_project_docks(self) -> None:
             """Stage ASM 106: alle QDockWidgets schließen, ohne Restore-Echos."""
@@ -139150,6 +140005,7 @@ border: 2px solid #2a69aa;
             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
             self.project_windows_pascal_optimization_options = stage537_default_pascal_optimization_options()
+            self.project_windows_pascal_import_options = stage541_default_pascal_import_options()
             for _target, _opts in self.project_debug_options.items():
                 stage527_set_debug_options(_opts, target=_target)
             _panel = getattr(self, "project_settings_panel", None)
@@ -139158,6 +140014,7 @@ border: 2px solid #2a69aa;
                 _panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
                 _panel.set_parallel_options(self.project_windows_pascal_parallel_options)
                 _panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
+                _panel.set_pascal_import_options(self.project_windows_pascal_import_options)
             self.current_project_kind = "generic"
             if hasattr(self, "project_path_edit"):
                 self.project_path_edit.clear()
@@ -139302,6 +140159,7 @@ border: 2px solid #2a69aa;
             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
             self.project_windows_pascal_optimization_options = stage537_default_pascal_optimization_options()
+            self.project_windows_pascal_import_options = stage541_default_pascal_import_options()
             for _target, _opts in self.project_debug_options.items():
                 stage527_set_debug_options(_opts, target=_target)
             _panel = getattr(self, "project_settings_panel", None)
@@ -139310,6 +140168,7 @@ border: 2px solid #2a69aa;
                 _panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
                 _panel.set_parallel_options(self.project_windows_pascal_parallel_options)
                 _panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
+                _panel.set_pascal_import_options(self.project_windows_pascal_import_options)
             self.project_path_edit.clear()
             # reset_project_tree() baut ausschließlich die geschützten
             # Hauptknoten aus PROJECT_CATEGORIES wieder auf.
@@ -139928,8 +140787,13 @@ border: 2px solid #2a69aa;
                 for target in ("pe32", "pe64")
             }
             self.project_windows_pascal_optimization_options = {
-                target: {"level": _stage537_optimizer_level(
-                    (entries.get(PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS[target]) or [{}])[0])}
+                target: stage538_pascal_optimizer_options(
+                    (entries.get(PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS[target]) or [{}])[0])
+                for target in ("pe32", "pe64")
+            }
+            self.project_windows_pascal_import_options = {
+                target: stage541_import_options(
+                    (entries.get(PROJECT_WINDOWS_PASCAL_IMPORT_KEYS[target]) or [{}])[0])
                 for target in ("pe32", "pe64")
             }
             for _target, _options in self.project_debug_options.items():
@@ -139940,6 +140804,7 @@ border: 2px solid #2a69aa;
                 _debug_panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
                 _debug_panel.set_parallel_options(self.project_windows_pascal_parallel_options)
                 _debug_panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
+                _debug_panel.set_pascal_import_options(self.project_windows_pascal_import_options)
             self.project_path_edit.setText(str(resolved))
             # Stage ASM 29: Ein geladenes Projekt mit dBase-Ressourcen behält
             # den dBase-Kontext. Dadurch werden später manuell hinzugefügte
@@ -141007,13 +141872,27 @@ border: 2px solid #2a69aa;
                         "asm_include_paths": [str(x) for x in
                             self._project_windows_asm_include_paths(target)],
                         "link_search_paths": [str(x) for x in
-                            self._project_windows_link_search_paths(target)],
+                            self._project_windows_pascal_library_search_paths(document)],
                         "graphics_backend": document.windows_graphics_backend,
                         "windows_application_mode": document.windows_application_mode,
                         "predefined_macros": macros,
                         "optimization_level": _stage537_optimizer_level(
                             getattr(self, "project_windows_pascal_optimization_options", {})
                             .get(target, {})),
+                        "no_stack_frames": stage538_no_stack_frames(
+                            getattr(self, "project_windows_pascal_optimization_options", {})
+                            .get(target, {})),
+                        "import_cache_enabled": stage541_import_options(
+                            getattr(self, "project_windows_pascal_import_options", {})
+                            .get(target, {}))["cache_enabled"],
+                        "import_prune_unused": stage541_import_options(
+                            getattr(self, "project_windows_pascal_import_options", {})
+                            .get(target, {}))["prune_unused"],
+                        "import_externalize": stage541_import_options(
+                            getattr(self, "project_windows_pascal_import_options", {})
+                            .get(target, {}))["externalize"],
+                        "import_cache_directory": str(self.current_project_path.parent /
+                            "runtime" / "pascal" / "cache") if self.current_project_path else None,
                         "stack_protector": _parse_project_bool(
                             (sec_options.get(target, {}) if isinstance(sec_options, dict)
                              else {}).get("protector_cookie", False), False),
@@ -145065,11 +145944,9 @@ QFileDialog QComboBox QAbstractItemView {
                         event.accept()
                         return True
                     elif event.key() == Qt.Key_S:
-                        if watched is raw:
-                            self.save_dbase_form()
-                            return True
-                        if is_asm_editor:
-                            self._dbase_form_save_all_editors()
+                        if watched is raw or is_asm_editor:
+                            self.save_all_open_documents()
+                            event.accept()
                             return True
             if self._dbase_form_is_active() and event.type() in (QEvent.FocusIn, QEvent.MouseButtonPress):
                 if watched is getattr(document, "raw_editor", None):
@@ -145290,7 +146167,7 @@ QFileDialog QComboBox QAbstractItemView {
 
             selected = menu.exec_(tab_bar.mapToGlobal(position))
             if selected is save_action:
-                self._save_document(document, save_as=False)
+                self._save_editor_document_parts(document)
             elif selected is save_as_action:
                 self._save_document(document, save_as=True)
 
@@ -148742,6 +149619,10 @@ def _compile_cli(args: argparse.Namespace) -> int:
             kwargs["linked_object_files"] = tuple(
                 getattr(pascal_preprocessed, "link_files", ()) or ()
             )
+        if "linked_dll_files" in params:
+            kwargs["linked_dll_files"] = tuple(
+                getattr(pascal_preprocessed, "link_dlls", ()) or ()
+            )
         source = pascal_preprocessed.source
         generated = compile_pascal_to_assembly(source, **kwargs)
         if hasattr(generated, "linked_object_files"):
@@ -148820,6 +149701,10 @@ def _compile_cli(args: argparse.Namespace) -> int:
     )
     assembly_path = source_path.with_suffix(assembly_suffix).resolve()
     _write_cli_file(assembly_path, generated.assembly.encode("utf-8"))
+    if (target in {"pe32", "pe64"} and suffix in {".pas", ".pp"}
+            and getattr(generated, "import_manifest", None) is not None):
+        from pascal_import_manager import write_manifest
+        write_manifest(str(assembly_path) + ".imports.json", generated.import_manifest)
 
     source_kind = getattr(generated, "source_kind", "program")
 
@@ -149018,6 +149903,10 @@ def _compile_cli(args: argparse.Namespace) -> int:
         else default_output.resolve()
     )
     _write_cli_file(output_path, image)
+    if (suffix in {".pas", ".pp"} and target in {"pe32", "pe64"}
+            and getattr(locals().get("linked"), "import_manifest", None) is not None):
+        from pascal_import_manager import write_manifest
+        write_manifest(str(output_path) + ".imports.json", linked.import_manifest)
     if (
         os.name == "nt"
         and target == "pe32"

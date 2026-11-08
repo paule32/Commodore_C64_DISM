@@ -10,6 +10,7 @@ interface
 uses System.Objects;
 
 type
+    {$export Exception}
     Exception = class(TObject)
     private
         FMessage: String;

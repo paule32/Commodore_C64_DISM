@@ -186,6 +186,15 @@ def compile_unit_in_worker(job: dict) -> dict:
                         if "optimization_level" in parameters or
                         any(p.kind is inspect.Parameter.VAR_KEYWORD
                             for p in parameters.values()) else {})
+    if "no_stack_frames" in parameters or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        optimizer_kwargs["no_stack_frames"] = bool(job.get("no_stack_frames", False))
+    if "linked_dll_files" in parameters:
+        optimizer_kwargs["linked_dll_files"] = tuple(prepared.link_dlls)
+    for keyword in ("import_cache_enabled", "import_prune_unused",
+                    "import_cache_directory"):
+        if keyword in parameters:
+            optimizer_kwargs[keyword] = job.get(keyword)
     generated = compile_pascal_to_assembly(
         prepared.source, filename=str(input_path), target=target,
         include_paths=tuple(job.get("include_paths", ())),
@@ -208,6 +217,13 @@ def compile_unit_in_worker(job: dict) -> dict:
     from d64_dism import assemble_pe32_coff_object, assemble_pe64_coff_object
     assembly = generated.assembly
     assembly_path = Path(job["assembly_path"])
+    if bool(job.get("import_externalize", False)):
+        from pascal_import_manager import externalize_declarations
+        assembly, import_include_path, import_include_text = externalize_declarations(
+            assembly, assembly_path)
+        if import_include_path is not None:
+            import_include_path.parent.mkdir(parents=True, exist_ok=True)
+            import_include_path.write_text(import_include_text, encoding="utf-8")
     asm_dirs = tuple(job.get("asm_include_paths", ()))
     assembler = assemble_pe64_coff_object if target == "pe64" else assemble_pe32_coff_object
     object_data = assembler(assembly, filename=str(assembly_path), include_dirs=asm_dirs)
@@ -215,6 +231,9 @@ def compile_unit_in_worker(job: dict) -> dict:
     assembly_path.parent.mkdir(parents=True, exist_ok=True)
     object_path.parent.mkdir(parents=True, exist_ok=True)
     assembly_path.write_text(assembly, encoding="utf-8")
+    if getattr(generated, "import_manifest", None) is not None:
+        from pascal_import_manager import write_manifest
+        write_manifest(str(assembly_path) + ".imports.json", generated.import_manifest)
     temp_object = object_path.with_name(f"{object_path.name}.{os.getpid()}.tmp")
     try:
         temp_object.write_bytes(object_data)

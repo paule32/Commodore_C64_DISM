@@ -12,6 +12,7 @@ uses System,
      Windows.User;
 
 type
+    {$export TWindow}
     TWindow = class(TObject)
     private
         FWinRegisteredName: PAnsiChar;
@@ -33,6 +34,7 @@ type
     end;
 
 type
+    {$export TForm}
     TForm = class(TWindow)
     private
         FWidth: Integer;

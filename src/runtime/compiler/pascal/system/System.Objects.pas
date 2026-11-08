@@ -10,6 +10,7 @@ interface
 type
     TClass  = Pointer;
 
+    {$export TObject}
     TObject = class
     public
         constructor Create;
