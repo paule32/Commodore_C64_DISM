@@ -317,12 +317,15 @@ def link_manifest_from_parsed_objects(parsed_objects: Iterable, target: str,
             "unused_declared": sorted(set(declared) - set(used_imports))}
 
 
-def externalize_declarations(source: str, assembly_path):
+def externalize_declarations(source: str, assembly_path, *,
+                             use_preprocessor_lines: bool = False):
     """Move assembler IMPORT/EXTERN lines to a sibling `.imports.inc` file.
 
     The internal Windows ASM preprocessor expands `%include` before COFF
-    parsing.  One include line replaces the first declaration; remaining
-    declaration lines become empty lines to preserve source line numbers.
+    parsing.  By default declaration lines are replaced by empty placeholders
+    (legacy Stage-541 behavior).  In compact mode, contiguous declaration and
+    removed-import-placeholder blocks become one `%include` plus `%line N`.
+    N is the logical line number of the *next* retained original ASM line.
     """
     rows = source.splitlines(keepends=True)
     declaration_lines = []
@@ -335,6 +338,46 @@ def externalize_declarations(source: str, assembly_path):
         return source, None, None
     path = Path(str(assembly_path) + ".imports.inc")
     include = '%include "' + path.name + '"'
+    if use_preprocessor_lines:
+        # Stage 550: the Stage-541 import pruning pass can leave placeholder
+        # comments in the header.  They are removed together with the import
+        # declarations, without discarding actual comments or code lines.
+        # Non-contiguous declaration blocks are handled independently.
+        obsolete = re.compile(
+            r"^\s*;\s*Stage 541:\s*unbenutzte/duplizierte "
+            r"Import-Deklaration\s*$")
+
+        def removable(index: int) -> bool:
+            row = rows[index].strip()
+            return bool(not row or _DECL.fullmatch(row) or obsolete.fullmatch(row))
+
+        newline = "\r\n" if "\r\n" in source else "\n"
+        out = []
+        cursor = 0
+        used_include = False
+        while cursor < len(rows):
+            # A pruned import may precede the first retained declaration.
+            # Include that marker in the collapsed import block too.
+            if not (_DECL.fullmatch(rows[cursor].strip()) or
+                    obsolete.fullmatch(rows[cursor].strip())):
+                out.append(rows[cursor])
+                cursor += 1
+                continue
+            end = cursor + 1
+            while end < len(rows) and removable(end):
+                end += 1
+            # For the usual contiguous import header there is precisely one
+            # include and one line directive.  The next *original* line is
+            # 1-based end+1; NASM applies %line to the line after the marker.
+            has_declarations = any(
+                _DECL.fullmatch(rows[i].strip()) for i in range(cursor, end))
+            if has_declarations and not used_include:
+                out.append(include + newline)
+                used_include = True
+            out.append(f"%line {end + 1}" + newline)
+            cursor = end
+        return "".join(out), path, "\n".join(declaration_lines) + "\n"
+
     for index in declaration_indices:
         ending = "\r\n" if rows[index].endswith("\r\n") else "\n" if rows[index].endswith("\n") else ""
         rows[index] = (include if index == declaration_indices[0] else

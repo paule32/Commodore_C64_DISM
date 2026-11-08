@@ -35370,10 +35370,25 @@ from windows_asm_macros import (
 
 
 def _preprocess_windows_assembly(source: str, filename: str, error_class, include_dirs=()):
+    # Stage 550: NASM-style %line must restore the *logical* ASM location.
+    # Strip the directive before macro processing (which also handles %include),
+    # then remap its expanded source locations.  Included-file locations stay
+    # untouched, so import declarations retain their own .inc line numbers.
+    from windows_asm_line_directives import strip_line_directives, remap_asm_locations
     try:
-        expanded = preprocess_windows_asm(source, filename=filename, include_dirs=include_dirs)
+        preprocessed_source, logical_locations = strip_line_directives(source, filename)
+    except ValueError as exc:
+        raise error_class(str(exc)) from exc
+    try:
+        expanded = preprocess_windows_asm(
+            preprocessed_source, filename=filename, include_dirs=include_dirs)
     except WindowsAsmMacroError as exc:
         raise error_class(str(exc), exc.line) from exc
+    if logical_locations:
+        expanded = type(expanded)(
+            source=expanded.source,
+            locations=remap_asm_locations(
+                expanded.locations, filename, logical_locations))
     # Stage 480: compile generated GNU AT&T source through the same internal
     # COFF backend as Intel source.  Expand %include/%define FIRST, preserving
     # original source locations and excluding macros from the syntax rewrite.
@@ -42940,6 +42955,8 @@ def stage541_import_options(raw=None) -> dict:
         "cache_enabled": _parse_project_bool(raw.get("cache_enabled", True), True),
         "prune_unused": _parse_project_bool(raw.get("prune_unused", True), True),
         "externalize": _parse_project_bool(raw.get("externalize", False), False),
+        "use_preprocessor_lines": _parse_project_bool(
+            raw.get("use_preprocessor_lines", False), False),
     }
 
 
@@ -52473,6 +52490,7 @@ def format_project_ini(
             "CacheEnabled": "true" if _values["cache_enabled"] else "false",
             "PruneUnused": "true" if _values["prune_unused"] else "false",
             "Externalize": "true" if _values["externalize"] else "false",
+            "UsePreprocessorLines": "true" if _values.get("use_preprocessor_lines", False) else "false",
         }
 
     # Stage 536: independent PE32 and PE64 parallel compiler limits.
@@ -52536,6 +52554,8 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
             "cache_enabled": parser.get(_section, "CacheEnabled", fallback="true"),
             "prune_unused": parser.get(_section, "PruneUnused", fallback="true"),
             "externalize": parser.get(_section, "Externalize", fallback="false"),
+            "use_preprocessor_lines": parser.get(
+                _section, "UsePreprocessorLines", fallback="false"),
         } if parser.has_section(_section) else {})]
 
     # Stage 536: older .pro files get automatic CPU detection and max=2.
@@ -106515,6 +106535,17 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 f"project_windows_{tag}_pascal_import_externalize")
             self.externalize_checkbox.setChecked(False)
             inner.addWidget(self.externalize_checkbox)
+            self.preprocessor_lines_checkbox = QCheckBox("Use Pre-processor Lines", group)
+            self.preprocessor_lines_checkbox.setObjectName(
+                f"project_windows_{tag}_pascal_import_preprocessor_lines")
+            self.preprocessor_lines_checkbox.setChecked(False)
+            self.preprocessor_lines_checkbox.setToolTip(
+                "Ersetzt die entfernten Import-Zeilen durch %line zur "
+                "Wiederherstellung der ursprünglichen ASM-Zeilennummern.")
+            self.preprocessor_lines_checkbox.setEnabled(False)
+            self.externalize_checkbox.toggled.connect(
+                self.preprocessor_lines_checkbox.setEnabled)
+            inner.addWidget(self.preprocessor_lines_checkbox)
             self.clear_cache_button = QPushButton("Cache für dieses Ziel löschen", group)
             self.clear_cache_button.setObjectName(f"project_windows_{tag}_pascal_import_clear")
             inner.addWidget(self.clear_cache_button)
@@ -106530,13 +106561,17 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         def options(self):
             return {"cache_enabled": self.cache_checkbox.isChecked(),
                     "prune_unused": self.prune_checkbox.isChecked(),
-                    "externalize": self.externalize_checkbox.isChecked()}
+                    "externalize": self.externalize_checkbox.isChecked(),
+                    "use_preprocessor_lines": self.preprocessor_lines_checkbox.isChecked()}
 
         def set_options(self, options):
             options = stage541_import_options(options)
             self.cache_checkbox.setChecked(options["cache_enabled"])
             self.prune_checkbox.setChecked(options["prune_unused"])
             self.externalize_checkbox.setChecked(options["externalize"])
+            self.preprocessor_lines_checkbox.setChecked(
+                options["use_preprocessor_lines"])
+            self.preprocessor_lines_checkbox.setEnabled(options["externalize"])
 
 
     class WindowsPascalOptimizationPage(QScrollArea):
@@ -110495,7 +110530,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             }
             for _target, _page in self._pascal_import_pages.items():
                 for checkbox in (_page.cache_checkbox, _page.prune_checkbox,
-                                 _page.externalize_checkbox):
+                                 _page.externalize_checkbox,
+                                 _page.preprocessor_lines_checkbox):
                     checkbox.toggled.connect(
                         lambda _checked, target=_target: self._pascal_import_changed(target))
                 _page.clear_cache_button.clicked.connect(
@@ -110678,7 +110714,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             values = values if isinstance(values, dict) else {}
             for target, page in self._pascal_import_pages.items():
                 controls = (page.cache_checkbox, page.prune_checkbox,
-                            page.externalize_checkbox)
+                            page.externalize_checkbox,
+                            page.preprocessor_lines_checkbox)
                 blocked = [control.blockSignals(True) for control in controls]
                 try:
                     page.set_options(values.get(target, {}))
@@ -132561,8 +132598,12 @@ border: 2px solid #2a69aa;
                         self, "project_windows_pascal_import_options", {}).get(
                             document.build_target, {}))["externalize"]):
                 from pascal_import_manager import externalize_declarations
+                _import_options = stage541_import_options(
+                    getattr(self, "project_windows_pascal_import_options", {}).get(
+                        document.build_target, {}))
                 _small_asm, _include_path, _include_text = externalize_declarations(
-                    generated.assembly, assembly_path)
+                    generated.assembly, assembly_path,
+                    use_preprocessor_lines=_import_options["use_preprocessor_lines"])
                 if _include_path is not None:
                     generated = replace(generated, assembly=_small_asm)
                     _asm_import_include = (_include_path, _include_text)
@@ -133668,6 +133709,46 @@ border: 2px solid #2a69aa;
             stage527_set_debug_options(options, target=target)
             return bool(options.ces)
 
+        def _stage551_deploy_pascal_console(self, output_path, target: str) -> bool:
+            """Copy the target-matching console DLL next to a built Pascal PE.
+
+            The console module is separately compiled (MINGW32/MINGW64), so
+            never fall back to a DLL for the other machine architecture.
+            """
+            target = str(target).lower()
+            if target not in {"pe32", "pe64"}:
+                return True
+            destination = Path(output_path).resolve().parent / "libd64_console.dll"
+            machine = (IMAGE_FILE_MACHINE_AMD64 if target == "pe64"
+                       else IMAGE_FILE_MACHINE_I386)
+            if destination.is_file() and _pe_file_machine(destination) == machine:
+                return True
+            base = Path(__file__).resolve().parent
+            arch = "win64" if target == "pe64" else "win32"
+            for candidate in (
+                base / "runtime" / "compiler" / arch / "libd64_console.dll",
+                Path(self.current_directory) / "runtime" / "compiler" / arch / "libd64_console.dll",
+                Path(self.current_directory) / "libd64_console.dll",
+            ):
+                if not candidate.is_file() or _pe_file_machine(candidate) != machine:
+                    continue
+                try:
+                    import shutil
+                    if candidate.resolve() != destination.resolve():
+                        shutil.copy2(candidate, destination)
+                    self.log(f"PASCAL CONSOLE RUNTIME: {candidate} -> {destination}")
+                    return True
+                except OSError as exc:
+                    self.log(f"PASCAL CONSOLE RUNTIME Kopierfehler: {exc}")
+                    return False
+            self.log(
+                "PASCAL CONSOLE RUNTIME fehlt: " + str(destination)
+                + "; zuerst runtime/compiler/build.console."
+                + ("win64" if target == "pe64" else "win32")
+                + ".sh im passenden MSYS2-Terminal ausführen"
+            )
+            return False
+
         def assemble_generated_document(
             self,
             document: DocumentEditor,
@@ -134198,6 +134279,24 @@ border: 2px solid #2a69aa;
             if output_path.parent == self.current_directory:
                 self.populate_file_list()
             self._refresh_assembled_hex_view(document, output_path)
+            if (
+                document.is_pascal_document
+                and document.build_target in {"pe32", "pe64"}
+                and output_path.suffix.casefold() in {".exe", ".dll"}
+                and "libd64_console.dll" in assembly_source.casefold()
+                and not self._stage551_deploy_pascal_console(
+                    output_path, document.build_target
+                )
+            ):
+                self.show_error(
+                    "Pascal-Konsolenruntime fehlt",
+                    "Die EXE/DLL wurde gelinkt, aber die passende "
+                    "libd64_console.dll konnte nicht bereitgestellt werden. "
+                    "Bitte die passende Runtime (MSYS2 MINGW32/MINGW64) "
+                    "mit build.console.win32.sh bzw. build.console.win64.sh "
+                    "bauen und den Build wiederholen."
+                )
+                return False
             if is_prolog_build:
                 document.finish_prolog_build_progress(True, "Erfolgreich assembliert")
                 self._show_message_box(
@@ -141891,6 +141990,9 @@ border: 2px solid #2a69aa;
                         "import_externalize": stage541_import_options(
                             getattr(self, "project_windows_pascal_import_options", {})
                             .get(target, {}))["externalize"],
+                        "import_use_preprocessor_lines": stage541_import_options(
+                            getattr(self, "project_windows_pascal_import_options", {})
+                            .get(target, {}))["use_preprocessor_lines"],
                         "import_cache_directory": str(self.current_project_path.parent /
                             "runtime" / "pascal" / "cache") if self.current_project_path else None,
                         "stack_protector": _parse_project_bool(

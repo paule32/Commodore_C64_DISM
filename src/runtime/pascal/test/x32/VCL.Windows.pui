@@ -1,0 +1,293 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "VCL.Windows",
+        "normalized_name": "vcl_windows"
+    },
+    "fingerprint": {
+        "source_sha256": "6a32fca03082e26737cb4bb9c63b994de73ace5a47f68f6a2979c76e2128105e"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "VCL.Windows.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System",
+            "Windows.Types",
+            "Windows.Kernel",
+            "Windows.User"
+        ],
+        "implementation": []
+    },
+    "imports": {},
+    "initialization": {
+        "symbol": "__unit_VCL_Windows"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "exported_classes": [
+        "TWindow",
+        "TForm"
+    ],
+    "class_export_abi": 1,
+    "symbols": {
+        "functions": [],
+        "procedures": [],
+        "classes": [
+            {
+                "name": "TWindow",
+                "parent": "TObject",
+                "size": 20,
+                "vmt_symbol": null,
+                "class_name_symbol": null,
+                "fields": [],
+                "methods": [
+                    {
+                        "name": "Create",
+                        "kind": "constructor",
+                        "symbol": "__pas_method_twindow_create",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null,
+                        "dll_export_name": "TWindow_Create",
+                        "dll_bridge_symbol": "__d64_cls_twindow_method_create"
+                    },
+                    {
+                        "name": "Destroy",
+                        "kind": "destructor",
+                        "symbol": "__pas_method_twindow_destroy",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": true,
+                        "is_class_method": false,
+                        "vmt_offset": null,
+                        "dll_export_name": "TWindow_Destroy",
+                        "dll_bridge_symbol": "__d64_cls_twindow_method_destroy"
+                    },
+                    {
+                        "name": "GetHandle",
+                        "kind": "function",
+                        "symbol": "__pas_method_twindow_gethandle",
+                        "params": [],
+                        "return_type": "hwnd",
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null,
+                        "dll_export_name": "TWindow_GetHandle",
+                        "dll_bridge_symbol": "__d64_cls_twindow_method_gethandle"
+                    },
+                    {
+                        "name": "DispatchMessage",
+                        "kind": "function",
+                        "symbol": "__pas_method_twindow_dispatchmessage",
+                        "params": [
+                            {
+                                "name": "winhWnd",
+                                "type": "hwnd",
+                                "modifier": "value",
+                                "is_var": false,
+                                "is_const": false
+                            },
+                            {
+                                "name": "Msg",
+                                "type": "uint",
+                                "modifier": "value",
+                                "is_var": false,
+                                "is_const": false
+                            },
+                            {
+                                "name": "wParam",
+                                "type": "wparam",
+                                "modifier": "value",
+                                "is_var": false,
+                                "is_const": false
+                            },
+                            {
+                                "name": "lParam",
+                                "type": "lparam",
+                                "modifier": "value",
+                                "is_var": false,
+                                "is_const": false
+                            }
+                        ],
+                        "return_type": "lresult",
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null,
+                        "dll_export_name": "TWindow_DispatchMessage",
+                        "dll_bridge_symbol": "__d64_cls_twindow_method_dispatchmessage"
+                    }
+                ],
+                "properties": [],
+                "dll_export": true
+            },
+            {
+                "name": "TForm",
+                "parent": "TWindow",
+                "size": 40,
+                "vmt_symbol": null,
+                "class_name_symbol": null,
+                "fields": [
+                    {
+                        "name": "FWidth",
+                        "type": "integer",
+                        "offset": 20,
+                        "visibility": "private"
+                    },
+                    {
+                        "name": "FHeight",
+                        "type": "integer",
+                        "offset": 24,
+                        "visibility": "private"
+                    },
+                    {
+                        "name": "FLeft",
+                        "type": "integer",
+                        "offset": 28,
+                        "visibility": "private"
+                    },
+                    {
+                        "name": "FTop",
+                        "type": "integer",
+                        "offset": 32,
+                        "visibility": "private"
+                    },
+                    {
+                        "name": "FCaption",
+                        "type": "string",
+                        "offset": 36,
+                        "visibility": "private"
+                    }
+                ],
+                "methods": [
+                    {
+                        "name": "Create",
+                        "kind": "constructor",
+                        "symbol": "__pas_method_tform_create",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null,
+                        "dll_export_name": "TForm_Create",
+                        "dll_bridge_symbol": "__d64_cls_tform_method_create"
+                    },
+                    {
+                        "name": "Destroy",
+                        "kind": "destructor",
+                        "symbol": "__pas_method_tform_destroy",
+                        "params": [],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": true,
+                        "is_class_method": false,
+                        "vmt_offset": null,
+                        "dll_export_name": "TForm_Destroy",
+                        "dll_bridge_symbol": "__d64_cls_tform_method_destroy"
+                    }
+                ],
+                "properties": [
+                    {
+                        "name": "Height",
+                        "type": "integer",
+                        "read": "FHeight",
+                        "write": "FHeight",
+                        "visibility": "published",
+                        "index_params": [],
+                        "dll_get_export": "TForm_get_Height",
+                        "dll_set_export": "TForm_set_Height"
+                    },
+                    {
+                        "name": "Width",
+                        "type": "integer",
+                        "read": "FWidth",
+                        "write": "FWidth",
+                        "visibility": "published",
+                        "index_params": [],
+                        "dll_get_export": "TForm_get_Width",
+                        "dll_set_export": "TForm_set_Width"
+                    },
+                    {
+                        "name": "Top",
+                        "type": "integer",
+                        "read": "FTop",
+                        "write": "FTop",
+                        "visibility": "published",
+                        "index_params": [],
+                        "dll_get_export": "TForm_get_Top",
+                        "dll_set_export": "TForm_set_Top"
+                    },
+                    {
+                        "name": "Left",
+                        "type": "integer",
+                        "read": "FLeft",
+                        "write": "FLeft",
+                        "visibility": "published",
+                        "index_params": [],
+                        "dll_get_export": "TForm_get_Left",
+                        "dll_set_export": "TForm_set_Left"
+                    },
+                    {
+                        "name": "Caption",
+                        "type": "string",
+                        "read": "FCaption",
+                        "write": "FCaption",
+                        "visibility": "published",
+                        "index_params": [],
+                        "dll_get_export": "TForm_get_Caption",
+                        "dll_set_export": "TForm_set_Caption"
+                    }
+                ],
+                "dll_export": true
+            }
+        ],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

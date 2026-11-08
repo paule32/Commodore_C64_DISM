@@ -1,0 +1,117 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "System.SysUtils",
+        "normalized_name": "system_sysutils"
+    },
+    "fingerprint": {
+        "source_sha256": "087fb64810617aaa5709462d86a6291b8d1ef31cac802a603b5094db619d10fd"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "System.SysUtils.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System.Objects"
+        ],
+        "implementation": []
+    },
+    "imports": {},
+    "initialization": {
+        "symbol": "__unit_System_SysUtils"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "exported_classes": [
+        "Exception"
+    ],
+    "class_export_abi": 1,
+    "symbols": {
+        "functions": [],
+        "procedures": [],
+        "classes": [
+            {
+                "name": "Exception",
+                "parent": "TObject",
+                "size": 8,
+                "vmt_symbol": null,
+                "class_name_symbol": null,
+                "fields": [
+                    {
+                        "name": "FMessage",
+                        "type": "string",
+                        "offset": 4,
+                        "visibility": "private"
+                    }
+                ],
+                "methods": [
+                    {
+                        "name": "Create",
+                        "kind": "constructor",
+                        "symbol": "__pas_method_exception_create",
+                        "params": [
+                            {
+                                "name": "AMessage",
+                                "type": "string",
+                                "modifier": "const",
+                                "is_var": false,
+                                "is_const": true
+                            }
+                        ],
+                        "return_type": null,
+                        "visibility": "public",
+                        "calling_convention": "cdecl",
+                        "is_virtual": false,
+                        "is_override": false,
+                        "is_class_method": false,
+                        "vmt_offset": null,
+                        "dll_export_name": "Exception_Create",
+                        "dll_bridge_symbol": "__d64_cls_exception_method_create"
+                    }
+                ],
+                "properties": [
+                    {
+                        "name": "Message",
+                        "type": "string",
+                        "read": "FMessage",
+                        "write": null,
+                        "visibility": "published",
+                        "index_params": [],
+                        "dll_get_export": "Exception_get_Message",
+                        "dll_set_export": null
+                    }
+                ],
+                "dll_export": true
+            }
+        ],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

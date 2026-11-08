@@ -1,0 +1,664 @@
+{
+  "key": {
+    "assembly_hash": "20abaf9ed0828582ada64dd73787eed9687361251602f007e9280a2a503e76cf",
+    "config": {
+      "no_stack_frames": true,
+      "optimization_level": 3,
+      "stack_protector": true
+    },
+    "conservative": false,
+    "runtime_dll_hashes": {
+      "libd64_runtime.dll": "fd2a3e0b2699d7b1447f16608c848e8a0993ff86b850c6ef5c7cb5585aa54bb4"
+    },
+    "runtime_version": "libd64_runtime",
+    "schema": 1,
+    "source_hash": "abe0ce30b1296b9aea03906dfa3125746b64e21c68944a68b7ffdf25e54b3a5c",
+    "target": "pe32",
+    "version": "541.1"
+  },
+  "manifest": {
+    "conservative": false,
+    "declared": 79,
+    "externals": [
+      {
+        "dll": null,
+        "kind": "extern",
+        "line": 8,
+        "member": null,
+        "symbol": "ExitProcess",
+        "used": true
+      }
+    ],
+    "imports": [
+      {
+        "dll": "bcrypt.dll",
+        "kind": "import",
+        "line": 9,
+        "member": "BCryptGenRandom",
+        "symbol": "__d64_cookie_BCryptGenRandom",
+        "used": true
+      },
+      {
+        "dll": "kernel32.dll",
+        "kind": "import",
+        "line": 10,
+        "member": "InterlockedCompareExchange",
+        "symbol": "__d64_cookie_InterlockedCompareExchange",
+        "used": true
+      },
+      {
+        "dll": "kernel32.dll",
+        "kind": "import",
+        "line": 11,
+        "member": "RaiseFailFastException",
+        "symbol": "__d64_cookie_RaiseFailFastException",
+        "used": true
+      },
+      {
+        "dll": "kernel32.dll",
+        "kind": "import",
+        "line": 12,
+        "member": "ExitProcess",
+        "symbol": "__d64_cookie_ExitProcess",
+        "used": true
+      },
+      {
+        "dll": "libd64_runtime.dll",
+        "kind": "import",
+        "line": 13,
+        "member": "jit_object_instance_new",
+        "symbol": "_jit_object_instance_new",
+        "used": true
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 14,
+        "member": "D64_System_Strings_IntToStr",
+        "symbol": "__pas_System_Strings_IntToStr",
+        "used": true
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 15,
+        "member": "D64_System_Strings_StrToInt",
+        "symbol": "__pas_System_Strings_StrToInt",
+        "used": false
+      },
+      {
+        "dll": "kernel32.dll",
+        "kind": "import",
+        "line": 16,
+        "member": "GetModuleHandleA",
+        "symbol": "_GetModuleHandleA@4",
+        "used": false
+      },
+      {
+        "dll": "kernel32.dll",
+        "kind": "import",
+        "line": 17,
+        "member": "ExitProcess",
+        "symbol": "_ExitProcess@4",
+        "used": true
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 18,
+        "member": "GetWindowLongA",
+        "symbol": "_GetWindowLongA@8",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 19,
+        "member": "SetWindowLongA",
+        "symbol": "_SetWindowLongA@12",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 20,
+        "member": "LoadIconA",
+        "symbol": "_LoadIconA@8",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 21,
+        "member": "LoadCursorA",
+        "symbol": "_LoadCursorA@8",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 22,
+        "member": "RegisterClassA",
+        "symbol": "_RegisterClassA@4",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 23,
+        "member": "CreateWindowExA",
+        "symbol": "_CreateWindowExA@48",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 24,
+        "member": "ShowWindow",
+        "symbol": "_ShowWindow@8",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 25,
+        "member": "UpdateWindow",
+        "symbol": "_UpdateWindow@4",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 26,
+        "member": "IsWindow",
+        "symbol": "_IsWindow@4",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 27,
+        "member": "EnableWindow",
+        "symbol": "_EnableWindow@8",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 28,
+        "member": "MoveWindow",
+        "symbol": "_MoveWindow@24",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 29,
+        "member": "SetWindowTextA",
+        "symbol": "_SetWindowTextA@8",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 30,
+        "member": "DestroyWindow",
+        "symbol": "_DestroyWindow@4",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 31,
+        "member": "GetMessageA",
+        "symbol": "_GetMessageA@16",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 32,
+        "member": "TranslateMessage",
+        "symbol": "_TranslateMessage@4",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 33,
+        "member": "DispatchMessageA",
+        "symbol": "_DispatchMessageA@4",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 34,
+        "member": "DefWindowProcA",
+        "symbol": "_DefWindowProcA@16",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 35,
+        "member": "MessageBoxA",
+        "symbol": "_MessageBoxA@16",
+        "used": false
+      },
+      {
+        "dll": "user32.dll",
+        "kind": "import",
+        "line": 36,
+        "member": "PostQuitMessage",
+        "symbol": "_PostQuitMessage@4",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 37,
+        "member": "Exception_get_Message",
+        "symbol": "__d64_cls_exception_get_message",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 38,
+        "member": "TForm_get_Height",
+        "symbol": "__d64_cls_tform_get_height",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 39,
+        "member": "TForm_set_Height",
+        "symbol": "__d64_cls_tform_set_height",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 40,
+        "member": "TForm_get_Width",
+        "symbol": "__d64_cls_tform_get_width",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 41,
+        "member": "TForm_set_Width",
+        "symbol": "__d64_cls_tform_set_width",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 42,
+        "member": "TForm_get_Top",
+        "symbol": "__d64_cls_tform_get_top",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 43,
+        "member": "TForm_set_Top",
+        "symbol": "__d64_cls_tform_set_top",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 44,
+        "member": "TForm_get_Left",
+        "symbol": "__d64_cls_tform_get_left",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 45,
+        "member": "TForm_set_Left",
+        "symbol": "__d64_cls_tform_set_left",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 46,
+        "member": "TForm_get_Caption",
+        "symbol": "__d64_cls_tform_get_caption",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 47,
+        "member": "TForm_set_Caption",
+        "symbol": "__d64_cls_tform_set_caption",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 48,
+        "member": "Exception_Create",
+        "symbol": "__pas_method_exception_create",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 49,
+        "member": "TApplication_Create",
+        "symbol": "__pas_method_tapplication_create",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 50,
+        "member": "TApplication_Destroy",
+        "symbol": "__pas_method_tapplication_destroy",
+        "used": true
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 51,
+        "member": "TForm_Create",
+        "symbol": "__pas_method_tform_create",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 52,
+        "member": "TForm_Destroy",
+        "symbol": "__pas_method_tform_destroy",
+        "used": true
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 53,
+        "member": "TObject_ClassName",
+        "symbol": "__pas_method_tobject_classname",
+        "used": true
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 54,
+        "member": "TObject_ClassNameAddress",
+        "symbol": "__pas_method_tobject_classnameaddress",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 55,
+        "member": "TObject_ClassParent",
+        "symbol": "__pas_method_tobject_classparent",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 56,
+        "member": "TObject_ClassType",
+        "symbol": "__pas_method_tobject_classtype",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 57,
+        "member": "TObject_Create",
+        "symbol": "__pas_method_tobject_create",
+        "used": true
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 58,
+        "member": "TObject_Destroy",
+        "symbol": "__pas_method_tobject_destroy",
+        "used": true
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 59,
+        "member": "TObject_Free",
+        "symbol": "__pas_method_tobject_free",
+        "used": true
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 60,
+        "member": "TObject_FreeInstance",
+        "symbol": "__pas_method_tobject_freeinstance",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 61,
+        "member": "TObject_InheritsFrom",
+        "symbol": "__pas_method_tobject_inheritsfrom",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 62,
+        "member": "TObject_InstanceSize",
+        "symbol": "__pas_method_tobject_instancesize",
+        "used": true
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 63,
+        "member": "TWindow_Create",
+        "symbol": "__pas_method_twindow_create",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 64,
+        "member": "TWindow_Destroy",
+        "symbol": "__pas_method_twindow_destroy",
+        "used": true
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 65,
+        "member": "TWindow_DispatchMessage",
+        "symbol": "__pas_method_twindow_dispatchmessage",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 66,
+        "member": "TWindow_GetHandle",
+        "symbol": "__pas_method_twindow_gethandle",
+        "used": false
+      },
+      {
+        "dll": "msvcrt.dll",
+        "kind": "import",
+        "line": 67,
+        "member": "_gcvt",
+        "symbol": "_gcvt",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 68,
+        "member": "TObject_new_Create",
+        "symbol": "__d64_cls_tobject_new_create",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 69,
+        "member": "Exception_new_Create",
+        "symbol": "__d64_cls_exception_new_create",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 70,
+        "member": "TWindow_new_Create",
+        "symbol": "__d64_cls_twindow_new_create",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 71,
+        "member": "TForm_new_Create",
+        "symbol": "__d64_cls_tform_new_create",
+        "used": false
+      },
+      {
+        "dll": "Runtime.dll",
+        "kind": "import",
+        "line": 72,
+        "member": "TApplication_new_Create",
+        "symbol": "__d64_cls_tapplication_new_create",
+        "used": true
+      },
+      {
+        "dll": "libd64_runtime.dll",
+        "kind": "import",
+        "line": 73,
+        "member": "_jit_raise",
+        "symbol": "_jit_raise",
+        "used": true
+      },
+      {
+        "dll": "libd64_runtime.dll",
+        "kind": "import",
+        "line": 74,
+        "member": "_jit_exception_push",
+        "symbol": "_jit_exception_push",
+        "used": true
+      },
+      {
+        "dll": "libd64_runtime.dll",
+        "kind": "import",
+        "line": 75,
+        "member": "_jit_exception_pop",
+        "symbol": "_jit_exception_pop",
+        "used": true
+      },
+      {
+        "dll": "libd64_console.dll",
+        "kind": "import",
+        "line": 76,
+        "member": "d64_console_clear",
+        "symbol": "_d64_console_clear",
+        "used": false
+      },
+      {
+        "dll": "libd64_console.dll",
+        "kind": "import",
+        "line": 77,
+        "member": "d64_console_init",
+        "symbol": "_d64_console_init",
+        "used": true
+      },
+      {
+        "dll": "libd64_console.dll",
+        "kind": "import",
+        "line": 78,
+        "member": "d64_console_newline",
+        "symbol": "_d64_console_newline",
+        "used": true
+      },
+      {
+        "dll": "libd64_console.dll",
+        "kind": "import",
+        "line": 79,
+        "member": "d64_console_read_int",
+        "symbol": "_d64_console_read_int",
+        "used": false
+      },
+      {
+        "dll": "libd64_console.dll",
+        "kind": "import",
+        "line": 80,
+        "member": "d64_console_read_string",
+        "symbol": "_d64_console_read_string",
+        "used": true
+      },
+      {
+        "dll": "libd64_console.dll",
+        "kind": "import",
+        "line": 81,
+        "member": "d64_console_restore",
+        "symbol": "_d64_console_restore",
+        "used": true
+      },
+      {
+        "dll": "libd64_console.dll",
+        "kind": "import",
+        "line": 82,
+        "member": "d64_console_write_char",
+        "symbol": "_d64_console_write_char",
+        "used": false
+      },
+      {
+        "dll": "libd64_console.dll",
+        "kind": "import",
+        "line": 83,
+        "member": "d64_console_write_double",
+        "symbol": "_d64_console_write_double",
+        "used": false
+      },
+      {
+        "dll": "libd64_console.dll",
+        "kind": "import",
+        "line": 84,
+        "member": "d64_console_write_int",
+        "symbol": "_d64_console_write_int",
+        "used": false
+      },
+      {
+        "dll": "libd64_console.dll",
+        "kind": "import",
+        "line": 85,
+        "member": "d64_console_write_text",
+        "symbol": "_d64_console_write_text",
+        "used": true
+      },
+      {
+        "dll": "libd64_runtime.dll",
+        "kind": "import",
+        "line": 86,
+        "member": "_jit_free",
+        "symbol": "_jit_free",
+        "used": true
+      }
+    ],
+    "schema": 1,
+    "target": "pe32",
+    "unused": 53,
+    "used": 26,
+    "version": "541.1"
+  }
+}

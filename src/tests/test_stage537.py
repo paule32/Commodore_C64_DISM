@@ -121,21 +121,27 @@ class Stage537Tests(unittest.TestCase):
         run_loop("format_project_ini", {"parser": conf,
                  "entries": {"opt32": [{"level": 1}], "opt64": [{"level": 3}]},
                  "PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS": keys,
-                 "_stage537_optimizer_level": level})
+                 "_stage537_optimizer_level": level,
+                 "stage538_no_stack_frames": lambda row: bool(row.get("no_stack_frames", False)),
+                 "_parse_project_bool": lambda value, default=False: str(value).lower() in ("true", "1", "yes")})
         self.assertEqual(conf.get("Settings.Windows.32Bit.Compiler.Pascal.Optimierung", "Level"), "O1")
         self.assertEqual(conf.get("Settings.Windows.64Bit.Compiler.Pascal.Optimierung", "Level"), "O3")
         restored = {}
         run_loop("parse_project_ini", {"parser": conf, "entries": restored,
                  "PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS": keys,
-                 "_stage537_optimizer_level": level})
-        self.assertEqual(restored["opt32"], [{"level": 1}])
-        self.assertEqual(restored["opt64"], [{"level": 3}])
+                 "_stage537_optimizer_level": level,
+                 "stage538_no_stack_frames": lambda row: bool(row.get("no_stack_frames", False)),
+                 "_parse_project_bool": lambda value, default=False: str(value).lower() in ("true", "1", "yes")})
+        self.assertEqual(restored["opt32"], [{"level": 1, "no_stack_frames": False}])
+        self.assertEqual(restored["opt64"], [{"level": 3, "no_stack_frames": False}])
         older = {}
         run_loop("parse_project_ini", {"parser": configparser.ConfigParser(),
                  "entries": older, "PROJECT_WINDOWS_PASCAL_OPTIMIZATION_KEYS": keys,
-                 "_stage537_optimizer_level": level})
-        self.assertEqual(older["opt32"], [{"level": 0}])
-        self.assertEqual(older["opt64"], [{"level": 0}])
+                 "_stage537_optimizer_level": level,
+                 "stage538_no_stack_frames": lambda row: bool(row.get("no_stack_frames", False)),
+                 "_parse_project_bool": lambda value, default=False: str(value).lower() in ("true", "1", "yes")})
+        self.assertEqual(older["opt32"], [{"level": 0, "no_stack_frames": False}])
+        self.assertEqual(older["opt64"], [{"level": 0, "no_stack_frames": False}])
 
     def test_gui_worker_dark_title_and_vcl_ownership(self):
         for expected in (

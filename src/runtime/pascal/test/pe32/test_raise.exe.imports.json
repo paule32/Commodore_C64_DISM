@@ -1,0 +1,193 @@
+{
+  "imports": [
+    {
+      "dll": "Runtime.dll",
+      "member": "TApplication_new_Create",
+      "symbol": "__d64_cls_tapplication_new_create"
+    },
+    {
+      "dll": "bcrypt.dll",
+      "member": "BCryptGenRandom",
+      "symbol": "__d64_cookie_bcryptgenrandom"
+    },
+    {
+      "dll": "kernel32.dll",
+      "member": "ExitProcess",
+      "symbol": "__d64_cookie_exitprocess"
+    },
+    {
+      "dll": "kernel32.dll",
+      "member": "InterlockedCompareExchange",
+      "symbol": "__d64_cookie_interlockedcompareexchange"
+    },
+    {
+      "dll": "kernel32.dll",
+      "member": "RaiseFailFastException",
+      "symbol": "__d64_cookie_raisefailfastexception"
+    },
+    {
+      "dll": "Runtime.dll",
+      "member": "TApplication_Destroy",
+      "symbol": "__pas_method_tapplication_destroy"
+    },
+    {
+      "dll": "Runtime.dll",
+      "member": "TForm_Destroy",
+      "symbol": "__pas_method_tform_destroy"
+    },
+    {
+      "dll": "Runtime.dll",
+      "member": "TObject_ClassName",
+      "symbol": "__pas_method_tobject_classname"
+    },
+    {
+      "dll": "Runtime.dll",
+      "member": "TObject_Create",
+      "symbol": "__pas_method_tobject_create"
+    },
+    {
+      "dll": "Runtime.dll",
+      "member": "TObject_Destroy",
+      "symbol": "__pas_method_tobject_destroy"
+    },
+    {
+      "dll": "Runtime.dll",
+      "member": "TObject_Free",
+      "symbol": "__pas_method_tobject_free"
+    },
+    {
+      "dll": "Runtime.dll",
+      "member": "TObject_InstanceSize",
+      "symbol": "__pas_method_tobject_instancesize"
+    },
+    {
+      "dll": "Runtime.dll",
+      "member": "TWindow_Destroy",
+      "symbol": "__pas_method_twindow_destroy"
+    },
+    {
+      "dll": "libd64_console.dll",
+      "member": "d64_console_init",
+      "symbol": "_d64_console_init"
+    },
+    {
+      "dll": "libd64_console.dll",
+      "member": "d64_console_newline",
+      "symbol": "_d64_console_newline"
+    },
+    {
+      "dll": "libd64_console.dll",
+      "member": "d64_console_read_string",
+      "symbol": "_d64_console_read_string"
+    },
+    {
+      "dll": "libd64_console.dll",
+      "member": "d64_console_restore",
+      "symbol": "_d64_console_restore"
+    },
+    {
+      "dll": "libd64_console.dll",
+      "member": "d64_console_write_text",
+      "symbol": "_d64_console_write_text"
+    },
+    {
+      "dll": "kernel32.dll",
+      "member": "ExitProcess",
+      "symbol": "_exitprocess@4"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_dynstring_from_cstr",
+      "symbol": "_jit_dynstring_from_cstr"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "_jit_exception_pop",
+      "symbol": "_jit_exception_pop"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "_jit_exception_push",
+      "symbol": "_jit_exception_push"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "_jit_free",
+      "symbol": "_jit_free"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_object_instance_new",
+      "symbol": "_jit_object_instance_new"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "_jit_raise",
+      "symbol": "_jit_raise"
+    },
+    {
+      "dll": "kernel32.dll",
+      "member": "ExitProcess",
+      "symbol": "exitprocess"
+    }
+  ],
+  "output": null,
+  "schema": 1,
+  "target": "pe32",
+  "unused_declared": [
+    "__d64_cls_exception_get_message",
+    "__d64_cls_exception_new_create",
+    "__d64_cls_tform_get_caption",
+    "__d64_cls_tform_get_height",
+    "__d64_cls_tform_get_left",
+    "__d64_cls_tform_get_top",
+    "__d64_cls_tform_get_width",
+    "__d64_cls_tform_new_create",
+    "__d64_cls_tform_set_caption",
+    "__d64_cls_tform_set_height",
+    "__d64_cls_tform_set_left",
+    "__d64_cls_tform_set_top",
+    "__d64_cls_tform_set_width",
+    "__d64_cls_tobject_new_create",
+    "__d64_cls_twindow_new_create",
+    "__pas_method_exception_create",
+    "__pas_method_tapplication_create",
+    "__pas_method_tform_create",
+    "__pas_method_tobject_classnameaddress",
+    "__pas_method_tobject_classparent",
+    "__pas_method_tobject_classtype",
+    "__pas_method_tobject_freeinstance",
+    "__pas_method_tobject_inheritsfrom",
+    "__pas_method_twindow_create",
+    "__pas_method_twindow_dispatchmessage",
+    "__pas_method_twindow_gethandle",
+    "_createwindowexa@48",
+    "_d64_console_clear",
+    "_d64_console_read_int",
+    "_d64_console_write_char",
+    "_d64_console_write_double",
+    "_d64_console_write_int",
+    "_defwindowproca@16",
+    "_destroywindow@4",
+    "_dispatchmessagea@4",
+    "_enablewindow@8",
+    "_gcvt",
+    "_getmessagea@16",
+    "_getmodulehandlea@4",
+    "_getwindowlonga@8",
+    "_iswindow@4",
+    "_loadcursora@8",
+    "_loadicona@8",
+    "_messageboxa@16",
+    "_movewindow@24",
+    "_postquitmessage@4",
+    "_registerclassa@4",
+    "_setwindowlonga@12",
+    "_setwindowtexta@8",
+    "_showwindow@8",
+    "_translatemessage@4",
+    "_updatewindow@4"
+  ],
+  "used": 26,
+  "version": "541.1"
+}

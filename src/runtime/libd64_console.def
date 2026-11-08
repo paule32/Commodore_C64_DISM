@@ -1,0 +1,13 @@
+LIBRARY "libd64_console.dll"
+EXPORTS
+    d64_console_init
+    d64_console_restore
+    d64_console_write_text
+    d64_console_write_int
+    d64_console_write_double
+    d64_console_write_char
+    d64_console_newline
+    d64_console_clear
+    d64_console_read_line
+    d64_console_read_int
+    d64_console_read_string

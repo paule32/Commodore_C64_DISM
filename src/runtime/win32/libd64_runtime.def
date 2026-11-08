@@ -110,9 +110,9 @@ EXPORTS
 ;    SetLastError@4 @137
 ;    GetLastError@0 @138
 ;    GetProcAddress@8 @139
-;    GetStdHandle@4 @140
-;    ReadFile@20 @141
-;    WriteFile@20 @142
+    GetStdHandle@4
+    ReadFile@20
+    WriteFile@20
 ;    WNetGetConnectionA@12 @143
     
     _Z24_jit_error_out_of_memoryv

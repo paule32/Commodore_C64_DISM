@@ -220,7 +220,8 @@ def compile_unit_in_worker(job: dict) -> dict:
     if bool(job.get("import_externalize", False)):
         from pascal_import_manager import externalize_declarations
         assembly, import_include_path, import_include_text = externalize_declarations(
-            assembly, assembly_path)
+            assembly, assembly_path,
+            use_preprocessor_lines=bool(job.get("import_use_preprocessor_lines", False)))
         if import_include_path is not None:
             import_include_path.parent.mkdir(parents=True, exist_ok=True)
             import_include_path.write_text(import_include_text, encoding="utf-8")
