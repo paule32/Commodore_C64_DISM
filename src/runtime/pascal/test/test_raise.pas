@@ -5,7 +5,8 @@
 // ---------------------------------------------------------------------------
 program test_raise;
 
-{$L Runtime}
+{$L inttostr.o}
+{$L strtoint.o}
 
 uses System, Windows;
 
@@ -38,15 +39,18 @@ type
 constructor TFaz.Create;
 begin
     inherited Create;
+    WriteLn('TFaz Create');
 end;
 procedure TFaz.Show;
 begin
+    WriteLn('TFaz Show', '');
     WriteLn('  Runtime class: ', ClassName);
     WriteLn('  Method  owner: ', OwnerClassName);
     WriteLn('  Size         : ', IntToStr(InstanceSize));
 end;
 destructor TFaz.Destroy;
 begin
+    WriteLn('TFaz Destroy','');
     inherited Destroy;
 end;
 
@@ -63,11 +67,13 @@ end;
 
 destructor TFoo.Destroy;
 begin
+    WriteLn('TFoo Destroy','');
     inherited Destroy;
 end;
 
 procedure TFoo.Show;
 begin
+    WriteLn('TFoo Show','');
     WriteLn('  Runtime class: ', ClassName);
     WriteLn('  Method  owner: ', OwnerClassName );
     WriteLn('  Size         : ', IntToStr(self.InstanceSize));
@@ -78,7 +84,7 @@ var
     Foo: TFoo;
     Application: TApplication;
 begin
-WriteLn('xxxxx');
+WriteLn('xxxxxxx');
     Foo := TFoo.Create(42);
     try
         Foo.Show;

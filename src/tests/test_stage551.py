@@ -109,7 +109,7 @@ class TestStage551Console(unittest.TestCase):
     def test_ide_deploys_target_architecture(self):
         text = (ROOT / 'd64_dism.py').read_text('utf-8')
         self.assertIn('def _stage551_deploy_pascal_console', text)
-        self.assertIn('_pe_file_machine(candidate) != machine', text)
+        self.assertIn('validate_console_library(candidate, machine, required)', text)
         self.assertIn('build.console.win32.sh', text)
         self.assertIn('build.console.win64.sh', text)
 

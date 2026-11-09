@@ -1,0 +1,188 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "System.Types",
+        "normalized_name": "system_types"
+    },
+    "fingerprint": {
+        "source_sha256": "1f822431d01eb2a4047f6be36511a97f050912a5b7f33c1b544ebd948e9876ef"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "System.Types.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [],
+        "implementation": []
+    },
+    "imports": {},
+    "initialization": {
+        "symbol": "__unit_System_Types"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [],
+    "types": {
+        "aliases": [
+            {
+                "kind": "alias",
+                "name": "Cardinal",
+                "target_type": "dword"
+            },
+            {
+                "kind": "alias",
+                "name": "UInt32",
+                "target_type": "dword"
+            },
+            {
+                "kind": "alias",
+                "name": "LongInt",
+                "target_type": "int32"
+            },
+            {
+                "kind": "alias",
+                "name": "LongWord",
+                "target_type": "dword"
+            },
+            {
+                "kind": "alias",
+                "name": "Real",
+                "target_type": "double"
+            },
+            {
+                "kind": "alias",
+                "name": "Extended",
+                "target_type": "double"
+            },
+            {
+                "kind": "alias",
+                "name": "AnsiChar",
+                "target_type": "char"
+            },
+            {
+                "kind": "alias",
+                "name": "AnsiString",
+                "target_type": "string"
+            }
+        ],
+        "subranges": [
+            {
+                "kind": "subrange",
+                "name": "Boolean",
+                "lower": 0,
+                "upper": -1,
+                "size": 1,
+                "signed": false
+            },
+            {
+                "kind": "subrange",
+                "name": "Byte",
+                "lower": 0,
+                "upper": -1,
+                "size": 1,
+                "signed": false
+            },
+            {
+                "kind": "subrange",
+                "name": "Char",
+                "lower": 0,
+                "upper": -1,
+                "size": 1,
+                "signed": false
+            },
+            {
+                "kind": "subrange",
+                "name": "Word",
+                "lower": 0,
+                "upper": 65535,
+                "size": 2,
+                "signed": false
+            },
+            {
+                "kind": "subrange",
+                "name": "DWord",
+                "lower": 0,
+                "upper": 4294967295,
+                "size": 4,
+                "signed": false
+            },
+            {
+                "kind": "subrange",
+                "name": "ShortInt",
+                "lower": -128,
+                "upper": 127,
+                "size": 1,
+                "signed": true
+            },
+            {
+                "kind": "subrange",
+                "name": "SmallInt",
+                "lower": -32768,
+                "upper": 32767,
+                "size": 2,
+                "signed": true
+            },
+            {
+                "kind": "subrange",
+                "name": "Int32",
+                "lower": -2147483648,
+                "upper": 2147483647,
+                "size": 4,
+                "signed": true
+            }
+        ],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": [
+            {
+                "kind": "pointer",
+                "name": "PChar",
+                "target_type": "char",
+                "size": 4
+            },
+            {
+                "kind": "pointer",
+                "name": "PAnsiChar",
+                "target_type": "ansichar",
+                "size": 4
+            },
+            {
+                "kind": "pointer",
+                "name": "PAnsiString",
+                "target_type": "ansistring",
+                "size": 4
+            },
+            {
+                "kind": "pointer",
+                "name": "PByte",
+                "target_type": "byte",
+                "size": 4
+            }
+        ]
+    },
+    "symbols": {
+        "functions": [],
+        "procedures": [],
+        "classes": [],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

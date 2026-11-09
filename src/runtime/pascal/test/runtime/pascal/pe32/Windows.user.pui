@@ -1,0 +1,736 @@
+{
+    "format": "dBase2Many Pascal Unit Interface",
+    "version": 1,
+    "unit": {
+        "name": "Windows.User",
+        "normalized_name": "windows_user"
+    },
+    "fingerprint": {
+        "source_sha256": "bc337d3348dc5fc47edbc2b85a0a8c7428dc37ddfeefad308a09388735b3d0e4"
+    },
+    "target": {
+        "target": "win32",
+        "object_format": "coff32",
+        "machine": "i386",
+        "pointer_size": 4,
+        "calling_convention": "cdecl"
+    },
+    "object": {
+        "file": "Windows.user.coff32.o",
+        "format": "coff32",
+        "machine": "i386"
+    },
+    "uses": {
+        "interface": [
+            "System",
+            "Windows.Types"
+        ],
+        "implementation": []
+    },
+    "imports": {
+        "_GetWindowLongA@8": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "GetWindowLongA",
+            "pascal_name": "GetWindowLongA",
+            "calling_convention": "stdcall"
+        },
+        "_SetWindowLongA@12": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "SetWindowLongA",
+            "pascal_name": "SetWindowLongA",
+            "calling_convention": "stdcall"
+        },
+        "_LoadIconA@8": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "LoadIconA",
+            "pascal_name": "LoadIconA",
+            "calling_convention": "stdcall"
+        },
+        "_LoadCursorA@8": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "LoadCursorA",
+            "pascal_name": "LoadCursorA",
+            "calling_convention": "stdcall"
+        },
+        "_RegisterClassA@4": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "RegisterClassA",
+            "pascal_name": "RegisterClassA",
+            "calling_convention": "stdcall"
+        },
+        "_CreateWindowExA@48": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "CreateWindowExA",
+            "pascal_name": "CreateWindowExA",
+            "calling_convention": "stdcall"
+        },
+        "_ShowWindow@8": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "ShowWindow",
+            "pascal_name": "ShowWindow",
+            "calling_convention": "stdcall"
+        },
+        "_UpdateWindow@4": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "UpdateWindow",
+            "pascal_name": "UpdateWindow",
+            "calling_convention": "stdcall"
+        },
+        "_IsWindow@4": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "IsWindow",
+            "pascal_name": "IsWindow",
+            "calling_convention": "stdcall"
+        },
+        "_EnableWindow@8": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "EnableWindow",
+            "pascal_name": "EnableWindow",
+            "calling_convention": "stdcall"
+        },
+        "_MoveWindow@24": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "MoveWindow",
+            "pascal_name": "MoveWindow",
+            "calling_convention": "stdcall"
+        },
+        "_SetWindowTextA@8": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "SetWindowTextA",
+            "pascal_name": "SetWindowTextA",
+            "calling_convention": "stdcall"
+        },
+        "_DestroyWindow@4": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "DestroyWindow",
+            "pascal_name": "DestroyWindow",
+            "calling_convention": "stdcall"
+        },
+        "_GetMessageA@16": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "GetMessageA",
+            "pascal_name": "GetMessageA",
+            "calling_convention": "stdcall"
+        },
+        "_TranslateMessage@4": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "TranslateMessage",
+            "pascal_name": "TranslateMessage",
+            "calling_convention": "stdcall"
+        },
+        "_DispatchMessageA@4": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "DispatchMessageA",
+            "pascal_name": "DispatchMessageA",
+            "calling_convention": "stdcall"
+        },
+        "_DefWindowProcA@16": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "DefWindowProcA",
+            "pascal_name": "DefWindowProcA",
+            "calling_convention": "stdcall"
+        },
+        "_PostQuitMessage@4": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "PostQuitMessage",
+            "pascal_name": "PostQuitMessage",
+            "calling_convention": "stdcall"
+        },
+        "_MessageBoxA@16": {
+            "kind": "dll",
+            "library": "user32.dll",
+            "name": "MessageBoxA",
+            "pascal_name": "MessageBoxA",
+            "calling_convention": "stdcall"
+        }
+    },
+    "initialization": {
+        "symbol": "__unit_Windows_User"
+    },
+    "finalization": {
+        "symbol": null
+    },
+    "constants": [
+        {
+            "name": "DLL_USER32",
+            "value": "user32.dll"
+        }
+    ],
+    "types": {
+        "aliases": [],
+        "subranges": [],
+        "records": [],
+        "enums": [],
+        "arrays": [],
+        "pointers": []
+    },
+    "symbols": {
+        "functions": [
+            {
+                "name": "GetWindowLongA",
+                "kind": "function",
+                "symbol": "_GetWindowLongA@8",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "nIndex",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "LongInt",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "SetWindowLongA",
+                "kind": "function",
+                "symbol": "_SetWindowLongA@12",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "nIndex",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "dwNewLong",
+                        "type": "longint",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "LongInt",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "LoadIconA",
+                "kind": "function",
+                "symbol": "_LoadIconA@8",
+                "params": [
+                    {
+                        "name": "hInstance",
+                        "type": "hinstance",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "lpIconName",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "HICON",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "LoadCursorA",
+                "kind": "function",
+                "symbol": "_LoadCursorA@8",
+                "params": [
+                    {
+                        "name": "hInstance",
+                        "type": "hinstance",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "lpCursorName",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "HCURSOR",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "RegisterClassA",
+                "kind": "function",
+                "symbol": "_RegisterClassA@4",
+                "params": [
+                    {
+                        "name": "WndClass",
+                        "type": "twndclassa",
+                        "modifier": "var",
+                        "is_var": true,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "Integer",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "CreateWindowExA",
+                "kind": "function",
+                "symbol": "_CreateWindowExA@48",
+                "params": [
+                    {
+                        "name": "dwExStyle",
+                        "type": "dword",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "lpClassName",
+                        "type": "pansichar",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "lpWindowName",
+                        "type": "pansichar",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "dwStyle",
+                        "type": "dword",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "x",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "y",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "nWidth",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "nHeight",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "hWndParent",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "hMenu",
+                        "type": "hmenu",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "hInstance",
+                        "type": "hinstance",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "lpParam",
+                        "type": "pointer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "HWND",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "ShowWindow",
+                "kind": "function",
+                "symbol": "_ShowWindow@8",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "nCmdShow",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "BOOL",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "UpdateWindow",
+                "kind": "function",
+                "symbol": "_UpdateWindow@4",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "BOOL",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "IsWindow",
+                "kind": "function",
+                "symbol": "_IsWindow@4",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "BOOL",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "EnableWindow",
+                "kind": "function",
+                "symbol": "_EnableWindow@8",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "bEnable",
+                        "type": "bool",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "BOOL",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "MoveWindow",
+                "kind": "function",
+                "symbol": "_MoveWindow@24",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "X",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "Y",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "nWidth",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "nHeight",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "bRepaint",
+                        "type": "bool",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "BOOL",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "SetWindowTextA",
+                "kind": "function",
+                "symbol": "_SetWindowTextA@8",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "lpString",
+                        "type": "string",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "BOOL",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "DestroyWindow",
+                "kind": "function",
+                "symbol": "_DestroyWindow@4",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "BOOL",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "GetMessageA",
+                "kind": "function",
+                "symbol": "_GetMessageA@16",
+                "params": [
+                    {
+                        "name": "Msg",
+                        "type": "tmsg",
+                        "modifier": "var",
+                        "is_var": true,
+                        "is_const": false
+                    },
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "wMsgMin",
+                        "type": "uint",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "wMsgMax",
+                        "type": "uint",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "BOOL",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "TranslateMessage",
+                "kind": "function",
+                "symbol": "_TranslateMessage@4",
+                "params": [
+                    {
+                        "name": "Msg",
+                        "type": "tmsg",
+                        "modifier": "var",
+                        "is_var": true,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "BOOL",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "DispatchMessageA",
+                "kind": "function",
+                "symbol": "_DispatchMessageA@4",
+                "params": [
+                    {
+                        "name": "Msg",
+                        "type": "tmsg",
+                        "modifier": "var",
+                        "is_var": true,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "LRESULT",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "DefWindowProcA",
+                "kind": "function",
+                "symbol": "_DefWindowProcA@16",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "uMsg",
+                        "type": "uint",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "wParam",
+                        "type": "wparam",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "lParam",
+                        "type": "lparam",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "LRESULT",
+                "calling_convention": "stdcall"
+            },
+            {
+                "name": "MessageBoxA",
+                "kind": "function",
+                "symbol": "_MessageBoxA@16",
+                "params": [
+                    {
+                        "name": "hWnd",
+                        "type": "hwnd",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "lpText",
+                        "type": "pansichar",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "lpCaption",
+                        "type": "pansichar",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    },
+                    {
+                        "name": "uType",
+                        "type": "uint",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": "Integer",
+                "calling_convention": "stdcall"
+            }
+        ],
+        "procedures": [
+            {
+                "name": "PostQuitMessage",
+                "kind": "procedure",
+                "symbol": "_PostQuitMessage@4",
+                "params": [
+                    {
+                        "name": "nExitCode",
+                        "type": "integer",
+                        "modifier": "value",
+                        "is_var": false,
+                        "is_const": false
+                    }
+                ],
+                "return_type": null,
+                "calling_convention": "stdcall"
+            }
+        ],
+        "classes": [],
+        "variables": []
+    },
+    "link": {
+        "objects": [],
+        "archives": [],
+        "resources": [],
+        "embedded_objects": [],
+        "base_directory": "pui"
+    },
+    "macros": {}
+}

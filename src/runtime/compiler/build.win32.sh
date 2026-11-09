@@ -161,5 +161,7 @@ echo "123"
   fi
   #win32/obj/diskio/diskio.o        
   strip win32/libd64_runtime.dll
+  # Stage 551: build the shared console service used by Pascal PE32 images.
+  bash build.console.win32.sh || exit 1
   exit 0
 fi

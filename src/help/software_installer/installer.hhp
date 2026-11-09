@@ -1,0 +1,18 @@
+[OPTIONS]
+Compatibility=1.1 or later
+Compiled file=software_installer.chm
+Contents file=installer.hhc
+Index file=installer.hhk
+Default topic=index.html
+Language=0x407 German (Germany)
+[FILES]
+index.html
+neues_projekt_starten.html
+wizard_seite_1.html
+wizard_seite_2.html
+wizard_seite_3.html
+wizard_seite_4.html
+
+wizard_seite_5.html
+wizard_seite_6.html
+wizard_seite_7.html

@@ -46,6 +46,8 @@ if [ "$TARGET" = "x86_64-w64-mingw32" ]; then
   cp libdbase2many.64.dll.a win64/libdbase2many.64.dll.a
 
   rm libdbase2many.64*
+  # Stage 551: independently build the PE32+ console service.
+  bash build.console.win64.sh || exit 1
 else
   echo "No MingW64 Toolchain - aborted."
   exit 2

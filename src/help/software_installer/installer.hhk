@@ -1,0 +1,10 @@
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML//EN"><html><body><ul>
+<li><object type="text/sitemap"><param name="Name" value="Software Installer"><param name="Local" value="index.html"></object></li>
+<li><object type="text/sitemap"><param name="Name" value="Neues Projekt starten"><param name="Local" value="neues_projekt_starten.html"></object></li>
+<li><object type="text/sitemap"><param name="Name" value="Wizard Seite 1"><param name="Local" value="wizard_seite_1.html"></object></li>
+<li><object type="text/sitemap"><param name="Name" value="Wizard Seite 2"><param name="Local" value="wizard_seite_2.html"></object></li>
+<li><object type="text/sitemap"><param name="Name" value="Wizard Seite 3"><param name="Local" value="wizard_seite_3.html"></object></li>
+<li><object type="text/sitemap"><param name="Name" value="Wizard Seite 4"><param name="Local" value="wizard_seite_4.html"></object></li>
+<li><object type="text/sitemap"><param name="Name" value="Wizard Seite 5"><param name="Local" value="wizard_seite_5.html"></object></li>
+<li><object type="text/sitemap"><param name="Name" value="Wizard Seite 6"><param name="Local" value="wizard_seite_6.html"></object></li>
+<li><object type="text/sitemap"><param name="Name" value="Wizard Seite 7"><param name="Local" value="wizard_seite_7.html"></object></li></ul></body></html>

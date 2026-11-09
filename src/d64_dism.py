@@ -127772,6 +127772,18 @@ border-radius: 7px;}}"""
                 lambda _checked=False: self._build_menu_start()
             )
             self.build_menu.addAction(self.build_start_action)
+            # Stage 553: eigener exklusiver Installer-Arbeitsbereich unmittelbar
+            # unter "Starten", ohne die bestehende Build-Logik zu veraendern.
+            self.build_menu.addSeparator()
+            self.software_installer_action = QAction("Software Installer", self)
+            self.software_installer_action.setObjectName("software_installer_action")
+            self.software_installer_action.setStatusTip(
+                "Software Installer mit Komponenten, Splitter und Archiv-/Extern-Tabellen öffnen"
+            )
+            self.software_installer_action.triggered.connect(
+                self.show_software_installer_dock
+            )
+            self.build_menu.addAction(self.software_installer_action)
             self._build_menu_ready_document = None
             self._build_menu_ready_path = None
             self._build_menu_ready_target = None
@@ -127938,6 +127950,76 @@ border-radius: 7px;}}"""
             # Stage 75: popup menus inherit the same Green-&-Beige palette.
             self._sync_green_beige_menu_objects()
             self._apply_green_beige_chrome_style()
+
+        def show_software_installer_dock(self, _checked=False):
+            """Stage 554: ein Dock mit Filterleiste, Splitter und Archiv-/Extern-Tabs."""
+            from software_installer import SoftwareInstallerWorkbench
+
+            dock = getattr(self, "software_installer_dock", None)
+            first_open = dock is None
+            if dock is None:
+                dock = QDockWidget("Software Installer", self)
+                dock.setObjectName("software_installer_workspace_dock")
+                dock.setAllowedAreas(
+                    Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+                )
+                dock.setFeatures(
+                    QDockWidget.DockWidgetClosable |
+                    QDockWidget.DockWidgetMovable
+                )
+                self.software_installer_widget = SoftwareInstallerWorkbench(dock)
+                self.software_installer_widget.set_dark_mode(
+                    bool(self.dark_mode_enabled)
+                )
+                # Stage 555: Veraenderungen aktivieren das globale Strg+S.
+                self.software_installer_widget.project_changed.connect(
+                    self._update_document_actions)
+                dock.setWidget(self.software_installer_widget)
+                self.software_installer_widget._update_project_caption()
+                dock.setMinimumSize(0, 0)
+                dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+                dock.hide()
+                dock.visibilityChanged.connect(
+                    lambda visible, current=dock:
+                    self._exclusive_tool_workspace_visibility_changed(
+                        bool(visible), current
+                    )
+                )
+                self.software_installer_dock = dock
+
+            self._activate_exclusive_tool_workspace(dock)
+            self.software_installer_widget.set_dark_mode(
+                bool(self.dark_mode_enabled)
+            )
+            # Das einzige aeussere Dock enthaelt alle Installer-Komponenten.
+            dock.show()
+            dock.raise_()
+            self._expand_exclusive_tool_workspace(dock)
+            QTimer.singleShot(0, lambda current=dock:
+                self._expand_exclusive_tool_workspace(current))
+            if first_open:
+                QTimer.singleShot(0, self.software_installer_widget.apply_initial_widths)
+                QTimer.singleShot(50, self.software_installer_widget.apply_initial_widths)
+            self._update_document_actions()
+            self.statusBar().showMessage("Software Installer geöffnet")
+
+        def show_software_installer_help(self, topic="Wizard Seite 1"):
+            """CHM-Viewer mit Installer-Hilfethema, auch ohne kompilierte CHM."""
+            compiled = d64_resolve_runtime_resource("help/software_installer.chm")
+            sources = d64_resolve_runtime_resource("help/software_installer")
+            if compiled.is_file():
+                self.show_chm_viewer(
+                    context_language="software_installer", context_word=topic,
+                    fixed_chm=compiled,
+                )
+            elif sources.is_dir():
+                self.show_chm_viewer(
+                    context_language="software_installer", context_word=topic,
+                    fixed_help_directory=sources,
+                )
+            else:
+                self.show_chm_viewer(context_word=topic)
 
         def show_agent_0001_dock(self):
             """Agent -> 0001: Parser im bestehenden exklusiven Dock-Workspace."""
@@ -129707,6 +129789,12 @@ border: 2px solid #2a69aa;
             resource_editor = getattr(self, "windows_resource_editor_widget", None)
             if resource_editor is not None:
                 resource_editor.set_dark_mode(enabled)
+
+            # Stage 554: gesamtes einzelnes Installer-Dock einschliesslich
+            # Splitter, Komponenten und Filterleiste umstellen.
+            installer_widget = getattr(self, "software_installer_widget", None)
+            if installer_widget is not None:
+                installer_widget.set_dark_mode(enabled)
 
             # Stage 155: Server-Docks bleiben beim globalen Theme-Wechsel synchron.
             for server_widget_name in (
@@ -131873,13 +131961,22 @@ border: 2px solid #2a69aa;
             has_e_baukasten = self._e_baukasten_is_active()
             has_resource_editor = self._windows_resource_editor_is_active()
             has_apache_config = self._apache_config_editor_is_active()
+            installer_widget = getattr(self, "software_installer_widget", None)
+            has_installer_changes = bool(
+                installer_widget is not None and (
+                    installer_widget.dirty or installer_widget.needs_save_as
+                    or installer_widget._registry_pending
+                )
+            )
             self.save_file_action.setEnabled(
                 has_open_documents or has_form or has_e_baukasten
-                or has_resource_editor or has_apache_config
+                or has_resource_editor or has_apache_config or has_installer_changes
                 or bool(getattr(self, "project_modified", False))
             )
             self.save_as_action.setEnabled(
-                has_document or has_form or has_e_baukasten or has_resource_editor or has_apache_config
+                has_document or has_form or has_e_baukasten or has_resource_editor
+                or has_apache_config or bool(installer_widget is not None
+                    and installer_widget.isVisible())
             )
             self.close_document_action.setEnabled(has_document)
             self._update_edit_actions()
@@ -132092,6 +132189,16 @@ border: 2px solid #2a69aa;
                 if circuit is not None and bool(getattr(circuit, "dirty", False)):
                     perform("E-Baukasten", lambda: circuit.save_file(False))
 
+                # Stage 555: auch der Installer ist ein Projekteditor, kein
+                # DocumentEditor-Tab. Ein unbenanntes Projekt erzwingt den
+                # Projektnamen-Dialog. Fehler lassen die anderen Docs intakt.
+                installer = getattr(self, "software_installer_widget", None)
+                if installer is not None and (
+                    installer.dirty or installer.needs_save_as
+                    or installer._registry_pending
+                ):
+                    perform("Software Installer", installer.save_configuration)
+
                 # Projektdatei zuletzt, damit neu zugewiesene Pfade enthalten sind.
                 if bool(getattr(self, "project_modified", False)) or (
                     save_project_if_open and (
@@ -132139,6 +132246,9 @@ border: 2px solid #2a69aa;
             return self._save_editor_document_parts(document)
 
         def save_current_document_as(self) -> bool:
+            installer_dock = getattr(self, "software_installer_dock", None)
+            if installer_dock is not None and installer_dock.isVisible():
+                return bool(self.software_installer_widget.save_configuration())
             if self._apache_config_editor_is_active():
                 return bool(self.apache_server_widget.save_current_config_as())
             if self._windows_resource_editor_is_active():
@@ -133709,40 +133819,64 @@ border: 2px solid #2a69aa;
             stage527_set_debug_options(options, target=target)
             return bool(options.ces)
 
-        def _stage551_deploy_pascal_console(self, output_path, target: str) -> bool:
-            """Copy the target-matching console DLL next to a built Pascal PE.
+        def _stage551_deploy_pascal_console(
+            self, output_path, target: str, required_exports=()
+        ) -> bool:
+            """Stage 552: deploy and *verify* the console DLL, including exports.
 
-            The console module is separately compiled (MINGW32/MINGW64), so
-            never fall back to a DLL for the other machine architecture.
+            The Pascal link manifest must determine whether this is needed:
+            inspecting only the visible ASM misses externalized .imports.inc.
             """
+            from pascal_console_dependencies import validate_console_library
+
             target = str(target).lower()
             if target not in {"pe32", "pe64"}:
                 return True
             destination = Path(output_path).resolve().parent / "libd64_console.dll"
             machine = (IMAGE_FILE_MACHINE_AMD64 if target == "pe64"
                        else IMAGE_FILE_MACHINE_I386)
-            if destination.is_file() and _pe_file_machine(destination) == machine:
-                return True
+            required = set(required_exports)
+            errors = []
+            if destination.is_file():
+                error = validate_console_library(destination, machine, required)
+                if not error:
+                    return True
+                errors.append(f"Vorhandene DLL: {error}")
             base = Path(__file__).resolve().parent
             arch = "win64" if target == "pe64" else "win32"
+            project_dir = (self.current_project_path.parent
+                           if getattr(self, "current_project_path", None)
+                           else Path(self.current_directory))
             for candidate in (
                 base / "runtime" / "compiler" / arch / "libd64_console.dll",
+                project_dir / "runtime" / "compiler" / arch / "libd64_console.dll",
                 Path(self.current_directory) / "runtime" / "compiler" / arch / "libd64_console.dll",
+                project_dir / "libd64_console.dll",
                 Path(self.current_directory) / "libd64_console.dll",
             ):
-                if not candidate.is_file() or _pe_file_machine(candidate) != machine:
+                if not candidate.is_file():
+                    continue
+                error = validate_console_library(candidate, machine, required)
+                if error:
+                    errors.append(f"{candidate}: {error}")
                     continue
                 try:
                     import shutil
                     if candidate.resolve() != destination.resolve():
                         shutil.copy2(candidate, destination)
+                    # Recheck after copying: never claim success on a bad DLL.
+                    error = validate_console_library(destination, machine, required)
+                    if error:
+                        errors.append(f"Nach Kopieren: {error}")
+                        continue
                     self.log(f"PASCAL CONSOLE RUNTIME: {candidate} -> {destination}")
                     return True
                 except OSError as exc:
-                    self.log(f"PASCAL CONSOLE RUNTIME Kopierfehler: {exc}")
-                    return False
+                    errors.append(f"Kopierfehler {candidate}: {exc}")
             self.log(
-                "PASCAL CONSOLE RUNTIME fehlt: " + str(destination)
+                "PASCAL CONSOLE RUNTIME FEHLT/UNGÜLTIG: " + str(destination)
+                + "; benötigt: " + ", ".join(sorted(required))
+                + ("; " + "; ".join(errors) if errors else "")
                 + "; zuerst runtime/compiler/build.console."
                 + ("win64" if target == "pe64" else "win32")
                 + ".sh im passenden MSYS2-Terminal ausführen"
@@ -134063,6 +134197,40 @@ border: 2px solid #2a69aa;
                     else program.prg
                 )
                 self._write_assembled_program(output_path, program_data)
+                # Stage 552: the on-disk PE import directory of a packed EXE
+                # lists only cabinet/kernel32. Use the *link manifest* to find
+                # original imports, including those from externalized .inc, and
+                # also inspect dependent Pascal DLLs (e.g. Runtime.dll).
+                if (document.is_pascal_document
+                        and document.build_target in {"pe32", "pe64"}
+                        and output_path.suffix.casefold() in {".exe", ".dll"}):
+                    from pascal_console_dependencies import required_console_exports
+                    has_asm_console = _windows_asm_imports_dll(
+                        assembly_source, assembly_path, "libd64_console.dll",
+                        self._project_windows_asm_include_paths(document.build_target),
+                    )
+                    console_exports = required_console_exports(
+                        output_path, getattr(program, "import_manifest", None),
+                        source_includes_console=has_asm_console,
+                    )
+                    if console_exports and not self._stage551_deploy_pascal_console(
+                        output_path, document.build_target, console_exports
+                    ):
+                        message = (
+                            "Die erzeugte EXE/DLL benötigt libd64_console.dll, "
+                            "aber neben dem Zielimage wurde keine passende DLL "
+                            "mit allen benötigten Exporten gefunden.\n\n"
+                            "Bitte unter MSYS2 MINGW32/MINGW64 "
+                            "runtime/compiler/build.console.win32.sh bzw. "
+                            "build.console.win64.sh erstellen und erneut linken. "
+                            "Siehe Protokoll für Details."
+                        )
+                        document.show_generated_assembly_error(
+                            message, status_text="Konsolenruntime fehlt"
+                        )
+                        self.show_error("Pascal-Konsolenruntime fehlt", message)
+                        self.statusBar().showMessage("Pascal-Konsolenruntime fehlt")
+                        return False
                 # Pascal DLL ownership contract must accompany the final
                 # linked DLL, not only the intermediate Unit/PUI directory.
                 if (document.is_pascal_document
@@ -134279,24 +134447,6 @@ border: 2px solid #2a69aa;
             if output_path.parent == self.current_directory:
                 self.populate_file_list()
             self._refresh_assembled_hex_view(document, output_path)
-            if (
-                document.is_pascal_document
-                and document.build_target in {"pe32", "pe64"}
-                and output_path.suffix.casefold() in {".exe", ".dll"}
-                and "libd64_console.dll" in assembly_source.casefold()
-                and not self._stage551_deploy_pascal_console(
-                    output_path, document.build_target
-                )
-            ):
-                self.show_error(
-                    "Pascal-Konsolenruntime fehlt",
-                    "Die EXE/DLL wurde gelinkt, aber die passende "
-                    "libd64_console.dll konnte nicht bereitgestellt werden. "
-                    "Bitte die passende Runtime (MSYS2 MINGW32/MINGW64) "
-                    "mit build.console.win32.sh bzw. build.console.win64.sh "
-                    "bauen und den Build wiederholen."
-                )
-                return False
             if is_prolog_build:
                 document.finish_prolog_build_progress(True, "Erfolgreich assembliert")
                 self._show_message_box(
@@ -140014,6 +140164,13 @@ border: 2px solid #2a69aa;
         def _project_close_has_unsaved_data(self) -> bool:
             """Stage ASM 106: geaenderte Daten fuer den Projektabschluss erkennen."""
             if bool(getattr(self, "project_modified", False)):
+                return True
+
+            installer = getattr(self, "software_installer_widget", None)
+            if installer is not None and (
+                installer.dirty or installer.needs_save_as
+                or installer._registry_pending
+            ):
                 return True
 
             if bool(getattr(self, "dbase_form_modified", False)):
@@ -147213,6 +147370,25 @@ QFileDialog QComboBox QAbstractItemView {
             )
 
         def closeEvent(self, event: QCloseEvent) -> None:
+            # Stage 555: unbenannte/geaenderte Installer-Projekte beim Beenden
+            # wie andere Dokumente behandeln, nicht unbemerkt verwerfen.
+            installer = getattr(self, "software_installer_widget", None)
+            if installer is not None and (
+                installer.dirty or installer.needs_save_as
+                or installer._registry_pending
+            ):
+                answer = QMessageBox.question(
+                    self, "Software Installer",
+                    "Installer-Projekt vor dem Beenden speichern?",
+                    QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                    QMessageBox.Save,
+                )
+                if answer == QMessageBox.Cancel:
+                    event.ignore()
+                    return
+                if answer == QMessageBox.Save and not installer.save_configuration():
+                    event.ignore()
+                    return
             # Stage 388: Das Hauptfenster schliesst Docks nicht zwingend
             # einzeln. Ungespeicherte C64-Ressourcen trotzdem abfragen.
             for dock in tuple(getattr(self, "_c64_tool_docks", {}).values()):
