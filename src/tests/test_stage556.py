@@ -35,7 +35,7 @@ class WizardStage556Tests(unittest.TestCase):
         for cls in ('InstallerGeneralInfoDialog', 'InstallerPlatformDialog',
                     'InstallerSourcesDialog', 'InstallerAppearanceDialog'):
             self.assertIn(f'class {cls}(InstallerWizardDialog):', DIALOGS)
-        self.assertIn('WIZARD_SIZE = (780, 620)', DIALOGS)
+        self.assertIn('WIZARD_SIZE = (760, 590)', DIALOGS)
         self.assertIn('self.setFixedSize(*WIZARD_SIZE)', DIALOGS)
         self.assertIn('self.image_box.setFixedWidth(140)', DIALOGS)
         self.assertIn('layout.addSpacing(20)', DIALOGS)

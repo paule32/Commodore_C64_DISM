@@ -31,7 +31,7 @@ class SingleInstallerDockSourceTests(unittest.TestCase):
         start = IDE.index('def show_software_installer_dock(')
         end = IDE.index('def show_agent_0001_dock(', start)
         method = IDE[start:end]
-        self.assertEqual(method.count('QDockWidget("Software Installer", self)'), 1)
+        self.assertEqual(method.count('InstallerWorkspaceDock("Software Installer", self)'), 1)
         self.assertIn('dock.setWidget(self.software_installer_widget)', method)
         self.assertNotIn('files_dock', method)
         self.assertNotIn('entries_dock', method)

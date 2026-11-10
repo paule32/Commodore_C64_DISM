@@ -113249,6 +113249,11 @@ border-radius: 7px;}}"""
             if event.type() in (QEvent.WindowStateChange, QEvent.ActivationChange):
                 self._layout_frameless_resize_overlays()
                 self._schedule_raise_frameless_resize_overlays()
+            if event.type() == QEvent.WindowStateChange and not self.isMinimized():
+                # Ein minimiertes Fenster blendet unter Qt/Win32 Docks temporär
+                # aus, ohne sie zu schliessen. Nach der Wiederherstellung nur
+                # den weiterhin aktiven Installer-Workspace sichtbar machen.
+                QTimer.singleShot(0, self._ensure_installer_workspace_after_restore)
 
         def paintEvent(self, event) -> None:
             """Paint the beige resize frame with a visible 3-px outline."""
@@ -114622,6 +114627,20 @@ border-radius: 7px;}}"""
             except RuntimeError:
                 pass
 
+        def _ensure_installer_workspace_after_restore(self) -> None:
+            """Nach Minimierung aktives Installer-Dock wieder anzeigen."""
+            if self.isMinimized() or not self.isVisible():
+                return
+            dock = getattr(self, "software_installer_dock", None)
+            snapshot = getattr(self, "_exclusive_tool_workspace", None)
+            if (dock is None or snapshot is None
+                    or snapshot.get("owner") is not dock
+                    or self._exclusive_tool_workspace_transitioning):
+                return
+            if not dock.isVisible():
+                dock.show()
+            self._expand_exclusive_tool_workspace(dock)
+
         def _exclusive_tool_workspace_visibility_changed(
             self, visible: bool, dock: QDockWidget,
         ) -> None:
@@ -114630,9 +114649,18 @@ border-radius: 7px;}}"""
             snapshot = self._exclusive_tool_workspace
             if snapshot is None or snapshot.get("owner") is not dock:
                 return
-            if not visible:
+            if dock is getattr(self, "software_installer_dock", None):
+                # Stage 562: keine Workspace-Restauration aufgrund einer
+                # blossen Visibility-Meldung (z. B. Minimieren auf Windows).
+                # Das ausdrueckliche Schliessen ist mit closeEvent verbunden.
+                if not visible:
+                    return
+            elif not visible:
+                if self.isMinimized() or not self.isVisible():
+                    return
                 self._restore_exclusive_tool_workspace(dock)
-            else:
+                return
+            if visible:
                 QTimer.singleShot(
                     0, lambda current=dock:
                     self._expand_exclusive_tool_workspace(current),
@@ -127953,12 +127981,12 @@ border-radius: 7px;}}"""
 
         def show_software_installer_dock(self, _checked=False):
             """Stage 554: ein Dock mit Filterleiste, Splitter und Archiv-/Extern-Tabs."""
-            from software_installer import SoftwareInstallerWorkbench
+            from software_installer import SoftwareInstallerWorkbench, InstallerWorkspaceDock
 
             dock = getattr(self, "software_installer_dock", None)
             first_open = dock is None
             if dock is None:
-                dock = QDockWidget("Software Installer", self)
+                dock = InstallerWorkspaceDock("Software Installer", self)
                 dock.setObjectName("software_installer_workspace_dock")
                 dock.setAllowedAreas(
                     Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
@@ -127987,6 +128015,12 @@ border-radius: 7px;}}"""
                     )
                 )
                 self.software_installer_dock = dock
+                dock.explicitCloseRequested.connect(
+                    lambda current=dock: self._restore_exclusive_tool_workspace(current))
+                dock.toggleViewAction().triggered.connect(
+                    lambda checked, current=dock:
+                    self._restore_exclusive_tool_workspace(current)
+                    if not checked else None)
 
             self._activate_exclusive_tool_workspace(dock)
             self.software_installer_widget.set_dark_mode(

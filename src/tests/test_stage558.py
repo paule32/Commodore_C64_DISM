@@ -79,7 +79,7 @@ class Stage558Tests(unittest.TestCase):
         self.assertIn('win-server-2025', leaves)
 
     def test_seven_wizard_pages_have_consistent_geometry_and_navigation(self):
-        self.assertIn('WIZARD_SIZE = (780, 620)', DIALOGS)
+        self.assertIn('WIZARD_SIZE = (760, 590)', DIALOGS)
         self.assertIn('self.image_box.setFixedWidth(140)', DIALOGS)
         for cls in ('InstallerGeneralInfoDialog', 'InstallerPlatformDialog',
                     'InstallerSourcesDialog', 'InstallerAppearanceDialog',

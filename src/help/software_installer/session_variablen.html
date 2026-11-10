@@ -1,0 +1,10 @@
+<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Session Variablen</title></head>
+<body><h1>Session Variablen</h1>
+<p>Der Dialog <strong>Session Variablen</strong> verwaltet Platzhalter fuer den Software Installer. Er wird ueber <em>Einstellungen / Session Variable</em> im linken Panel aufgerufen.</p>
+<p>Die Bereiche <strong>Produkt Informationen</strong>, <strong>Standard-Verzeichnisse</strong> und <strong>Benutzerdefiniert</strong> lassen sich ueber den Pfeil links in der Ueberschrift auf- oder zuklappen. In allen Tabellen ist nur die zweite Spalte (<em>Wert</em>) editierbar.</p>
+<p>Die Trennlinie zwischen Variablenname und Wert kann in dem schmalen Streifen oberhalb jeder Tabelle mit der Maus verschoben werden. Die Breite der ersten Spalte wird in allen drei Tabellen synchron gehalten, auch wenn ein Bereich zugeklappt ist. Die zweite Spalte nutzt automatisch den verbleibenden Platz. Die Tabellen haben weiterhin keine beschriftete Kopfzeile.</p>
+<p>Die Standardwerte fuer Produktname, Firma, Version und Webseite kommen aus dem Projekt-Wizard. Individuell geaenderte Werte bleiben erhalten. Die Variable <code>%Copyright%</code> besitzt standardmaessig den Wert <code>Copyright (c) #CURRENTYEAR# %CompanyName%</code>.</p>
+<p><strong>Hinzufuegen</strong> erstellt eine eigene Variable nach Eingabe von Name und Wert. Namen haben die Form <code>%VariableName%</code>. Doppelungen, auch bei unterschiedlicher Gross-/Kleinschreibung und gegenueber Systemvariablen, sind nicht erlaubt.</p>
+<p><strong>Entfernen</strong> und <strong>Umbenennen</strong> gelten nur fuer selbst angelegte Variablen. Eintraege aus den ersten zwei Bereichen koennen nicht geloescht oder umbenannt werden.</p>
+<p><strong>OK</strong> uebernimmt die Daten in das Installer-Projekt und speichert die bestehende <code>.installer.json</code>-Datei. Bei einem neuen Projekt wird nach einem Dateinamen gefragt. Bei Abbruch bleibt das Projekt als geaendert markiert und kann spaeter mit <code>Strg+S</code> gespeichert werden. <strong>Abbrechen</strong> verwirft alle noch nicht uebernommenen Eingaben.</p>
+</body></html>

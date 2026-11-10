@@ -11,14 +11,27 @@ import sys
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QEvent
-from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QLinearGradient
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap, QLinearGradient
 from PyQt5.QtWidgets import (
     QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QRadioButton, QCheckBox, QStyle, QVBoxLayout,
-    QColorDialog, QWidget, QTreeWidget, QTreeWidgetItem,
+    QColorDialog, QWidget, QTreeWidget, QTreeWidgetItem, QScrollArea,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QToolButton, QFontDialog, QSpinBox,
 )
 from software_installer_model import InstallerProject, InstallerProjectRegistry
+from installer_system_requirements import (
+    SYSTEM_REQUIREMENTS_SECTION, parse_system_requirements, encode_system_requirements,
+)
+from installer_background_settings import (
+    BACKGROUND_SECTION, BACKGROUND_DEFAULTS, parse_background_settings,
+    encode_background_settings,
+)
+from installer_session_variables import (
+    SESSION_SECTION, default_session_groups, effective_session_groups,
+    encode_session_variables, check_variable_name,
+)
 from installer_wizard_options import (
     WINDOWS_LANGUAGES, DEFAULT_LANGUAGES, DEFAULT_LANGUAGE,
     WINDOWS_VERSION_TREE, DEFAULT_WINDOWS_VERSIONS, windows_leaf_ids,
@@ -26,7 +39,7 @@ from installer_wizard_options import (
 )
 
 
-WIZARD_SIZE = (780, 620)  # Identische Geometrie fuer alle sieben Wizard-Seiten.
+WIZARD_SIZE = (760, 590)  # Stage 559: -20 px Breite und -30 px Hoehe, alle sieben Seiten.
 GENERAL_FIELDS = (
     ("company", "Wie heißt Ihre Firma", "Ihre Firma"),
     ("product", "Produktname oder Titel", "Ihr Produkt"),
@@ -153,7 +166,7 @@ class InstallerThemedDialog(QDialog):
             QDialog {{ background: {bg}; color: {fg}; border: 1px solid {border}; }}
             QWidget#installerDialogBody {{ background: {bg}; color: {fg}; }}
             QLabel, QRadioButton, QCheckBox {{ color: {fg}; background: transparent; }}
-            QLineEdit, QListWidget, QComboBox {{ background: {panel}; color: {fg};
+            QLineEdit, QListWidget, QComboBox, QSpinBox {{ background: {panel}; color: {fg};
                 border: 1px solid {border}; border-radius: 3px; padding: 5px;
                 selection-background-color: {selection}; }}
             QComboBox QAbstractItemView {{ background: {panel}; color: {fg};
@@ -181,9 +194,25 @@ class InstallerThemedDialog(QDialog):
                 border: 1px solid {border}; border-radius: 4px; }}
             QFrame#installerThemePreview {{ background: {panel}; border: 1px solid {border};
                 border-radius: 4px; }}
-            QTreeWidget#installerWindowsTree {{ background: {panel}; color: {fg};
+            QTreeWidget#installerWindowsTree, QTreeWidget#installerSystemWindowsTree {{ background: {panel}; color: {fg};
                 border: 1px solid {border}; border-radius: 3px;
                 alternate-background-color: {bg}; selection-background-color: {selection}; }}
+            QScrollArea#installerBackgroundScroll {{ background: {bg}; border: none; }}
+            QWidget#installerBackgroundBody {{ background: {bg}; color: {fg}; }}
+            QGroupBox#installerBackgroundMode, QGroupBox#installerBackgroundAppearance,
+            QGroupBox#installerBackgroundText {{ font-weight: bold; }}
+            QScrollArea#installerSessionScroll {{ background: {bg}; border: none; }}
+            QWidget#installerSessionScrollBody {{ background: {bg}; }}
+            QFrame#installerSessionPanel {{ border: 1px solid {border}; border-radius: 4px;
+                background: {panel}; }}
+            QFrame#installerSessionPanelHeader {{ background: {highlight}; border: none;
+                border-bottom: 1px solid {border}; }}
+            QLabel#installerSessionPanelCaption {{ font-weight: bold; color: {fg}; }}
+            QToolButton#installerSessionPanelToggle {{ background: transparent; color: {fg};
+                border: none; padding: 4px; }}
+            QTableWidget#installerSessionTable {{ color: {fg}; background: {panel};
+                border: none; selection-background-color: {selection};
+                gridline-color: {border}; }}
         """)
         if self.isVisible() and not self._gradient_title:
             _set_windows_dark_titlebar(self, self._dark_mode)
@@ -974,6 +1003,727 @@ class InstallerRequirementsDialog(InstallerWizardDialog):
         }
 
 
+
+class InstallerSessionVariableEntryDialog(InstallerThemedDialog):
+    """Eingabe fuer eine neue oder umzubenennende benutzerdefinierte Variable."""
+
+    def __init__(self, parent=None, *, dark_mode=False, name="", value="", rename=False):
+        super().__init__(parent, dark_mode=dark_mode, gradient_title=True)
+        self.setWindowTitle("Session-Variable umbenennen" if rename else "Session-Variable hinzufügen")
+        self.setObjectName("installerSessionEntryDialog")
+        self.setFixedSize(420, 240)
+        layout = self._content_layout()
+        self.name_edit = QLineEdit(self)
+        self.name_edit.setObjectName("installerSessionVariableName")
+        self.name_edit.setPlaceholderText("%VariableName%")
+        self.name_edit.setText(name)
+        self.value_edit = QLineEdit(self)
+        self.value_edit.setObjectName("installerSessionVariableValue")
+        self.value_edit.setPlaceholderText("Wert")
+        self.value_edit.setText(value)
+        layout.addWidget(self.name_edit)
+        layout.addWidget(self.value_edit)
+        layout.addStretch(1)
+        layout.addWidget(_line(self))
+        row, self.buttons = _button_row(
+            self, ("OK", "Abbrechen"), (self.accept, self.reject))
+        layout.addLayout(row)
+
+    def result_values(self):
+        return self.name_edit.text().strip(), self.value_edit.text()
+
+
+class InstallerResizableSessionTable(QTableWidget):
+    """Verstellbare Spaltengrenze direkt in den Zellen, ganz ohne Header.
+
+    Ein Drag innerhalb von RESIZE_GRAB_WIDTH Pixeln um die Trennlinie
+    veraendert die erste Spaltenbreite. Sonstige Klicks und Doppelklicks
+    bleiben der normalen Tabellen-Selektion bzw. Zellbearbeitung vorbehalten.
+    """
+
+    RESIZE_GRAB_WIDTH = 6
+
+    def __init__(self, rows=0, columns=2, parent=None):
+        super().__init__(rows, columns, parent)
+        self._resize_dragging = False
+        self._resize_start_x = 0
+        self._resize_start_width = 0
+        self._resize_cursor_active = False
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+
+    def _near_session_divider(self, x):
+        """Spaltengrenze in Viewport-Koordinaten; auch ohne Header sichtbar."""
+        boundary = self.columnViewportPosition(1)
+        return boundary >= 0 and abs(int(x) - boundary) <= self.RESIZE_GRAB_WIDTH
+
+    def _update_divider_cursor(self, x):
+        near = self._near_session_divider(x)
+        if near != self._resize_cursor_active:
+            self._resize_cursor_active = near
+            if near:
+                self.viewport().setCursor(Qt.SplitHCursor)
+            else:
+                self.viewport().unsetCursor()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._near_session_divider(event.x()):
+            self._resize_dragging = True
+            self._resize_start_x = event.x()
+            self._resize_start_width = self.columnWidth(0)
+            self.viewport().setCursor(Qt.SplitHCursor)
+            self._resize_cursor_active = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._resize_dragging:
+            requested = self._resize_start_width + event.x() - self._resize_start_x
+            self.setColumnWidth(0, max(96, int(requested)))
+            event.accept()
+            return
+        self._update_divider_cursor(event.x())
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._resize_dragging and event.button() == Qt.LeftButton:
+            self._resize_dragging = False
+            self._update_divider_cursor(event.x())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        if not self._resize_dragging:
+            self._resize_cursor_active = False
+            self.viewport().unsetCursor()
+        super().leaveEvent(event)
+
+
+class InstallerSessionCollapsiblePanel(QFrame):
+    """Ausklappbarer Panelkopf mit fixer, nicht vertikal scrollbarerer Tabelle."""
+
+    def __init__(self, caption, parent=None):
+        super().__init__(parent)
+        self.setObjectName("installerSessionPanel")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(1, 1, 1, 1)
+        outer.setSpacing(0)
+        self.header = QFrame(self)
+        self.header.setObjectName("installerSessionPanelHeader")
+        head = QHBoxLayout(self.header)
+        head.setContentsMargins(4, 2, 8, 2)
+        head.setSpacing(4)
+        self.toggle_button = QToolButton(self.header)
+        self.toggle_button.setObjectName("installerSessionPanelToggle")
+        self.toggle_button.setArrowType(Qt.DownArrow)
+        self.toggle_button.setToolTip(caption + " einklappen")
+        self.toggle_button.clicked.connect(self.toggle)
+        head.addWidget(self.toggle_button)
+        label = QLabel(caption, self.header)
+        label.setObjectName("installerSessionPanelCaption")
+        head.addWidget(label, 1)
+        outer.addWidget(self.header)
+        self.table = InstallerResizableSessionTable(0, 2, self)
+        self.table.setObjectName("installerSessionTable")
+        # Kein Kopf-/Ziehstreifen: direkt an der senkrechten Zellengrenze ziehen.
+        header = self.table.horizontalHeader()
+        header.hide()
+        header.setSectionsMovable(False)
+        self.table.setToolTip("Spaltengrenze zwischen Variable und Wert ziehen")
+        self.table.verticalHeader().hide()
+        self.table.verticalHeader().setDefaultSectionSize(28)
+        self.table.setShowGrid(True)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked |
+                                   QAbstractItemView.EditKeyPressed |
+                                   QAbstractItemView.SelectedClicked)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        header.setMinimumSectionSize(96)
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setColumnWidth(0, 195)
+        self.table.setFixedHeight(
+            self.table.verticalHeader().defaultSectionSize() + 4)
+        outer.addWidget(self.table)
+        self._expanded = True
+
+    def populate(self, variables):
+        self.table.setRowCount(len(variables))
+        for row, (name, value) in enumerate(variables.items()):
+            name_item = QTableWidgetItem(str(name))
+            name_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            value_item = QTableWidgetItem(str(value))
+            value_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
+            self.table.setItem(row, 0, name_item)
+            self.table.setItem(row, 1, value_item)
+        # Auch die leere Tabelle braucht eine greifbare Spaltengrenze.
+        self.table.setFixedHeight(
+            max(1, len(variables)) * self.table.verticalHeader().defaultSectionSize() + 4)
+
+    def values(self):
+        return {self.table.item(row, 0).text(): self.table.item(row, 1).text()
+                for row in range(self.table.rowCount())}
+
+    def selected_name(self):
+        row = self.table.currentRow()
+        return self.table.item(row, 0).text() if row >= 0 else None
+
+    def toggle(self, _checked=False):
+        self._expanded = not self._expanded
+        self.table.setVisible(self._expanded)
+        self.toggle_button.setArrowType(Qt.DownArrow if self._expanded else Qt.RightArrow)
+        self.toggle_button.setToolTip(
+            "Einklappen" if self._expanded else "Aufklappen")
+
+
+class InstallerSessionVariablesDialog(InstallerThemedDialog):
+    """Session-Variablen: drei Panels, Wizard-Vorgaben und editierbare Werte."""
+
+    def __init__(self, project: InstallerProject, parent=None, *, dark_mode=False,
+                 help_callback=None):
+        super().__init__(parent, dark_mode=dark_mode, gradient_title=True)
+        self.setWindowTitle("Session Variablen")
+        self.setObjectName("installerSessionVariablesDialog")
+        self.setFixedSize(WIZARD_SIZE[0] - 140, WIZARD_SIZE[1] - 40)
+        self.project = project
+        self.help_callback = help_callback
+        self.groups = effective_session_groups(
+            project.general, project.sections.get(SESSION_SECTION, ""))
+        self.serialized = None
+        layout = self._content_layout()
+        self.scroll = QScrollArea(self)
+        self.scroll.setObjectName("installerSessionScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        container = QWidget(self.scroll)
+        container.setObjectName("installerSessionScrollBody")
+        vertical = QVBoxLayout(container)
+        vertical.setContentsMargins(6, 6, 6, 6)
+        vertical.setSpacing(8)
+        self.panels = {}
+        for key, title in (("product", "Produkt Informationen"),
+                           ("directories", "Standard-Verzeichnisse"),
+                           ("custom", "Benutzerdefiniert")):
+            panel = InstallerSessionCollapsiblePanel(title, container)
+            panel.populate(self.groups[key])
+            vertical.addWidget(panel)
+            self.panels[key] = panel
+        # Ein gemeinsamer Spaltenwert fuer alle drei Tabellen. Erst nach der
+        # kompletten Initialisierung verbinden, damit Signale beim Aufbau
+        # keine nur teilweise angelegten Panels aktualisieren.
+        self._syncing_session_columns = False
+        self._session_name_column_width = 195
+        for panel in self.panels.values():
+            panel.table.setColumnWidth(0, self._session_name_column_width)
+            panel.table.horizontalHeader().sectionResized.connect(
+                self._sync_session_name_column)
+        vertical.addStretch(1)
+        self.scroll.setWidget(container)
+        layout.addWidget(self.scroll, 1)
+        layout.addWidget(_line(self))
+
+        buttons = QHBoxLayout()
+        self.add_button = QPushButton("Hinzufügen", self)
+        self.remove_button = QPushButton("Entfernen", self)
+        self.rename_button = QPushButton("Umbenennen", self)
+        self.add_button.clicked.connect(self._add_custom)
+        self.remove_button.clicked.connect(self._remove_custom)
+        self.rename_button.clicked.connect(self._rename_custom)
+        for button in (self.add_button, self.remove_button, self.rename_button):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        self.ok_button = QPushButton("OK", self)
+        self.cancel_button = QPushButton("Abbrechen", self)
+        self.help_button = QPushButton("Hilfe", self)
+        self.ok_button.setDefault(True)
+        self.ok_button.clicked.connect(self._accept_changes)
+        self.cancel_button.clicked.connect(self.reject)
+        self.help_button.clicked.connect(self._help)
+        for button in (self.ok_button, self.cancel_button, self.help_button):
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+
+    def _sync_session_name_column(self, logical_index, _old_width, new_width):
+        """Ziehen von Spalte 1 synchronisiert alle Panels, auch eingeklappte.
+
+        Spalte 2 fuellt den verbliebenen Tabellenbereich automatisch aus.
+        Die Guard-Variable verhindert Signalrekursion durch setColumnWidth.
+        """
+        if logical_index != 0 or self._syncing_session_columns:
+            return
+        self._syncing_session_columns = True
+        try:
+            # Bei schmalen Fenstern soll die Wert-Spalte mindestens 96 px
+            # behalten. Die drei Tabellen haben denselben Layout-Bereich.
+            available = [panel.table.viewport().width()
+                         for panel in self.panels.values()
+                         if panel.table.isVisible() and panel.table.viewport().width() > 192]
+            limit = min(available) - 96 if available else max(195, int(new_width))
+            width = max(96, min(int(new_width), limit))
+            self._session_name_column_width = width
+            for panel in self.panels.values():
+                if panel.table.columnWidth(0) != width:
+                    panel.table.setColumnWidth(0, width)
+        finally:
+            self._syncing_session_columns = False
+
+    def _current_groups(self):
+        return {key: panel.values() for key, panel in self.panels.items()}
+
+    def _all_names(self):
+        groups = self._current_groups()
+        return tuple(name for group in groups.values() for name in group)
+
+    def _add_custom(self):
+        editor = InstallerSessionVariableEntryDialog(self, dark_mode=self._dark_mode)
+        if editor.exec_() != QDialog.Accepted:
+            return
+        name, value = editor.result_values()
+        try:
+            name = check_variable_name(name, self._all_names())
+        except ValueError as error:
+            QMessageBox.warning(self, "Session Variablen", str(error))
+            return
+        self.panels["custom"].populate({**self.panels["custom"].values(), name: value})
+        self.panels["custom"].table.setCurrentCell(
+            self.panels["custom"].table.rowCount() - 1, 1)
+
+    def _remove_custom(self):
+        custom = self.panels["custom"]
+        name = custom.selected_name()
+        if name is None:
+            QMessageBox.information(self, "Session Variablen",
+                                    "Bitte im Bereich Benutzerdefiniert eine Variable auswählen.")
+            return
+        values = custom.values()
+        del values[name]
+        custom.populate(values)
+
+    def _rename_custom(self):
+        custom = self.panels["custom"]
+        old_name = custom.selected_name()
+        if old_name is None:
+            QMessageBox.information(self, "Session Variablen",
+                                    "Nur benutzerdefinierte Variablen können umbenannt werden.")
+            return
+        previous = custom.values()
+        editor = InstallerSessionVariableEntryDialog(
+            self, dark_mode=self._dark_mode, name=old_name,
+            value=previous[old_name], rename=True)
+        if editor.exec_() != QDialog.Accepted:
+            return
+        new_name, value = editor.result_values()
+        try:
+            new_name = check_variable_name(new_name, self._all_names(), previous=old_name)
+        except ValueError as error:
+            QMessageBox.warning(self, "Session Variablen", str(error))
+            return
+        reordered = {}
+        for name, current in previous.items():
+            if name == old_name:
+                reordered[new_name] = value
+            else:
+                reordered[name] = current
+        custom.populate(reordered)
+
+    def _accept_changes(self):
+        try:
+            self.serialized = encode_session_variables(
+                self.project.general, self._current_groups())
+        except ValueError as error:
+            QMessageBox.warning(self, "Session Variablen", str(error))
+            return
+        self.accept()
+
+    def _help(self):
+        if callable(self.help_callback):
+            self.help_callback("Session Variablen")
+
+class InstallerBackgroundWindowDialog(InstallerThemedDialog):
+    """Konfiguration von Fenster-Modus, Hintergrundbild/-farbe und Textzeilen.
+
+    620 x 550 wie 'Session Variablen'. Änderungen werden erst bei OK in
+    self.serialized bereitgestellt; das Projektobjekt bleibt unberührt.
+    """
+
+    def __init__(self, project: InstallerProject, parent=None, *, dark_mode=False,
+                 help_callback=None):
+        super().__init__(parent, dark_mode=dark_mode, gradient_title=True)
+        self.setWindowTitle("Hintergrund Fenster")
+        self.setObjectName("installerBackgroundWindowDialog")
+        self.setFixedSize(WIZARD_SIZE[0] - 140, WIZARD_SIZE[1] - 40)
+        self.project = project
+        self.help_callback = help_callback
+        self.serialized = None
+        settings = parse_background_settings(project.sections.get(BACKGROUND_SECTION, ""))
+        self._fonts = {}
+        layout = self._content_layout()
+
+        self.show_background_check = QCheckBox("Hintergrund Fenster anzeigen", self)
+        self.show_background_check.setObjectName("installerBackgroundEnabled")
+        self.show_background_check.setChecked(settings["enabled"])
+        layout.addWidget(self.show_background_check)
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setObjectName("installerBackgroundScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body = QWidget(self.scroll)
+        body.setObjectName("installerBackgroundBody")
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(4, 4, 4, 4)
+        body_layout.setSpacing(10)
+
+        left_column = QVBoxLayout()
+        # Keine zusaetzlichen Einrueckungen: die linke Fenster-GroupBox und
+        # die rechte Text-GroupBox beginnen exakt auf derselben Hoehe.
+        left_column.setContentsMargins(0, 0, 0, 0)
+        left_column.setSpacing(10)
+        # Etwas weniger als die halbe Dialogbreite (620 px).
+        self.mode_group = QGroupBox("Fenster", body)
+        self.mode_group.setObjectName("installerBackgroundMode")
+        mode_layout = QVBoxLayout(self.mode_group)
+        self.mode_radios = {}
+        for code, caption in (("standard", "Standard"),
+                              ("framed", "Eingerahmt"),
+                              ("kiosk", "Kiosk")):
+            radio = QRadioButton(caption, self.mode_group)
+            radio.setObjectName("installerBackgroundMode_" + code)
+            radio.setChecked(settings["mode"] == code)
+            self.mode_radios[code] = radio
+            mode_layout.addWidget(radio)
+        left_column.addWidget(self.mode_group)
+
+        self.appearance_group = QGroupBox("Aussehen", body)
+        self.appearance_group.setObjectName("installerBackgroundAppearance")
+        appearance_layout = QVBoxLayout(self.appearance_group)
+        appearance_layout.setSpacing(5)
+        self.appearance_radios = {}
+        self.static_radio = QRadioButton("Statische Farbe", self.appearance_group)
+        self.static_radio.setObjectName("installerBackgroundStaticRadio")
+        appearance_layout.addWidget(self.static_radio)
+        self.static_color = InstallerColorComboBox(
+            self.appearance_group, color=settings["static_color"])
+        self.static_color.setObjectName("installerBackgroundStaticColor")
+        appearance_layout.addWidget(self.static_color)
+        self.gradient_radio = QRadioButton("Verlauf", self.appearance_group)
+        self.gradient_radio.setObjectName("installerBackgroundGradientRadio")
+        appearance_layout.addWidget(self.gradient_radio)
+        gradient_row = QHBoxLayout()
+        gradient_row.setSpacing(5)
+        self.gradient_start = InstallerColorComboBox(
+            self.appearance_group, color=settings["gradient_start"])
+        self.gradient_start.setObjectName("installerBackgroundGradientStart")
+        self.gradient_end = InstallerColorComboBox(
+            self.appearance_group, color=settings["gradient_end"])
+        self.gradient_end.setObjectName("installerBackgroundGradientEnd")
+        gradient_row.addWidget(self.gradient_start, 1)
+        gradient_row.addWidget(self.gradient_end, 1)
+        appearance_layout.addLayout(gradient_row)
+        self.image_radio = QRadioButton("Bild", self.appearance_group)
+        self.image_radio.setObjectName("installerBackgroundImageRadio")
+        appearance_layout.addWidget(self.image_radio)
+        self.image_edit = QLineEdit(settings["image_path"], self.appearance_group)
+        self.image_edit.setObjectName("installerBackgroundImagePath")
+        self.image_edit.setPlaceholderText("Bildpfad")
+        appearance_layout.addWidget(self.image_edit)
+        self.image_browse = QPushButton("Durchsuchen", self.appearance_group)
+        self.image_browse.setObjectName("installerBackgroundImageBrowse")
+        self.image_browse.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
+        self.image_browse.clicked.connect(self._browse_image)
+        appearance_layout.addWidget(self.image_browse, 0, Qt.AlignLeft)
+        # "Aussehen" nimmt die uebrige Spaltenhoehe ein: die linke
+        # GroupBox-Kombination schliesst unten mit "Text" rechts ab.
+        left_column.addWidget(self.appearance_group, 1)
+        left_widget = QWidget(body)
+        left_widget.setObjectName("installerBackgroundLeftColumn")
+        left_widget.setLayout(left_column)
+        left_widget.setFixedWidth(242)
+        # Kein AlignTop: beide Spalten werden von QHBoxLayout gleich hoch
+        # aufgezogen, statt die linke Spalte auf ihre SizeHint zu kuerzen.
+        body_layout.addWidget(left_widget, 0)
+
+        # Rechts auf gleicher Ober- und Unterkante wie links.
+        self.text_group = QGroupBox("Text", body)
+        self.text_group.setObjectName("installerBackgroundText")
+        text_layout = QVBoxLayout(self.text_group)
+        text_layout.setSpacing(5)
+        self.text_edits = {}
+        self.text_colors = {}
+        self.text_font_buttons = {}
+        self.text_align_radios = {}
+        for key, title, fallback in (
+            ("title", "Titel-Zeile", "%ProductName%"),
+            ("version", "Version-Zeile", "%ProductVersion%"),
+            ("footer", "Fuß-Zeile", "%Copyright% Alle Rechte vorbehalten."),
+        ):
+            text_layout.addWidget(QLabel(title, self.text_group))
+            edit = QLineEdit(settings.get(key + "_text", fallback), self.text_group)
+            edit.setObjectName("installerBackgroundText_" + key)
+            # Die Eingabezeile belegt die komplette nutzbare GroupBox-Breite.
+            text_layout.addWidget(edit)
+
+            # Schriftauswahl und Farbe stehen in einer eigenen Zeile unter
+            # dem Textfeld. So bleibt Raum fuer einen lesbaren Font-Button.
+            options_row = QHBoxLayout()
+            options_row.setSpacing(8)
+            font_button = QPushButton("Aa  Schriftart", self.text_group)
+            font_button.setObjectName("installerBackgroundFont_" + key)
+            font_button.setToolTip("Schriftart für " + title + " auswählen")
+            font_button.setMinimumWidth(116)
+            font_button.clicked.connect(
+                lambda _checked=False, which=key: self._choose_font(which))
+            options_row.addWidget(font_button)
+            color = InstallerColorComboBox(
+                self.text_group, color=settings.get(key + "_color", "#ffffff"))
+            color.setObjectName("installerBackgroundColor_" + key)
+            color.setMinimumWidth(103)
+            options_row.addWidget(color, 1)
+            text_layout.addLayout(options_row)
+            self.text_edits[key] = edit
+            self.text_colors[key] = color
+            self.text_font_buttons[key] = font_button
+            font = QFont(self.font())
+            stored_font = str(settings.get(key + "_font", ""))
+            if stored_font:
+                font.fromString(stored_font)
+            self._fonts[key] = font
+            font_button.setToolTip("Schriftart: " + font.family() + " (ändern)")
+            if key != "footer":
+                alignment_holder = QWidget(self.text_group)
+                alignment_row = QHBoxLayout(alignment_holder)
+                alignment_row.setContentsMargins(0, 0, 0, 0)
+                alignment_row.setSpacing(7)
+                radios = {}
+                for code, caption in (("left", "Links"), ("center", "Mitte"),
+                                      ("right", "Rechts")):
+                    radio = QRadioButton(caption, alignment_holder)
+                    radio.setObjectName("installerBackgroundAlign_" + key + "_" + code)
+                    radio.setChecked(settings[key + "_align"] == code)
+                    radios[code] = radio
+                    alignment_row.addWidget(radio)
+                self.text_align_radios[key] = radios
+                text_layout.addWidget(alignment_holder)
+        text_layout.addStretch(1)
+        body_layout.addWidget(self.text_group, 1)
+        self.scroll.setWidget(body)
+        layout.addWidget(self.scroll, 1)
+        layout.addWidget(_line(self))
+        buttons, self.buttons = _button_row(
+            self, ("OK", "Abbrechen", "Hilfe"),
+            (self._accept_changes, self.reject, self._help), default_index=0)
+        layout.addLayout(buttons)
+        self.ok_button, self.cancel_button, self.help_button = self.buttons
+
+        self.static_radio.setChecked(settings["appearance"] == "static")
+        self.gradient_radio.setChecked(settings["appearance"] == "gradient")
+        self.image_radio.setChecked(settings["appearance"] == "image")
+        for radio in (self.static_radio, self.gradient_radio, self.image_radio):
+            radio.toggled.connect(self._sync_appearance)
+        self._sync_appearance()
+
+    def _sync_appearance(self, _checked=None):
+        self.static_color.setEnabled(self.static_radio.isChecked())
+        self.gradient_start.setEnabled(self.gradient_radio.isChecked())
+        self.gradient_end.setEnabled(self.gradient_radio.isChecked())
+        self.image_edit.setEnabled(self.image_radio.isChecked())
+        self.image_browse.setEnabled(self.image_radio.isChecked())
+
+    def _browse_image(self):
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Hintergrundbild auswählen", self.image_edit.text() or str(Path.home()),
+            "Bilddateien (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;Alle Dateien (*)")
+        if filename:
+            self.image_edit.setText(filename)
+
+    def _choose_font(self, which):
+        selected, accepted = QFontDialog.getFont(
+            self._fonts[which], self, "Schriftart auswählen")
+        if accepted:
+            self._fonts[which] = QFont(selected)
+            self.text_font_buttons[which].setToolTip(
+                "Schriftart: " + selected.family() + " (ändern)")
+
+    def settings(self):
+        mode = next((name for name, radio in self.mode_radios.items()
+                     if radio.isChecked()), "standard")
+        appearance = ("image" if self.image_radio.isChecked() else
+                      "gradient" if self.gradient_radio.isChecked() else "static")
+        settings = {
+            "enabled": self.show_background_check.isChecked(),
+            "mode": mode,
+            "appearance": appearance,
+            "static_color": self.static_color.color(),
+            "gradient_start": self.gradient_start.color(),
+            "gradient_end": self.gradient_end.color(),
+            "image_path": self.image_edit.text().strip(),
+        }
+        for key in ("title", "version", "footer"):
+            settings[key + "_text"] = self.text_edits[key].text()
+            settings[key + "_font"] = self._fonts[key].toString()
+            settings[key + "_color"] = self.text_colors[key].color()
+        for key in ("title", "version"):
+            settings[key + "_align"] = next((name for name, radio
+                                             in self.text_align_radios[key].items()
+                                             if radio.isChecked()), "center")
+        return settings
+
+    def _accept_changes(self):
+        try:
+            self.serialized = encode_background_settings(self.settings())
+        except (ValueError, TypeError) as error:
+            QMessageBox.warning(self, "Hintergrund Fenster", str(error))
+            return
+        self.accept()
+
+    def _help(self):
+        if callable(self.help_callback):
+            self.help_callback("Hintergrund Fenster")
+
+
+
+class InstallerSystemRequirementsDialog(InstallerThemedDialog):
+    """Stage 564: Systemanforderungen, gleiche Geometrie wie Hintergrund Fenster.
+
+    Keine Projektdatenmutation bis zum akzeptierten Dialog und Speichern.
+    """
+
+    # Identische Checkbox-Hierarchie wie im bestehenden Windows-Wizard.
+    _append_node = InstallerRequirementsDialog._append_node
+    _set_descendants = InstallerRequirementsDialog._set_descendants
+    _recompute_parent = InstallerRequirementsDialog._recompute_parent
+    _on_item_changed = InstallerRequirementsDialog._on_item_changed
+    _checked_leaves = InstallerRequirementsDialog._checked_leaves
+
+    def __init__(self, project: InstallerProject, parent=None, *, dark_mode=False,
+                 help_callback=None):
+        super().__init__(parent, dark_mode=dark_mode, gradient_title=True)
+        self.setWindowTitle("Systemanforderungen")
+        self.setObjectName("installerSystemRequirementsDialog")
+        self.setFixedSize(WIZARD_SIZE[0] - 140, WIZARD_SIZE[1] - 40)
+        self.help_callback = help_callback
+        self.serialized = None
+        settings = parse_system_requirements(
+            project.sections.get(SYSTEM_REQUIREMENTS_SECTION, ""))
+        layout = self._content_layout()
+        columns = QHBoxLayout()
+        columns.setSpacing(10)
+        layout.addLayout(columns, 1)
+
+        self.windows_group = QGroupBox("Betriebs-System", self)
+        self.windows_group.setObjectName("installerSystemWindowsGroup")
+        left = QVBoxLayout(self.windows_group)
+        self.windows_tree = QTreeWidget(self.windows_group)
+        self.windows_tree.setObjectName("installerSystemWindowsTree")
+        self.windows_tree.setHeaderHidden(True)
+        self.windows_tree.setAlternatingRowColors(True)
+        self.windows_tree.setUniformRowHeights(True)
+        self.windows_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._updating_tree = False
+        selected = set(settings["windows_versions"])
+        for node in WINDOWS_VERSION_TREE:
+            self._append_node(None, node, selected)
+        self.windows_tree.expandAll()
+        self.windows_tree.itemChanged.connect(self._on_item_changed)
+        left.addWidget(self.windows_tree)
+        columns.addWidget(self.windows_group, 1)
+
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(10)
+        columns.addLayout(right, 1)
+        self.checks_group = QGroupBox("System-Prüfungen", self)
+        self.checks_group.setObjectName("installerSystemChecksGroup")
+        grid = QGridLayout(self.checks_group)
+        grid.setHorizontalSpacing(5)
+        grid.setVerticalSpacing(12)
+        self.spinboxes = {}
+        for row, (key, caption, unit) in enumerate((
+            ("ram_mb", "RAM", "MB"),
+            ("screen_width_px", "Bildschirm Weite", "Pixel"),
+            ("screen_height_px", "Bildschirm Höhe", "Pixel"),
+            ("color_depth_bpp", "Farbtiefe", "BPP"),
+        )):
+            grid.addWidget(QLabel(caption, self.checks_group), row, 0)
+            spin = QSpinBox(self.checks_group)
+            spin.setObjectName("installerSystem_" + key)
+            spin.setRange(0, 2147483647)
+            spin.setValue(settings[key])
+            spin.setMinimumWidth(65)
+            grid.addWidget(spin, row, 1)
+            grid.addWidget(QLabel(unit, self.checks_group), row, 2)
+            self.spinboxes[key] = spin
+        grid.setColumnStretch(1, 1)
+        self.admin_check = QCheckBox("Benutzer muss Adminrechte haben", self.checks_group)
+        self.admin_check.setObjectName("installerSystemRequireAdmin")
+        self.admin_check.setChecked(settings["require_admin"])
+        grid.addWidget(self.admin_check, 4, 0, 1, 3)
+        grid.setRowStretch(5, 1)
+        right.addWidget(self.checks_group, 1)
+
+        self.notify_group = QGroupBox("Benutzer benachrichtigen", self)
+        self.notify_group.setObjectName("installerSystemNotifyGroup")
+        notify_layout = QVBoxLayout(self.notify_group)
+        notify_layout.setSpacing(12)
+        self.warn_check = QCheckBox("Benutzer warnen und fortfahren", self.notify_group)
+        self.warn_check.setObjectName("installerSystemWarnContinue")
+        self.abort_check = QCheckBox("Benachrichten und Setup abbrechen", self.notify_group)
+        self.abort_check.setObjectName("installerSystemAbortSetup")
+        self.warn_check.setChecked(settings["notification"] == "warn_continue")
+        self.abort_check.setChecked(settings["notification"] == "abort_setup")
+        # Gegenseitig ausschliessend, aber optisch wie angefordert Checkboxen.
+        self.warn_check.toggled.connect(self._warn_toggled)
+        self.abort_check.toggled.connect(self._abort_toggled)
+        notify_layout.addWidget(self.warn_check)
+        notify_layout.addWidget(self.abort_check)
+        notify_layout.addStretch(1)
+        right.addWidget(self.notify_group, 1)
+
+        layout.addWidget(_line(self))
+        buttons, self.buttons = _button_row(
+            self, ("OK", "Abbrechen", "Hilfe"),
+            (self._accept_changes, self.reject, self._help), default_index=0)
+        layout.addLayout(buttons)
+        self.ok_button, self.cancel_button, self.help_button = self.buttons
+
+    def _warn_toggled(self, checked):
+        if checked:
+            self.abort_check.setChecked(False)
+        elif not self.abort_check.isChecked():
+            self.warn_check.setChecked(True)
+
+    def _abort_toggled(self, checked):
+        if checked:
+            self.warn_check.setChecked(False)
+        elif not self.warn_check.isChecked():
+            self.abort_check.setChecked(True)
+
+    def settings(self):
+        return {
+            "windows_versions": self._checked_leaves(),
+            **{key: spin.value() for key, spin in self.spinboxes.items()},
+            "require_admin": self.admin_check.isChecked(),
+            "notification": "abort_setup" if self.abort_check.isChecked() else "warn_continue",
+        }
+
+    def _accept_changes(self):
+        try:
+            self.serialized = encode_system_requirements(self.settings())
+        except (ValueError, TypeError) as error:
+            QMessageBox.warning(self, "Systemanforderungen", str(error))
+            return
+        self.accept()
+
+    def _help(self):
+        if callable(self.help_callback):
+            self.help_callback("Systemanforderungen")
+
+
 class InstallerDestinationDialog(InstallerThemedDialog):
     """Legacy-Dialog fuer alte Aufrufer; Wizard-Seite 2 ist jetzt Platform."""
 
@@ -1028,3 +1778,21 @@ class InstallerProjectNameDialog(InstallerThemedDialog):
 
     def name(self):
         return self.name_edit.text().strip()
+
+
+def installer_themed_warning(parent, title, text, *, dark_mode=False):
+    """QMessageBox im Installer-Theme statt ungestylter nativer Meldung."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setStandardButtons(QMessageBox.Ok)
+    # Nutzt die identischen Theme-Regeln des InstallerThemedDialog.
+    theme = InstallerThemedDialog(parent, dark_mode=dark_mode)
+    box.setStyleSheet(theme.styleSheet() + "\nQMessageBox { background: " +
+        ("#202329" if dark_mode else "#f5f5f5") + "; }" )
+    box.setObjectName("installerThemedWarning")
+    box.setWindowFlags(box.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+    from PyQt5.QtCore import QTimer
+    QTimer.singleShot(0, lambda: _set_windows_dark_titlebar(box, dark_mode))
+    return box.exec_()

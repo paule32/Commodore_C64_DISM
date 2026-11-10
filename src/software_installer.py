@@ -12,11 +12,13 @@ import re
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QFormLayout, QFrame, QHeaderView, QHBoxLayout,
+    QFileDialog, QFormLayout, QFrame, QHeaderView, QHBoxLayout, QDockWidget,
     QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QSplitter,
     QPushButton, QScrollArea, QSizePolicy, QStyle, QTabWidget, QTableWidget,
     QTableWidgetItem, QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
+from installer_background_settings import BACKGROUND_SECTION
+from installer_system_requirements import SYSTEM_REQUIREMENTS_SECTION
 from software_installer_model import (
     INSTALLER_COLUMNS, INSTALLER_FILTERS, INSTALLER_GROUPS,
     InstallerEntry, InstallerProject, InstallerProjectRegistry,
@@ -27,7 +29,26 @@ from software_installer_dialogs import (
     InstallerPlatformDialog, InstallerSourcesDialog, InstallerAppearanceDialog,
     InstallerProjectThemeDialog, InstallerLanguagesDialog, InstallerRequirementsDialog,
     InstallerDestinationDialog, InstallerProjectNameDialog,
+    InstallerSessionVariablesDialog, InstallerBackgroundWindowDialog,
+    InstallerSystemRequirementsDialog, installer_themed_warning,
 )
+
+
+class InstallerWorkspaceDock(QDockWidget):
+    """Dock mit ausdruecklichem Schliessen statt Visibility-Heuristik.
+
+    Beim Minimieren des Hauptfensters meldet Qt fuer Kind-Docks unter
+    Windows zeitweise visibilityChanged(False). Nur closeEvent bzw. eine
+    ausdruecklich ausgelöste View-Aktion darf den Workspace restaurieren.
+    """
+
+    explicitCloseRequested = pyqtSignal()
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        if event.isAccepted():
+            # Nach QDockWidget.closeEvent(), nicht waehrend Qt das Dock versteckt.
+            QTimer.singleShot(0, self.explicitCloseRequested.emit)
 
 
 class InstallerCollapsiblePanel(QFrame):
@@ -389,12 +410,81 @@ class SoftwareInstallerWorkbench(QWidget):
                 self.project.sections[name] = editor.toPlainText()
                 self._mark_dirty()
 
+    def edit_session_variables(self):
+        """Sessionvariablen in einheitlichem Dialog bearbeiten und im Projekt speichern."""
+        try:
+            dialog = InstallerSessionVariablesDialog(
+                self.project, self, dark_mode=self._dark_mode,
+                help_callback=self._show_help_topic)
+        except (ValueError, TypeError) as error:
+            QMessageBox.warning(self, "Session Variablen",
+                                "Session-Variablen können nicht geladen werden:\n" + str(error))
+            return False
+        if dialog.exec_() != QDialog.Accepted:
+            return False
+        serialized = dialog.serialized
+        if serialized is None:
+            return False
+        if self.project.sections.get("Session Variable", "") == serialized:
+            return True
+        self.project.sections["Session Variable"] = serialized
+        self._mark_dirty()
+        # Der Dialog-OK-Button schreibt vorhandene Projektdateien sofort.
+        # Neue Projekte nutzen den bereits bestehenden Speichern-unter-Dialog.
+        # Bei abgebrochenem Speichern bleiben Aenderungen im Modell als dirty.
+        return bool(self.save_configuration())
+
+    def edit_background_window(self):
+        """Bedingte Uebernahme: Abbrechen verwirft alle Dialogaenderungen."""
+        try:
+            dialog = InstallerBackgroundWindowDialog(
+                self.project, self, dark_mode=self._dark_mode,
+                help_callback=self._show_help_topic)
+        except (ValueError, TypeError) as error:
+            QMessageBox.warning(self, "Hintergrund Fenster",
+                                "Hintergrund-Einstellungen können nicht geladen werden:\n" + str(error))
+            return False
+        if dialog.exec_() != QDialog.Accepted or dialog.serialized is None:
+            return False
+        serialized = dialog.serialized
+        if self.project.sections.get(BACKGROUND_SECTION, "") == serialized:
+            return True
+        self.project.sections[BACKGROUND_SECTION] = serialized
+        self._mark_dirty()
+        # Auf vorhandenen Projekten sofort ins JSON schreiben; bei
+        # unbenannten Projekten den Speichern-unter-Dialog verwenden.
+        # Ein fehlgeschlagenes Speichern laesst die Aenderungen als dirty stehen.
+        return bool(self.save_configuration())
+
+    def edit_system_requirements(self):
+        """Speichern analog Hintergrund Fenster; Abbrechen verwirft alle Änderungen."""
+        try:
+            dialog = InstallerSystemRequirementsDialog(
+                self.project, self, dark_mode=self._dark_mode,
+                help_callback=self._show_help_topic)
+        except (ValueError, TypeError) as error:
+            installer_themed_warning(
+                self, "Systemanforderungen",
+                "Systemanforderungen können nicht geladen werden:\n" + str(error),
+                dark_mode=self._dark_mode)
+            return False
+        if dialog.exec_() != QDialog.Accepted or dialog.serialized is None:
+            return False
+        if self.project.sections.get(SYSTEM_REQUIREMENTS_SECTION, "") == dialog.serialized:
+            return True
+        self.project.sections[SYSTEM_REQUIREMENTS_SECTION] = dialog.serialized
+        self._mark_dirty()
+        return bool(self.save_configuration())
+
     def handle_panel_action(self, name):
         handlers = {
             "Datei hinzufügen": self.add_files,
             "Pfad hinzufügen": self.add_folder,
             "Elemente Löschen": self.delete_selected_rows,
             "Datei Eigenschaften": self.show_file_properties,
+            "Session Variable": self.edit_session_variables,
+            "Hintergrund Fenster": self.edit_background_window,
+            "Systemanforderungen": self.edit_system_requirements,
         }
         action = handlers.get(name)
         if action is not None:
@@ -569,8 +659,9 @@ class SoftwareInstallerWorkbench(QWidget):
             target_directory = installer_registry_path().parent / "installer_projects"
             filename = str(target_directory / (new_name + ".installer.json"))
             if Path(filename).exists() and Path(filename).resolve() != Path(self.project_filename or "").resolve():
-                QMessageBox.warning(self, "Projektname",
-                                    "Ein Projekt mit diesem Dateinamen existiert bereits.")
+                installer_themed_warning(self, "Projektname",
+                    "Ein Projekt mit diesem Dateinamen existiert bereits.",
+                    dark_mode=self._dark_mode)
                 return False
         old_name = self.project.name
         if new_name is not None:

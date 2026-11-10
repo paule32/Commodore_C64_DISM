@@ -25,7 +25,7 @@ INSTALLER_GROUPS = (
         "Datei hinzufügen", "Pfad hinzufügen", "Elemente Löschen", "Datei Eigenschaften",
     )),
     ("Einstellungen", (
-        "Session Variable", "Hintergrund Fenster", "Benötigte Resourcen",
+        "Session Variable", "Hintergrund Fenster", "Systemanforderungen",
         "Log-Datei", "Sicherheit", "Packages", "Sprachen",
     )),
     ("Bildschirme", (
