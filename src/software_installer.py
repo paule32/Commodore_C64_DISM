@@ -9,9 +9,12 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from PyQt5.QtGui import QDesktopServices, QKeySequence
+from PyQt5.QtCore import QMimeData, QUrl
+
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox,
+    QAbstractItemView, QAction, QApplication, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QFrame, QHeaderView, QHBoxLayout, QDockWidget,
     QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QSplitter,
     QPushButton, QScrollArea, QSizePolicy, QStyle, QTabWidget, QTableWidget,
@@ -19,6 +22,12 @@ from PyQt5.QtWidgets import (
 )
 from installer_background_settings import BACKGROUND_SECTION
 from installer_system_requirements import SYSTEM_REQUIREMENTS_SECTION
+from installer_log_settings import LOG_FILE_SECTION
+from installer_security_settings import SECURITY_SECTION
+from installer_table_editing import (
+    INSTALLER_ROW_MIME, InstallerTableHistory, snapshot_rows,
+    rows_to_tsv, rows_to_mime_json, rows_from_clipboard,
+)
 from software_installer_model import (
     INSTALLER_COLUMNS, INSTALLER_FILTERS, INSTALLER_GROUPS,
     InstallerEntry, InstallerProject, InstallerProjectRegistry,
@@ -30,7 +39,8 @@ from software_installer_dialogs import (
     InstallerProjectThemeDialog, InstallerLanguagesDialog, InstallerRequirementsDialog,
     InstallerDestinationDialog, InstallerProjectNameDialog,
     InstallerSessionVariablesDialog, InstallerBackgroundWindowDialog,
-    InstallerSystemRequirementsDialog, installer_themed_warning,
+    InstallerSystemRequirementsDialog, InstallerLogFileDialog, installer_themed_warning,
+    InstallerSecurityDialog,
 )
 
 
@@ -107,7 +117,7 @@ class InstallerCollapsiblePanel(QFrame):
 
 
 class InstallerTable(QTableWidget):
-    """Editierbare Tabelle mit Zeilen-Hinzufuegen/-Loeschen via Kontextmenue."""
+    """Archiv-/Extern-Tabelle mit gemeinsamem, tastaturbedienbarem Kontextmenue."""
 
     def __init__(self, tab_key: str, owner, parent=None):
         super().__init__(0, len(INSTALLER_COLUMNS), parent)
@@ -131,21 +141,81 @@ class InstallerTable(QTableWidget):
         self.customContextMenuRequested.connect(self._show_context_menu)
         self.itemChanged.connect(self._on_item_changed)
         self._loading = False
+        self._setup_table_actions()
+        self.selectionModel().selectionChanged.connect(self._update_action_states)
+        QApplication.clipboard().dataChanged.connect(self._update_action_states)
+        self._update_action_states()
+
+    def _setup_table_actions(self):
+        """Aktionen am Widget registrieren: Shortcuts gelten ohne Rechtsklick."""
+        self.commands = {}
+        definitions = (
+            ("undo", "Wiederherstellen", "Ctrl+Z", self.owner.table_undo),
+            ("redo", "Rückgängig", "Ctrl+Y", self.owner.table_redo),
+            ("cut", "Ausschneiden", "Ctrl+X", self.owner.cut_selected_rows),
+            ("copy", "Kopieren", "Ctrl+C", self.owner.copy_selected_rows),
+            ("paste", "Einfügen", "Ctrl+V", self.owner.paste_rows),
+            ("remove", "Entfernen", "Delete", self.owner.delete_selected_rows),
+            ("file", "Hinzufügen:  Datei", "Insert", self.owner.add_files),
+            ("folder", "Hinzufügen:  Pfad", "Ctrl+Insert", self.owner.add_folder),
+            ("open", "Datei:  öffnen", "Ctrl+D", self.owner.open_selected_file),
+            ("properties", "Eigenschaften", "Ctrl+Enter", self.owner.show_file_properties),
+        )
+        for key, label, shortcut, callback in definitions:
+            action = QAction(label, self)
+            action.setObjectName("installerTableAction_" + key)
+            action.setShortcut(QKeySequence(shortcut))
+            action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+            action.triggered.connect(
+                lambda _checked=False, handler=callback: handler(self.tab_key)
+            )
+            self.addAction(action)
+            self.commands[key] = action
+        # Beide Enter-Varianten (Haupttastatur und NumPad).
+        self.commands["properties"].setShortcuts([
+            QKeySequence("Ctrl+Enter"), QKeySequence("Ctrl+Return")
+        ])
 
     def _show_context_menu(self, position):
+        row = self.rowAt(position.y())
+        if row >= 0 and not self.selectionModel().isRowSelected(row, self.rootIndex()):
+            self.selectRow(row)
+        self._update_action_states()
         menu = QMenu(self)
-        add_action = menu.addAction("Zeile hinzufügen")
-        add_files = menu.addAction("Datei hinzufügen …")
-        menu.addSeparator()
-        remove_action = menu.addAction("Ausgewählte Zeilen löschen")
-        remove_action.setEnabled(bool(self.selectionModel().selectedRows()))
-        chosen = menu.exec_(self.viewport().mapToGlobal(position))
-        if chosen is add_action:
-            self.owner.add_blank_row(self.tab_key)
-        elif chosen is add_files:
-            self.owner.add_files(self.tab_key)
-        elif chosen is remove_action:
-            self.owner.delete_selected_rows(self.tab_key)
+        menu.setObjectName("installerTableContextMenu")
+        for key in ("undo", "redo", None,
+                    "cut", "copy", "paste", "remove", None,
+                    "file", "folder", None,
+                    "open", "properties"):
+            if key is None:
+                menu.addSeparator()
+            else:
+                menu.addAction(self.commands[key])
+        if self.owner._dark_mode:
+            menu.setStyleSheet("""
+                QMenu#installerTableContextMenu {
+                    background: #282d36; color: #f1f2f4;
+                    border: 1px solid #515b6c; padding: 4px; }
+                QMenu#installerTableContextMenu::item { padding: 5px 28px; }
+                QMenu#installerTableContextMenu::item:selected {
+                    background: #3b4961; color: #ffffff; }
+                QMenu#installerTableContextMenu::item:disabled { color: #858f9f; }
+                QMenu#installerTableContextMenu::separator {
+                    height: 1px; background: #515b6c; margin: 4px 8px; }
+            """)
+        menu.exec_(self.viewport().mapToGlobal(position))
+
+    def _update_action_states(self, *_args):
+        """Shortcuts bleiben auch ohne vorheriges Oeffnen des Menues aktuell."""
+        selected = bool(self.selectionModel().selectedRows())
+        current = self.currentRow() >= 0
+        self.commands["undo"].setEnabled(self.owner.table_history.can_undo(self.tab_key))
+        self.commands["redo"].setEnabled(self.owner.table_history.can_redo(self.tab_key))
+        for key in ("cut", "copy", "remove"):
+            self.commands[key].setEnabled(selected)
+        for key in ("open", "properties"):
+            self.commands[key].setEnabled(current)
+        self.commands["paste"].setEnabled(self.owner.has_clipboard_rows())
 
     def _on_item_changed(self, item):
         if self._loading:
@@ -177,6 +247,7 @@ class SoftwareInstallerWorkbench(QWidget):
         super().__init__(parent)
         self.setObjectName("softwareInstallerWorkbench")
         self.project = InstallerProject()
+        self.table_history = InstallerTableHistory()
         self.project_filename = None
         self.registry = InstallerProjectRegistry()
         self.needs_save_as = True
@@ -298,6 +369,8 @@ class SoftwareInstallerWorkbench(QWidget):
         for key, table in self.tables.items():
             table.populate(self.project.entries[key])
         self.apply_filter()
+        for table in self.tables.values():
+            table._update_action_states()
 
     def apply_filter(self, _index=None):
         filter_key = self.filter_combo.currentData() or "all"
@@ -311,21 +384,111 @@ class SoftwareInstallerWorkbench(QWidget):
                     row, not entry_visible(filter_key, key, entry.status)
                 )
 
+    def _commit_rows(self, key, before, *, refresh=True):
+        """Nur echte Modellaenderungen markieren und in den Undo-Stack uebernehmen."""
+        if not self.table_history.record(key, before, self.project.entries[key]):
+            return False
+        self._mark_dirty()
+        if refresh:
+            self.refresh_tables()
+        else:
+            self.tables[key]._update_action_states()
+        return True
+
     def update_row(self, tab_key, row):
         table = self.tables[tab_key]
         entries = self.project.entries[tab_key]
         if 0 <= row < len(entries):
+            before = snapshot_rows(entries)
             values = [table.item(row, col).text() if table.item(row, col) else ""
                       for col in range(len(INSTALLER_COLUMNS))]
             entries[row].update_from_values(values)
-            self.apply_filter()
-            self._mark_dirty()
+            if self._commit_rows(tab_key, before, refresh=False):
+                self.apply_filter()
+
+    def table_undo(self, tab_key=None):
+        """Wiederherstellen (Strg+Z) in der jeweils aktiven Tabelle."""
+        key = tab_key or self.current_tab_key()
+        restored = self.table_history.undo(key, self.project.entries[key])
+        if restored is None:
+            return False
+        self.project.entries[key] = restored
+        self.refresh_tables()
+        self._mark_dirty()
+        return True
+
+    def table_redo(self, tab_key=None):
+        """Rueckgaengig (Strg+Y) wiederholt die zuvor widerrufene Aktion."""
+        key = tab_key or self.current_tab_key()
+        restored = self.table_history.redo(key, self.project.entries[key])
+        if restored is None:
+            return False
+        self.project.entries[key] = restored
+        self.refresh_tables()
+        self._mark_dirty()
+        return True
+
+    def _selected_rows(self, tab_key):
+        table = self.tables[tab_key]
+        return sorted({index.row() for index in table.selectionModel().selectedRows()})
+
+    def copy_selected_rows(self, tab_key=None):
+        key = tab_key or self.current_tab_key()
+        indices = self._selected_rows(key)
+        if not indices:
+            return False
+        entries = [self.project.entries[key][row] for row in indices]
+        clipboard_data = QMimeData()
+        clipboard_data.setData(INSTALLER_ROW_MIME, rows_to_mime_json(entries))
+        clipboard_data.setText(rows_to_tsv(entries))
+        QApplication.clipboard().setMimeData(clipboard_data)
+        return True
+
+    def cut_selected_rows(self, tab_key=None):
+        key = tab_key or self.current_tab_key()
+        if not self.copy_selected_rows(key):
+            return False
+        return self.delete_selected_rows(key)
+
+    def has_clipboard_rows(self):
+        clipboard_data = QApplication.clipboard().mimeData()
+        return bool(clipboard_data and (
+            clipboard_data.hasFormat(INSTALLER_ROW_MIME)
+            or (clipboard_data.hasText() and clipboard_data.text().strip())
+        ))
+
+    def paste_rows(self, tab_key=None):
+        key = tab_key or self.current_tab_key()
+        clipboard_data = QApplication.clipboard().mimeData()
+        if clipboard_data is None:
+            return False
+        mime_json = (bytes(clipboard_data.data(INSTALLER_ROW_MIME))
+                     if clipboard_data.hasFormat(INSTALLER_ROW_MIME) else None)
+        try:
+            new_rows = rows_from_clipboard(
+                mime_json, clipboard_data.text() if clipboard_data.hasText() else "")
+        except ValueError as error:
+            QMessageBox.warning(self, "Einfügen", str(error))
+            return False
+        if not new_rows:
+            return False
+        table = self.tables[key]
+        row = table.currentRow()
+        if row < 0:
+            row = len(self.project.entries[key])
+        before = snapshot_rows(self.project.entries[key])
+        self.project.entries[key][row:row] = new_rows
+        self._commit_rows(key, before)
+        table.setCurrentCell(row, 0)
+        table.selectRow(row)
+        return True
 
     def add_blank_row(self, tab_key=None):
+        # Bestehende API fuer aeltere Aufrufer bleibt verfuegbar.
         key = tab_key or self.current_tab_key()
+        before = snapshot_rows(self.project.entries[key])
         self.project.entries[key].append(InstallerEntry())
-        self._mark_dirty()
-        self.refresh_tables()
+        self._commit_rows(key, before)
         row = len(self.project.entries[key]) - 1
         table = self.tables[key]
         table.setCurrentCell(row, 0)
@@ -339,36 +502,59 @@ class SoftwareInstallerWorkbench(QWidget):
             "Alle Dateien (*)"
         )
         if filenames:
+            before = snapshot_rows(self.project.entries[key])
             if self.project.add_paths(key, filenames):
-                self._mark_dirty()
-                self.refresh_tables()
+                self._commit_rows(key, before)
 
-    def add_folder(self):
+    def add_folder(self, tab_key=None):
+        key = tab_key or self.current_tab_key()
         folder = QFileDialog.getExistingDirectory(
             self, "Verzeichnis für den Installer auswählen", str(Path.home())
         )
         if folder:
-            if self.project.add_paths(self.current_tab_key(), [folder]):
-                self._mark_dirty()
-                self.refresh_tables()
+            before = snapshot_rows(self.project.entries[key])
+            if self.project.add_paths(key, [folder]):
+                self._commit_rows(key, before)
 
     def delete_selected_rows(self, tab_key=None):
         key = tab_key or self.current_tab_key()
-        table = self.tables[key]
-        indices = [index.row() for index in table.selectionModel().selectedRows()]
+        indices = self._selected_rows(key)
         if indices:
+            before = snapshot_rows(self.project.entries[key])
             if self.project.delete_rows(key, indices):
-                self._mark_dirty()
-                self.refresh_tables()
+                self._commit_rows(key, before)
+                return True
+        return False
 
-    def show_file_properties(self):
-        key = self.current_tab_key()
-        table = self.tables[key]
+    def _selected_entry(self, tab_key):
+        table = self.tables[tab_key]
         row = table.currentRow()
-        if row < 0 or row >= len(self.project.entries[key]):
+        entries = self.project.entries[tab_key]
+        return entries[row] if 0 <= row < len(entries) else None
+
+    def open_selected_file(self, tab_key=None):
+        key = tab_key or self.current_tab_key()
+        entry = self._selected_entry(key)
+        if entry is None or not entry.local_path.strip():
+            QMessageBox.information(self, "Datei öffnen", "Bitte eine Datei mit lokalem Pfad auswählen.")
+            return False
+        path = Path(entry.local_path).expanduser()
+        if not path.is_absolute() and self.project_filename:
+            path = Path(self.project_filename).parent / path
+        if not path.exists():
+            QMessageBox.warning(self, "Datei öffnen", "Die Datei existiert nicht:\n" + str(path))
+            return False
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+            QMessageBox.warning(self, "Datei öffnen", "Die Datei konnte nicht geöffnet werden:\n" + str(path))
+            return False
+        return True
+
+    def show_file_properties(self, tab_key=None):
+        key = tab_key or self.current_tab_key()
+        entry = self._selected_entry(key)
+        if entry is None:
             QMessageBox.information(self, "Datei Eigenschaften", "Bitte zunächst ein Element auswählen.")
             return
-        entry = self.project.entries[key][row]
         dialog = QDialog(self)
         dialog.setWindowTitle("Datei Eigenschaften")
         layout = QFormLayout(dialog)
@@ -385,10 +571,10 @@ class SoftwareInstallerWorkbench(QWidget):
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
         if dialog.exec_() == QDialog.Accepted:
+            before = snapshot_rows(self.project.entries[key])
             for key_name, edit in edits.items():
                 setattr(entry, key_name, edit.text())
-            self._mark_dirty()
-            self.refresh_tables()
+            self._commit_rows(key, before)
 
     def edit_configuration(self, name):
         """Eingaben fuer Settings/Bildschirme/Aktionen speichern (noch kein Builder)."""
@@ -476,6 +662,46 @@ class SoftwareInstallerWorkbench(QWidget):
         self._mark_dirty()
         return bool(self.save_configuration())
 
+    def edit_log_file(self):
+        """Log-Datei bearbeiten: Übernahme nur nach OK, anschließend Projekt speichern."""
+        try:
+            dialog = InstallerLogFileDialog(
+                self.project, self, dark_mode=self._dark_mode,
+                help_callback=self._show_help_topic)
+        except (ValueError, TypeError) as error:
+            installer_themed_warning(
+                self, "Log-Datei",
+                "Log-Datei-Einstellungen können nicht geladen werden:\n" + str(error),
+                dark_mode=self._dark_mode)
+            return False
+        if dialog.exec_() != QDialog.Accepted or dialog.serialized is None:
+            return False
+        if self.project.sections.get(LOG_FILE_SECTION, "") == dialog.serialized:
+            return True
+        self.project.sections[LOG_FILE_SECTION] = dialog.serialized
+        self._mark_dirty()
+        return bool(self.save_configuration())
+
+    def edit_security(self):
+        """Serial-Nummern-Listen bearbeiten; Projekt erst nach OK aktualisieren."""
+        try:
+            dialog = InstallerSecurityDialog(
+                self.project, self, dark_mode=self._dark_mode,
+                help_callback=self._show_help_topic)
+        except (ValueError, TypeError) as error:
+            installer_themed_warning(
+                self, "Sicherheit",
+                "Sicherheits-Einstellungen können nicht geladen werden:\n" + str(error),
+                dark_mode=self._dark_mode)
+            return False
+        if dialog.exec_() != QDialog.Accepted or dialog.serialized is None:
+            return False
+        if self.project.sections.get(SECURITY_SECTION, "") == dialog.serialized:
+            return True
+        self.project.sections[SECURITY_SECTION] = dialog.serialized
+        self._mark_dirty()
+        return bool(self.save_configuration())
+
     def handle_panel_action(self, name):
         handlers = {
             "Datei hinzufügen": self.add_files,
@@ -485,6 +711,8 @@ class SoftwareInstallerWorkbench(QWidget):
             "Session Variable": self.edit_session_variables,
             "Hintergrund Fenster": self.edit_background_window,
             "Systemanforderungen": self.edit_system_requirements,
+            "Log-Datei": self.edit_log_file,
+            "Sicherheit": self.edit_security,
         }
         action = handlers.get(name)
         if action is not None:
@@ -507,6 +735,7 @@ class SoftwareInstallerWorkbench(QWidget):
     def new_unnamed_project(self):
         """Abbruch/Neuanlage: kein bisheriger Dateipfad darf wiederverwendet werden."""
         self.project = InstallerProject()
+        self.table_history.clear()
         self.project_filename = None
         self.needs_save_as = True
         self._registry_pending = False
@@ -521,6 +750,7 @@ class SoftwareInstallerWorkbench(QWidget):
         if loaded.name == "Unbenannt":
             loaded.name = Path(path).name.removesuffix(".installer.json")
         self.project = loaded
+        self.table_history.clear()
         self.project_filename = str(Path(path).expanduser().resolve())
         self.needs_save_as = False
         self.dirty = False

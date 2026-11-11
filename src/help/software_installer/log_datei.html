@@ -1,0 +1,20 @@
+<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Log-Datei</title></head>
+<body><h1>Log-Datei</h1>
+<p>Der Dialog wird über <strong>Software Installer → Einstellungen → Log-Datei</strong> geöffnet.
+Die Dialoggeometrie entspricht den Systemanforderungen (620 × 550 Pixel).</p>
+<h2>Log-Datei anlegen</h2>
+<p>Mit diesem Kontrollkästchen wird die Log-Datei für das später erzeugte Setup vorgesehen.
+Ist das Kontrollkästchen aus, bleiben Dateiname und Schreibmodus gespeichert, sind aber im Dialog deaktiviert.</p>
+<h2>Dateiname</h2>
+<p>Vorgabe: <code>%TempFolder%\%ProductName% Setup Log.txt</code>.
+Die Platzhalter bleiben bis zur späteren Installer-Laufzeit unverändert und werden im Editor nicht aufgelöst.
+Bei aktivierter Protokollierung muss ein Dateiname eingetragen sein.</p>
+<h2>Schreibmodus</h2>
+<ul><li><strong>Anhängen:</strong> Neue Einträge sollen eine bestehende Log-Datei erweitern.</li>
+<li><strong>Überschreiben:</strong> Bei einem neuen Setup-Lauf soll eine bestehende Log-Datei ersetzt werden.</li></ul>
+<p><strong>OK</strong> übernimmt die Einstellungen in den Projektabschnitt <code>Log-Datei</code>
+und stößt das bestehende Projektspeichern an. <strong>Abbrechen</strong> verwirft die
+noch nicht übernommenen Änderungen. <strong>Hilfe</strong> öffnet dieses Hilfethema.</p>
+<p>Hinweis: Das tatsächliche Schreiben einer Log-Datei durch ein erzeugtes Setup
+ist nicht Teil dieses Konfigurationsdialogs.</p>
+</body></html>

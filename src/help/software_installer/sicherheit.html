@@ -1,0 +1,66 @@
+<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Sicherheit</title></head>
+<body><h1>Sicherheit</h1>
+<p>Im Software-Installer unter <strong>Einstellungen → Sicherheit</strong> lässt sich
+festlegen, welche Serial-Nummer-Listen für spätere Setup-Versionen bereitstehen.
+Die Dialoge entsprechen in Geometrie und Theme dem Dialog Log-Datei (620 × 550 Pixel).</p>
+<h2>Serial Nummer</h2>
+<p>In der Tabelle <strong>Serial Nummer Liste</strong> stehen Listen Name, Anzahl und
+Konfiguration. Die Spalten können mit der Maus in ihrer Breite verändert werden.
+Mit <strong>Hinzufügen</strong> wird eine neue Liste erzeugt, <strong>Bearbeiten</strong>
+öffnet ihre Eigenschaften und <strong>Entfernen</strong> löscht eine markierte Liste.</p>
+<h2>Serial Nummer - Listen Eigenschaften</h2>
+<p>Links werden Listenname (Vorgabe: Neue Liste) und die Zuordnung
+<strong>Alle Konfigurationen → Standard</strong> ausgewählt.
+Rechts lassen sich beliebige Serial-Nummern (eine pro Tabellenzeile) eingeben.
+Das Menü <strong>Kommandos</strong> bietet:</p>
+<ul>
+<li>Wiederherstellen (Strg+Z: letzte Aktion zurücknehmen), Rückgängig (Strg+Y: erneut anwenden)</li>
+<li>Erstellen (Strg+G: neue zufällige Serial-Nummern), Finden, Sortieren</li>
+<li>Ausschneiden (Strg+X), Kopieren (Strg+C), Einfügen (Strg+V), Alle auswählen (Strg+A)</li>
+<li>Alle Nummern löschen (Strg+L), Selektierte Reihen Löschen (Strg+Entf)</li>
+<li>Reihe Einfügen (Einfg), Reihen Einfügen (Strg+Einfg)</li>
+<li>Drucken, Importieren und Exportieren (UTF-8-Text, eine Nummer pro Zeile)</li>
+</ul>
+<p><strong>Drucken:</strong> Zunächst öffnet sich die <strong>Druckvorschau</strong>.
+Dort können alle Seiten am Bildschirm kontrolliert und vergrößert werden.
+Erst der Drucken-Button in der Vorschau öffnet die Druckerauswahl und ermöglicht
+den Ausdruck. Die Serial-Nummern erscheinen in Consolas, ersatzweise Courier New
+oder Courier.</p>
+<p>Die Befehle wirken auf die aktuelle Liste im Dialog. Erst <strong>OK</strong> im
+Eigenschaftendialog überträgt die Liste in die übergeordnete Ansicht.
+<strong>OK</strong> im Sicherheitsdialog speichert anschließend den Projektabschnitt
+<code>Sicherheit</code>; <strong>Abbrechen</strong> verwirft nicht übernommene Änderungen.
+<strong>Hilfe</strong> öffnet dieses Thema.</p>
+<h2>Gültigkeits-Bereich</h2>
+<p>Dieser Tab besitzt drei GroupBoxen: links <strong>Gültigkeit Datum</strong>
+und <strong>Zerfall - Zähler</strong>, rechts <strong>Einstellungen</strong>.
+Bei unveränderter Dialoggröße kann der Inhalt vertikal gescrollt werden.</p>
+<h3>Gültigkeit Datum</h3>
+<p><strong>Datum des Auslaufen</strong> schaltet die Datumsbegrenzung ein.
+Als Methode kann ein absolutes Datum über den Kalender ausgewählt werden,
+oder die Gültigkeit endet standardmäßig 30 Tage nach Erstellung beziehungsweise
+30 Tage nach dem ersten Start. Zusätzlich können ein Abbruch bei nicht
+beschreibbarer Registry und die Anzeige der Rest-Tage aktiviert werden.</p>
+<h3>Zerfall - Zähler</h3>
+<p>Mit <strong>Aktivieren</strong> werden Installationsgrenzen eingerichtet.
+Vorgaben: 2 Installationen auf dem System oder 1 Benutzer-Installation.
+Der gewählte Grenztyp und seine Werte werden gespeichert. Optional können
+Registry-Schreibfehler zum Abbruch führen und der verbleibende Zählerstand
+angezeigt werden.</p>
+<h3>Einstellungen</h3>
+<p>Mit <strong>Erstellen</strong> wird eine zufällige UUID v4 für
+<strong>Produkt Identifikation</strong> erzeugt. Daneben lassen sich
+<strong>Kontaktinfos anzeigen</strong> sowie Kontakt-Name (<code>%CompanyName%</code>),
+Webseite (<code>%CompanyURL%</code>), Kontakt E-Mail und Kontakt Telefon
+hinterlegen.</p>
+<h3>Serienstatus</h3>
+<p>In den Eigenschaften jeder Serial-Liste enthält die Tabelle rechts nun
+zusätzlich die Spalten <strong>Belegt</strong> (anklickbare Checkbox pro Zeile)
+und <strong>Reg. Count</strong> (nichtnegative ganze Zahl für die Anzahl
+registrierter Verwendungen). Die Einträge werden zusammen mit ihrer Nummer
+projektseitig gespeichert, einschließlich beim Sortieren und Rückgängig.</p>
+<p><strong>Hinweis:</strong> Serial-Status, Gültigkeit und UUID werden
+zunächst nur im Installer-Projekt gespeichert. Die tatsächliche Prüfung von
+Seriennummern, Installationstagen und Zählergrenzen sowie die spätere
+Registry-Schreiboperation sind <strong>noch nicht in der Setup-Runtime</strong>
+implementiert. „Erstellen“ schreibt keine Registry-Werte.</p></body></html>

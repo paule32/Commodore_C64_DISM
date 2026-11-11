@@ -10,17 +10,25 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QEvent
-from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap, QLinearGradient
+from PyQt5.QtCore import Qt, QEvent, QDate
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap, QLinearGradient, QKeySequence
 from PyQt5.QtWidgets import (
     QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QRadioButton, QCheckBox, QStyle, QVBoxLayout,
     QColorDialog, QWidget, QTreeWidget, QTreeWidgetItem, QScrollArea,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QToolButton, QFontDialog, QSpinBox,
+    QToolButton, QFontDialog, QSpinBox, QButtonGroup, QTabWidget, QMenu, QAction,
+    QInputDialog, QApplication, QDateEdit,
 )
 from software_installer_model import InstallerProject, InstallerProjectRegistry
+from installer_security_settings import (
+    SECURITY_SECTION, parse_security_settings, encode_security_settings, validate_serial_list,
+    default_validity_settings, MAX_REG_COUNT,
+)
+from installer_log_settings import (
+    LOG_FILE_SECTION, LOG_FILE_DEFAULTS, parse_log_settings, encode_log_settings,
+)
 from installer_system_requirements import (
     SYSTEM_REQUIREMENTS_SECTION, parse_system_requirements, encode_system_requirements,
 )
@@ -166,7 +174,7 @@ class InstallerThemedDialog(QDialog):
             QDialog {{ background: {bg}; color: {fg}; border: 1px solid {border}; }}
             QWidget#installerDialogBody {{ background: {bg}; color: {fg}; }}
             QLabel, QRadioButton, QCheckBox {{ color: {fg}; background: transparent; }}
-            QLineEdit, QListWidget, QComboBox, QSpinBox {{ background: {panel}; color: {fg};
+            QLineEdit, QListWidget, QComboBox, QSpinBox, QDateEdit {{ background: {panel}; color: {fg};
                 border: 1px solid {border}; border-radius: 3px; padding: 5px;
                 selection-background-color: {selection}; }}
             QComboBox QAbstractItemView {{ background: {panel}; color: {fg};
@@ -194,13 +202,32 @@ class InstallerThemedDialog(QDialog):
                 border: 1px solid {border}; border-radius: 4px; }}
             QFrame#installerThemePreview {{ background: {panel}; border: 1px solid {border};
                 border-radius: 4px; }}
-            QTreeWidget#installerWindowsTree, QTreeWidget#installerSystemWindowsTree {{ background: {panel}; color: {fg};
+            QTreeWidget#installerWindowsTree, QTreeWidget#installerSystemWindowsTree,
+            QTreeWidget#installerSerialConfigurationsTree {{ background: {panel}; color: {fg};
                 border: 1px solid {border}; border-radius: 3px;
                 alternate-background-color: {bg}; selection-background-color: {selection}; }}
-            QScrollArea#installerBackgroundScroll {{ background: {bg}; border: none; }}
+            QScrollArea#installerBackgroundScroll,
+            QScrollArea#installerValidityScroll {{ background: {bg}; border: none; }}
+            QWidget#installerValidityBody {{ background: {bg}; color: {fg}; }}
             QWidget#installerBackgroundBody {{ background: {bg}; color: {fg}; }}
             QGroupBox#installerBackgroundMode, QGroupBox#installerBackgroundAppearance,
             QGroupBox#installerBackgroundText {{ font-weight: bold; }}
+            QTabWidget#installerSecurityTabs::pane {{ background: {bg}; border: 1px solid {border}; }}
+            QTabWidget#installerSecurityTabs QTabBar::tab {{ background: {panel}; color: {fg};
+                border: 1px solid {border}; padding: 6px 15px; margin-right: 2px; }}
+            QTabWidget#installerSecurityTabs QTabBar::tab:selected {{ background: {highlight}; }}
+            QTabWidget#installerSecurityTabs QTabBar::tab:hover {{ background: {highlight}; }}
+            QToolButton#installerSerialCommandsButton {{ background: {panel}; color: {fg};
+                border: 1px solid {border}; border-radius: 3px; padding: 5px 9px; }}
+            QToolButton#installerSerialCommandsButton:hover {{ background: {highlight}; }}
+            QMenu#installerSerialCommandsMenu {{ background: {panel}; color: {fg};
+                border: 1px solid {border}; }}
+            QMenu#installerSerialCommandsMenu::item:selected {{ background: {highlight}; }}
+            QMenu#installerSerialCommandsMenu::separator {{ height: 1px; background: {border};
+                margin: 3px 8px; }}
+            QTableWidget#installerSerialListsTable QHeaderView::section,
+            QTableWidget#installerSerialNumbersTable QHeaderView::section {{
+                background: {panel}; color: {fg}; border: 1px solid {border}; padding: 5px; }}
             QScrollArea#installerSessionScroll {{ background: {bg}; border: none; }}
             QWidget#installerSessionScrollBody {{ background: {bg}; }}
             QFrame#installerSessionPanel {{ border: 1px solid {border}; border-radius: 4px;
@@ -210,12 +237,51 @@ class InstallerThemedDialog(QDialog):
             QLabel#installerSessionPanelCaption {{ font-weight: bold; color: {fg}; }}
             QToolButton#installerSessionPanelToggle {{ background: transparent; color: {fg};
                 border: none; padding: 4px; }}
+            QTableWidget#installerSerialListsTable, QTableWidget#installerSerialNumbersTable,
             QTableWidget#installerSessionTable {{ color: {fg}; background: {panel};
                 border: none; selection-background-color: {selection};
                 gridline-color: {border}; }}
         """)
+        for table_name in ("installerSerialListsTable", "installerSerialNumbersTable"):
+            table = self.findChild(QTableWidget, table_name)
+            if table is not None:
+                _style_installer_serial_header(table, self._dark_mode)
         if self.isVisible() and not self._gradient_title:
             _set_windows_dark_titlebar(self, self._dark_mode)
+
+
+def _installer_serial_font():
+    """Monospaced-Serials mit geordneter Font-Fallback-Liste (Qt >= 5.13)."""
+    font = QFont("Consolas")
+    if hasattr(font, "setFamilies"):
+        font.setFamilies(["Consolas", "Courier New", "Courier"])
+    font.setStyleHint(QFont.TypeWriter)
+    return font
+
+
+def _style_installer_serial_header(table: QTableWidget, dark: bool) -> None:
+    """Header explizit stylen: auch mit nativem Windows-QStyle im Dark-Mode."""
+    if dark:
+        background, hover, foreground, border = (
+            "#343b48", "#46566d", "#f1f2f4", "#515b6c")
+    else:
+        background, hover, foreground, border = (
+            "#e4e9ef", "#d4e2f2", "#20242b", "#b7c1cf")
+    header = table.horizontalHeader()
+    header.setHighlightSections(False)
+    header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    header.setMinimumHeight(30)
+    # Direkte Header-QSS hat Vorrang vor dem plattformspezifischen QHeaderView-Style.
+    header.setStyleSheet(f"""
+        QHeaderView {{ background-color: {background}; color: {foreground};
+            border: none; }}
+        QHeaderView::section {{ background-color: {background}; color: {foreground};
+            border: none; border-right: 1px solid {border};
+            border-bottom: 1px solid {border}; padding: 5px 8px;
+            font-weight: bold; }}
+        QHeaderView::section:hover, QHeaderView::section:pressed {{
+            background-color: {hover}; color: {foreground}; }}
+    """)
 
 
 def _line(parent):
@@ -1723,6 +1789,893 @@ class InstallerSystemRequirementsDialog(InstallerThemedDialog):
         if callable(self.help_callback):
             self.help_callback("Systemanforderungen")
 
+
+class InstallerLogFileDialog(InstallerThemedDialog):
+    """Stage 565: Log-Datei, 620x550 px wie der Systemanforderungen-Dialog.
+
+    Keine Veränderung der Projektdaten bis zur OK-Bestätigung.
+    """
+
+    def __init__(self, project: InstallerProject, parent=None, *, dark_mode=False,
+                 help_callback=None):
+        super().__init__(parent, dark_mode=dark_mode, gradient_title=True)
+        self.setWindowTitle("Log-Datei")
+        self.setObjectName("installerLogFileDialog")
+        self.setFixedSize(WIZARD_SIZE[0] - 140, WIZARD_SIZE[1] - 40)
+        self.help_callback = help_callback
+        self.serialized = None
+        settings = parse_log_settings(project.sections.get(LOG_FILE_SECTION, ""))
+
+        layout = self._content_layout()
+        self.enable_check = QCheckBox("Log-Datei anlegen", self)
+        self.enable_check.setObjectName("installerLogFileEnabled")
+        self.enable_check.setChecked(settings["enabled"])
+        layout.addWidget(self.enable_check)
+
+        # Dateiname und Schreibmodus liegen als gemeinsamer Block 26 px eingerückt.
+        indent_row = QHBoxLayout()
+        indent_row.setContentsMargins(0, 0, 0, 0)
+        indent_row.addSpacing(26)
+        self.details = QWidget(self)
+        self.details.setObjectName("installerLogFileDetails")
+        details_layout = QVBoxLayout(self.details)
+        details_layout.setContentsMargins(0, 4, 0, 0)
+        details_layout.setSpacing(10)
+
+        self.filename_label = QLabel("Dateiname:", self.details)
+        details_layout.addWidget(self.filename_label)
+        self.filename_edit = QLineEdit(self.details)
+        self.filename_edit.setObjectName("installerLogFileName")
+        self.filename_edit.setMaxLength(4096)
+        self.filename_edit.setText(settings["filename"])
+        details_layout.addWidget(self.filename_edit)
+
+        self.mode_label = QLabel("Schreibmodus:", self.details)
+        details_layout.addWidget(self.mode_label)
+        self.mode_buttons = QButtonGroup(self)
+        self.mode_buttons.setExclusive(True)
+        self.append_radio = QRadioButton("Anhängen", self.details)
+        self.append_radio.setObjectName("installerLogFileAppend")
+        self.overwrite_radio = QRadioButton("Überschreiben", self.details)
+        self.overwrite_radio.setObjectName("installerLogFileOverwrite")
+        self.mode_buttons.addButton(self.append_radio)
+        self.mode_buttons.addButton(self.overwrite_radio)
+        self.append_radio.setChecked(settings["write_mode"] == "append")
+        self.overwrite_radio.setChecked(settings["write_mode"] == "overwrite")
+        details_layout.addWidget(self.append_radio)
+        details_layout.addWidget(self.overwrite_radio)
+        indent_row.addWidget(self.details, 1)
+        layout.addLayout(indent_row)
+        layout.addStretch(1)
+
+        self.enable_check.toggled.connect(self.details.setEnabled)
+        self.details.setEnabled(self.enable_check.isChecked())
+
+        layout.addWidget(_line(self))
+        buttons, self.buttons = _button_row(
+            self, ("OK", "Abbrechen", "Hilfe"),
+            (self._accept_changes, self.reject, self._help), default_index=0)
+        layout.addLayout(buttons)
+        self.ok_button, self.cancel_button, self.help_button = self.buttons
+
+    def settings(self):
+        return {
+            "enabled": self.enable_check.isChecked(),
+            "filename": self.filename_edit.text(),
+            "write_mode": "append" if self.append_radio.isChecked() else "overwrite",
+        }
+
+    def _accept_changes(self):
+        try:
+            self.serialized = encode_log_settings(self.settings())
+        except (ValueError, TypeError) as error:
+            installer_themed_warning(self, "Log-Datei", str(error),
+                                     dark_mode=self._dark_mode)
+            return
+        self.accept()
+
+    def _help(self):
+        if callable(self.help_callback):
+            self.help_callback("Log-Datei")
+
+
+
+class InstallerSerialListPropertiesDialog(InstallerThemedDialog):
+    """Kinddialog für eine Serial-Nummern-Liste; Änderungen erst nach OK."""
+
+    def __init__(self, entry=None, parent=None, *, dark_mode=False,
+                 help_callback=None, existing_names=()):
+        super().__init__(parent, dark_mode=dark_mode, gradient_title=True)
+        self.setWindowTitle("Serial Nummer - Listen Eigenschaften")
+        self.setObjectName("installerSerialListPropertiesDialog")
+        self.setFixedSize(WIZARD_SIZE[0] - 140, WIZARD_SIZE[1] - 40)
+        self.help_callback = help_callback
+        self.result_entry = None
+        self.existing_names = {name.casefold() for name in existing_names}
+        self._history = []
+        self._future = []
+        self._loading_serials = False
+        entry = entry or {"name": "Neue Liste", "configurations": ["Standard"],
+                          "serial_numbers": []}
+
+        layout = self._content_layout()
+        columns = QHBoxLayout()
+        columns.setSpacing(12)
+        layout.addLayout(columns, 1)
+
+        left = QVBoxLayout()
+        left.setSpacing(8)
+        columns.addLayout(left, 2)
+        left.addWidget(QLabel("Listen Name", self))
+        self.name_edit = QLineEdit(self)
+        self.name_edit.setObjectName("installerSerialListName")
+        self.name_edit.setMaxLength(120)
+        self.name_edit.setText(entry["name"])
+        left.addWidget(self.name_edit)
+        left.addWidget(QLabel("Konfigurationen", self))
+        self.configuration_tree = QTreeWidget(self)
+        self.configuration_tree.setObjectName("installerSerialConfigurationsTree")
+        self.configuration_tree.setHeaderHidden(True)
+        self.configuration_tree.setUniformRowHeights(True)
+        self.configuration_tree.setAlternatingRowColors(True)
+        self.configuration_tree.setRootIsDecorated(True)
+        self._changing_configuration = False
+        root = QTreeWidgetItem(self.configuration_tree, ["Alle Konfigurationen"])
+        root.setFlags(root.flags() | Qt.ItemIsUserCheckable)
+        standard = QTreeWidgetItem(root, ["Standard"])
+        standard.setFlags(standard.flags() | Qt.ItemIsUserCheckable)
+        checked = "Standard" in entry["configurations"]
+        standard.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+        root.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+        self.configuration_tree.expandAll()
+        self.configuration_tree.itemChanged.connect(self._configuration_changed)
+        left.addWidget(self.configuration_tree, 1)
+
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        columns.addLayout(right, 4)
+        header = QHBoxLayout()
+        header.addWidget(QLabel("Serial Nummern", self), 1)
+        self.commands_button = QToolButton(self)
+        self.commands_button.setObjectName("installerSerialCommandsButton")
+        self.commands_button.setText("Kommandos")
+        self.commands_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.commands_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.commands_menu = QMenu(self.commands_button)
+        self.commands_menu.setObjectName("installerSerialCommandsMenu")
+        self._create_commands()
+        self.commands_button.setMenu(self.commands_menu)
+        self.commands_button.clicked.connect(self.commands_button.showMenu)
+        header.addWidget(self.commands_button, 0, Qt.AlignRight)
+        right.addLayout(header)
+        self.serial_table = QTableWidget(0, 3, self)
+        self.serial_table.setObjectName("installerSerialNumbersTable")
+        self.serial_table.setHorizontalHeaderLabels(
+            ["Serial Nummer", "Belegt", "Reg. Count"])
+        self.serial_font = _installer_serial_font()
+        self.serial_table.setFont(self.serial_font)
+        self.serial_table.verticalHeader().setVisible(False)
+        _style_installer_serial_header(self.serial_table, self._dark_mode)
+        self.serial_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Interactive)
+        self.serial_table.horizontalHeader().setStretchLastSection(False)
+        for index, width in enumerate((190, 65, 88)):
+            self.serial_table.setColumnWidth(index, width)
+        self.serial_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.serial_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.serial_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
+            | QAbstractItemView.SelectedClicked)
+        self.serial_table.setAlternatingRowColors(True)
+        self.serial_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.serial_table.customContextMenuRequested.connect(
+            lambda point: self.commands_menu.exec_(
+                self.serial_table.viewport().mapToGlobal(point)))
+        right.addWidget(self.serial_table, 1)
+        self.serial_table.itemChanged.connect(self._serial_item_changed)
+        for action in self._shortcut_actions:
+            self.serial_table.addAction(action)
+        self._known_rows = []
+        details = entry.get("serial_details", {})
+        self._set_rows([
+            {"serial": number,
+             "occupied": details.get(number, {}).get("occupied", False),
+             "reg_count": str(details.get(number, {}).get("reg_count", 0))}
+            for number in entry["serial_numbers"]
+        ])
+
+        layout.addWidget(_line(self))
+        row, self.buttons = _button_row(
+            self, ("OK", "Abbrechen", "Hilfe"),
+            (self._accept_changes, self.reject, self._help), default_index=0)
+        layout.addLayout(row)
+        self.ok_button, self.cancel_button, self.help_button = self.buttons
+
+    def _configuration_changed(self, item, column):
+        if column != 0 or self._changing_configuration:
+            return
+        self._changing_configuration = True
+        try:
+            root = self.configuration_tree.topLevelItem(0)
+            child = root.child(0)
+            if item is root:
+                child.setCheckState(0, root.checkState(0))
+            else:
+                root.setCheckState(0, child.checkState(0))
+        finally:
+            self._changing_configuration = False
+
+    def _create_commands(self):
+        """Menüpunkte und Tastenkürzel, jeweils auf diesen Dialog begrenzt."""
+        entries = (
+            ("Wiederherstellen", "Ctrl+Z", self._undo),
+            ("Rückgängig", "Ctrl+Y", self._redo),
+            None,
+            ("Erstellen ...", "Ctrl+G", self._generate),
+            ("Finden", None, self._find),
+            ("Sortieren", None, self._sort),
+            None,
+            ("Ausschneiden", "Ctrl+X", self._cut),
+            ("Kopieren", "Ctrl+C", self._copy),
+            ("Einfügen", "Ctrl+V", self._paste),
+            ("Alle auswählen", "Ctrl+A", self._select_all),
+            None,
+            ("Alle Nummern löschen", "Ctrl+L", self._delete_all),
+            ("Selektierte Reihen Löschen", "Ctrl+Delete", self._delete_selected),
+            ("Reihe Einfügen", "Insert", self._insert_row),
+            ("Reihen Einfügen", "Ctrl+Insert", self._insert_rows),
+            None,
+            ("Drucken", None, self._print),
+            ("Importieren", None, self._import),
+            ("Exportieren", None, self._export),
+        )
+        self.command_actions = {}
+        for item in entries:
+            if item is None:
+                self.commands_menu.addSeparator()
+                continue
+            caption, shortcut, callback = item
+            action = QAction(caption, self)
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
+                action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+            action.triggered.connect(callback)
+            self.commands_menu.addAction(action)
+            self.command_actions[caption] = action
+        # Die Tabelle wird erst nach dem Menü erzeugt: Shortcuts nachträglich anbinden.
+        self._shortcut_actions = [action for action in self.command_actions.values()
+                                  if not action.shortcut().isEmpty()]
+
+    def _row_records(self):
+        """UI-Snapshot einschließlich Belegt und Reg. Count (auch für Undo/Redo)."""
+        records = []
+        for row in range(self.serial_table.rowCount()):
+            serial = self.serial_table.item(row, 0)
+            occupied = self.serial_table.item(row, 1)
+            count = self.serial_table.item(row, 2)
+            records.append({
+                "serial": serial.text() if serial else "",
+                "occupied": bool(occupied and occupied.checkState() == Qt.Checked),
+                "reg_count": count.text() if count else "0",
+            })
+        return records
+
+    def _set_rows(self, rows):
+        """Stellt UI wieder her; Metadaten folgen beim Sortieren ihrer Serial."""
+        from collections import defaultdict, deque
+
+        previous = self._loading_serials
+        self._loading_serials = True
+        try:
+            old_by_serial = defaultdict(deque)
+            for record in self._row_records():
+                old_by_serial[record["serial"].casefold()].append(record)
+            normalized = []
+            for value in rows:
+                if isinstance(value, dict):
+                    record = dict(value)
+                else:
+                    serial = str(value)
+                    options = old_by_serial[serial.casefold()]
+                    record = dict(options.popleft()) if options else {
+                        "serial": serial, "occupied": False, "reg_count": "0"}
+                normalized.append(record)
+            self.serial_table.blockSignals(True)
+            try:
+                self.serial_table.setRowCount(len(normalized))
+                for index, record in enumerate(normalized):
+                    serial_item = QTableWidgetItem(str(record["serial"]))
+                    serial_item.setFont(self.serial_font)
+                    self.serial_table.setItem(index, 0, serial_item)
+
+                    occupied_item = QTableWidgetItem()
+                    occupied_item.setFlags(
+                        (occupied_item.flags() | Qt.ItemIsUserCheckable)
+                        & ~Qt.ItemIsEditable)
+                    occupied_item.setCheckState(
+                        Qt.Checked if record.get("occupied", False) else Qt.Unchecked)
+                    occupied_item.setTextAlignment(Qt.AlignCenter)
+                    self.serial_table.setItem(index, 1, occupied_item)
+
+                    count_item = QTableWidgetItem(str(record.get("reg_count", "0")))
+                    count_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    self.serial_table.setItem(index, 2, count_item)
+            finally:
+                self.serial_table.blockSignals(False)
+        finally:
+            self._loading_serials = previous
+        self._known_rows = self._row_records()
+
+    def _rows(self):
+        # Bestehende Kommandos (Textimport, Copy/Paste, Finden, Drucken) bleiben
+        # zeichenkettenbasiert; ihre Metadaten werden über _row_records bewahrt.
+        return [record["serial"] for record in self._row_records()]
+
+    def _push_history(self, records):
+        self._history.append([dict(record) for record in records])
+        if len(self._history) > 100:
+            self._history.pop(0)
+        self._future.clear()
+
+    def _change_rows(self, rows, *, select_row=None):
+        before = self._row_records()
+        comparable = ([record["serial"] for record in before]
+                      if all(isinstance(value, str) for value in rows) else before)
+        if comparable == rows:
+            return
+        self._push_history(before)
+        self._set_rows(rows)
+        if select_row is not None and rows:
+            self.serial_table.selectRow(min(max(0, select_row), len(rows) - 1))
+
+    def _serial_item_changed(self, _item):
+        if self._loading_serials:
+            return
+        updated = self._row_records()
+        if updated != self._known_rows:
+            self._push_history(self._known_rows)
+            self._known_rows = updated
+
+    def _undo(self):
+        if self._history:
+            self._future.append(self._row_records())
+            self._set_rows(self._history.pop())
+
+    def _redo(self):
+        if self._future:
+            self._history.append(self._row_records())
+            self._set_rows(self._future.pop())
+
+    def _selected_rows(self):
+        return sorted(index.row() for index in self.serial_table.selectionModel().selectedRows())
+
+    def _insert(self, count):
+        pos = self.serial_table.currentRow()
+        pos = pos if pos >= 0 else self.serial_table.rowCount()
+        rows = self._rows()
+        rows[pos:pos] = [""] * count
+        self._change_rows(rows, select_row=pos)
+        self.serial_table.editItem(self.serial_table.item(pos, 0))
+
+    def _insert_row(self):
+        self._insert(1)
+
+    def _insert_rows(self):
+        count, ok = QInputDialog.getInt(self, "Reihen Einfügen", "Anzahl Reihen:",
+                                        2, 1, 10000)
+        if ok:
+            self._insert(count)
+
+    def _delete_selected(self):
+        selected = set(self._selected_rows())
+        if selected:
+            self._change_rows([value for i, value in enumerate(self._rows())
+                               if i not in selected])
+
+    def _delete_all(self):
+        self._change_rows([])
+
+    def _select_all(self):
+        self.serial_table.selectAll()
+
+    def _copy(self):
+        selected = self._selected_rows()
+        if selected:
+            values = self._rows()
+            QApplication.clipboard().setText("\n".join(values[i] for i in selected))
+
+    def _cut(self):
+        selected = self._selected_rows()
+        if selected:
+            self._copy()
+            self._delete_selected()
+
+    def _paste(self):
+        text = QApplication.clipboard().text()
+        values = [line.strip() for line in text.splitlines() if line.strip()]
+        if values:
+            rows = self._rows()
+            pos = self.serial_table.currentRow()
+            if pos < 0:
+                pos = len(rows)
+            rows[pos:pos] = values
+            self._change_rows(rows, select_row=pos)
+
+    def _generate(self):
+        count, ok = QInputDialog.getInt(self, "Serial Nummern erstellen",
+                                        "Anzahl neuer Serial Nummern:", 10, 1, 10000)
+        if not ok:
+            return
+        import secrets
+        rows = self._rows()
+        seen = {value.casefold() for value in rows}
+        generated = []
+        while len(generated) < count:
+            token = secrets.token_hex(8).upper()
+            number = "-".join(token[pos:pos+4] for pos in range(0, 16, 4))
+            if number.casefold() not in seen:
+                seen.add(number.casefold())
+                generated.append(number)
+        self._change_rows(rows + generated, select_row=len(rows))
+
+    def _find(self):
+        phrase, ok = QInputDialog.getText(self, "Finden", "Serial Nummer suchen:")
+        if not ok or not phrase:
+            return
+        rows = self._rows()
+        start = max(self.serial_table.currentRow(), -1) + 1
+        for i in list(range(start, len(rows))) + list(range(start)):
+            if phrase.casefold() in rows[i].casefold():
+                self.serial_table.setCurrentCell(i, 0)
+                self.serial_table.selectRow(i)
+                return
+        installer_themed_warning(self, "Finden", "Keine passende Serial Nummer gefunden.",
+                                 dark_mode=self._dark_mode)
+
+    def _sort(self):
+        rows = self._rows()
+        filled = sorted((value for value in rows if value.strip()),
+                        key=str.casefold)
+        empty = [value for value in rows if not value.strip()]
+        self._change_rows(filled + empty)
+
+    def _import(self):
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Serial Nummern importieren", "", "Textdateien (*.txt *.csv);;Alle Dateien (*)")
+        if filename:
+            try:
+                lines = Path(filename).read_text(encoding="utf-8-sig").splitlines()
+                values = [line.strip() for line in lines if line.strip()]
+                self._change_rows(self._rows() + values)
+            except (OSError, UnicodeError) as error:
+                installer_themed_warning(self, "Importieren", str(error),
+                                         dark_mode=self._dark_mode)
+
+    def _export(self):
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Serial Nummern exportieren", "serialnummern.txt", "Textdateien (*.txt)")
+        if filename:
+            try:
+                Path(filename).write_text(
+                    "\n".join(value.strip() for value in self._rows() if value.strip()) + "\n",
+                    encoding="utf-8")
+            except (OSError, UnicodeError) as error:
+                installer_themed_warning(self, "Exportieren", str(error),
+                                         dark_mode=self._dark_mode)
+
+    def _serial_print_document(self):
+        """Ein gemeinsames QTextDocument für Vorschau UND physisches Drucken."""
+        from html import escape
+        from PyQt5.QtGui import QTextDocument
+
+        document = QTextDocument(self)
+        document.setDefaultFont(self.serial_font)
+        content = "<h2>Serial Nummern</h2><ol>" + "".join(
+            "<li>" + escape(value) + "</li>"
+            for value in self._rows() if value.strip()) + "</ol>"
+        document.setHtml(content)
+        return document
+
+    def _print(self):
+        """Zunächst Qt-Druckvorschau; deren Drucken-Schaltfläche öffnet QPrintDialog."""
+        try:
+            from PyQt5.QtPrintSupport import QPrintPreviewDialog, QPrinter
+
+            printer = QPrinter(QPrinter.HighResolution)
+            preview = QPrintPreviewDialog(printer, self)
+            preview.setWindowTitle("Druckvorschau - Serial Nummern")
+            preview.resize(900, 700)
+            # Beide Wege verwenden exakt dasselbe Dokument; es wird erst beim
+            # Drucken-Klick in der Vorschau physisch an den Drucker übergeben.
+            document = self._serial_print_document()
+            preview.paintRequested.connect(document.print_)
+            preview.exec_()
+        except (ImportError, RuntimeError, OSError) as error:
+            installer_themed_warning(self, "Drucken", str(error),
+                                     dark_mode=self._dark_mode)
+
+    def _accept_changes(self):
+        try:
+            serials = []
+            details = {}
+            for record in self._row_records():
+                number = record["serial"].strip()
+                if not number:
+                    continue
+                if (not record["reg_count"].strip().isdigit()
+                        or int(record["reg_count"]) > MAX_REG_COUNT):
+                    raise ValueError("Reg. Count muss eine nichtnegative ganze Zahl sein")
+                serials.append(number)
+                count = int(record["reg_count"])
+                if record["occupied"] or count:
+                    details[number] = {"occupied": record["occupied"],
+                                       "reg_count": count}
+            entry = validate_serial_list({
+                "name": self.name_edit.text(),
+                "configurations": ["Standard"] if
+                    self.configuration_tree.topLevelItem(0).child(0).checkState(0)
+                    == Qt.Checked else [],
+                "serial_numbers": serials,
+                "serial_details": details,
+            })
+            if entry["name"].casefold() in self.existing_names:
+                raise ValueError("Der Listenname ist bereits vorhanden")
+        except (ValueError, TypeError) as error:
+            installer_themed_warning(self, "Serial Nummer - Listen Eigenschaften",
+                                     str(error), dark_mode=self._dark_mode)
+            return
+        self.result_entry = entry
+        self.accept()
+
+    def _help(self):
+        if callable(self.help_callback):
+            self.help_callback("Sicherheit")
+
+
+class InstallerSecurityDialog(InstallerThemedDialog):
+    """Serial-Nummern und Gültigkeits-Bereich (Stage 568)."""
+
+    def __init__(self, project: InstallerProject, parent=None, *, dark_mode=False,
+                 help_callback=None):
+        super().__init__(parent, dark_mode=dark_mode, gradient_title=True)
+        self.setWindowTitle("Sicherheit")
+        self.setObjectName("installerSecurityDialog")
+        self.setFixedSize(WIZARD_SIZE[0] - 140, WIZARD_SIZE[1] - 40)
+        self.help_callback = help_callback
+        self.serialized = None
+        stored_security = parse_security_settings(project.sections.get(SECURITY_SECTION, ""))
+        self.serial_lists = stored_security["serial_lists"]
+        self.validity_settings = stored_security.get("validity", default_validity_settings())
+        layout = self._content_layout()
+        self.tabs = QTabWidget(self)
+        self.tabs.setObjectName("installerSecurityTabs")
+        layout.addWidget(self.tabs, 1)
+        serial_page = QWidget(self.tabs)
+        self.tabs.addTab(serial_page, "Serial Nummer")
+        serial_layout = QVBoxLayout(serial_page)
+        serial_layout.setContentsMargins(10, 12, 10, 9)
+        serial_layout.setSpacing(9)
+        serial_layout.addWidget(QLabel("Serial Nummer Liste", serial_page))
+        self.lists_table = QTableWidget(0, 3, serial_page)
+        self.lists_table.setObjectName("installerSerialListsTable")
+        self.lists_table.setHorizontalHeaderLabels(
+            ["Listen Name", "Anzahl", "Konfiguration"])
+        self.lists_table.verticalHeader().setVisible(False)
+        _style_installer_serial_header(self.lists_table, self._dark_mode)
+        self.lists_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.lists_table.horizontalHeader().setStretchLastSection(False)
+        for index, width in enumerate((210, 80, 190)):
+            self.lists_table.setColumnWidth(index, width)
+        self.lists_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.lists_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.lists_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.lists_table.setAlternatingRowColors(True)
+        self.lists_table.doubleClicked.connect(self._edit_list)
+        serial_layout.addWidget(self.lists_table, 1)
+        self.duration_page = QWidget(self.tabs)
+        self.duration_page.setObjectName("installerSecurityDurationPage")
+        self.tabs.addTab(self.duration_page, "Gültigkeits-Bereich")
+        self._build_validity_tab()
+
+        layout.addWidget(_line(self))
+        # Linke Listenaktionen und rechte Dialogaktionen teilen sich eine Zeile.
+        actions, self.buttons = _button_row(
+            self, ("OK", "Abbrechen", "Hilfe"),
+            (self._accept_changes, self.reject, self._help), default_index=0)
+        self.list_buttons = []
+        for idx, (title, callback) in enumerate((("Hinzufügen", self._add_list),
+                                                 ("Entfernen", self._remove_list),
+                                                 ("Bearbeiten", self._edit_list))):
+            button = QPushButton(title, self)
+            button.clicked.connect(callback)
+            actions.insertWidget(idx, button)
+            self.list_buttons.append(button)
+            setattr(self, ("add_button", "remove_button", "edit_button")[idx], button)
+        layout.addLayout(actions)
+        self.ok_button, self.cancel_button, self.help_button = self.buttons
+        self.tabs.currentChanged.connect(self._tab_changed)
+        self._update_list_table()
+
+    def _build_validity_tab(self):
+        """Drei GroupBoxen: links Datum und Zähler, rechts Kontakt/UUID.
+
+        Wegen der unveränderten Dialoggröße 620×550 bleibt der Tab scrollbar.
+        Die abschließenden OK-/Abbrechen-/Hilfe-Buttons liegen stets darunter.
+        """
+        values = self.validity_settings
+        page_layout = QVBoxLayout(self.duration_page)
+        page_layout.setContentsMargins(4, 4, 4, 4)
+        scroller = QScrollArea(self.duration_page)
+        scroller.setObjectName("installerValidityScroll")
+        scroller.setWidgetResizable(True)
+        scroller.setFrameShape(QFrame.NoFrame)
+        page_layout.addWidget(scroller)
+        body = QWidget(scroller)
+        body.setObjectName("installerValidityBody")
+        scroller.setWidget(body)
+        columns = QHBoxLayout(body)
+        columns.setContentsMargins(5, 5, 5, 5)
+        columns.setSpacing(10)
+        left = QVBoxLayout()
+        left.setSpacing(10)
+        columns.addLayout(left, 6)
+        right = QVBoxLayout()
+        columns.addLayout(right, 5)
+
+        # Linke GroupBox 1: Datum der Gültigkeit.
+        expiry_group = QGroupBox("Gültigkeit Datum", body)
+        expiry_group.setObjectName("installerValidityDateGroup")
+        expiry_layout = QVBoxLayout(expiry_group)
+        expiry_layout.setContentsMargins(9, 17, 8, 9)
+        expiry_layout.setSpacing(7)
+        self.expiry_enabled = QCheckBox("Datum des Auslaufen", expiry_group)
+        self.expiry_enabled.setChecked(values["expiry_enabled"])
+        expiry_layout.addWidget(self.expiry_enabled)
+        self.expiry_mode_group = QButtonGroup(self)
+        self.expiry_radios = {}
+        for key, title, widget, suffix in (
+            ("absolute", "Absolutes Datum", "date", None),
+            ("after_creation", "Zerfällt", "days_after_creation", "Tage nach Erstellung"),
+            ("after_first_start", "Zerfällt", "days_after_first_start",
+             "Tage nach ersten Start"),
+        ):
+            line = QHBoxLayout()
+            line.setContentsMargins(12, 0, 0, 0)
+            line.setSpacing(5)
+            radio = QRadioButton(title, expiry_group)
+            self.expiry_radios[key] = radio
+            self.expiry_mode_group.addButton(radio)
+            line.addWidget(radio)
+            if widget == "date":
+                self.absolute_date_edit = QDateEdit(expiry_group)
+                self.absolute_date_edit.setObjectName("installerValidityAbsoluteDate")
+                self.absolute_date_edit.setCalendarPopup(True)
+                self.absolute_date_edit.setDisplayFormat("dd.MM.yyyy")
+                previous_date = QDate.fromString(values["absolute_date"], Qt.ISODate)
+                self.absolute_date_edit.setDate(
+                    previous_date if previous_date.isValid() else QDate.currentDate())
+                line.addWidget(self.absolute_date_edit, 1)
+            else:
+                spin = QSpinBox(expiry_group)
+                spin.setObjectName("installerValidity" + widget.title().replace("_", ""))
+                spin.setRange(1, 100000)
+                spin.setValue(values[widget])
+                if widget == "days_after_creation":
+                    self.days_after_creation_spin = spin
+                else:
+                    self.days_after_start_spin = spin
+                line.addWidget(spin)
+                line.addWidget(QLabel(suffix, expiry_group), 1)
+            expiry_layout.addLayout(line)
+        self.expiry_radios[values["expiry_mode"]].setChecked(True)
+        self.expiry_registry_checkbox = QCheckBox(
+            "Abbrechen wenn Registry nicht schreibar", expiry_group)
+        self.expiry_registry_checkbox.setChecked(values["expiry_abort_on_registry_error"])
+        expiry_layout.addWidget(self.expiry_registry_checkbox)
+        self.show_remaining_days_checkbox = QCheckBox("Zeige Rest-Tage an", expiry_group)
+        self.show_remaining_days_checkbox.setChecked(values["show_remaining_days"])
+        expiry_layout.addWidget(self.show_remaining_days_checkbox)
+        left.addWidget(expiry_group)
+
+        # Linke GroupBox 2: Installations-Zähler.
+        counter_group = QGroupBox("Zerfall - Zähler", body)
+        counter_group.setObjectName("installerValidityCounterGroup")
+        counter_layout = QVBoxLayout(counter_group)
+        counter_layout.setContentsMargins(9, 17, 8, 9)
+        counter_layout.setSpacing(7)
+        self.counter_enabled = QCheckBox("Aktivieren", counter_group)
+        self.counter_enabled.setChecked(values["counter_enabled"])
+        counter_layout.addWidget(self.counter_enabled)
+        self.counter_mode_group = QButtonGroup(self)
+        self.counter_radios = {}
+        for key, field, suffix in (
+            ("system", "max_system_installations", "Installationen auf System"),
+            ("user", "max_user_installations", "Benutzer-Installationen"),
+        ):
+            line = QHBoxLayout()
+            line.setContentsMargins(12, 0, 0, 0)
+            line.setSpacing(5)
+            radio = QRadioButton("Limit bis", counter_group)
+            self.counter_radios[key] = radio
+            self.counter_mode_group.addButton(radio)
+            line.addWidget(radio)
+            spin = QSpinBox(counter_group)
+            spin.setRange(1, 100000)
+            spin.setValue(values[field])
+            if key == "system":
+                self.max_system_installations_spin = spin
+            else:
+                self.max_user_installations_spin = spin
+            line.addWidget(spin)
+            line.addWidget(QLabel(suffix, counter_group), 1)
+            counter_layout.addLayout(line)
+        self.counter_radios[values["counter_mode"]].setChecked(True)
+        self.counter_registry_checkbox = QCheckBox(
+            "Abbrechen, wenn Registry nicht schreibbar.", counter_group)
+        self.counter_registry_checkbox.setChecked(values["counter_abort_on_registry_error"])
+        counter_layout.addWidget(self.counter_registry_checkbox)
+        self.show_remaining_count_checkbox = QCheckBox(
+            "Nummer bis Limit anzeigen", counter_group)
+        self.show_remaining_count_checkbox.setChecked(values["show_remaining_count"])
+        counter_layout.addWidget(self.show_remaining_count_checkbox)
+        left.addWidget(counter_group)
+        left.addStretch(1)
+
+        # Rechte GroupBox: Produktidentifikation und Kontakte.
+        settings_group = QGroupBox("Einstellungen", body)
+        settings_group.setObjectName("installerValiditySettingsGroup")
+        settings_layout = QVBoxLayout(settings_group)
+        settings_layout.setContentsMargins(9, 17, 9, 9)
+        settings_layout.setSpacing(7)
+        settings_layout.addWidget(QLabel("Produkt Identifikation", settings_group))
+        self.product_id_edit = QLineEdit(settings_group)
+        self.product_id_edit.setObjectName("installerValidityProductUuid")
+        self.product_id_edit.setText(values["product_id"])
+        settings_layout.addWidget(self.product_id_edit)
+        self.generate_product_id_button = QPushButton("Erstellen", settings_group)
+        self.generate_product_id_button.setObjectName("installerGenerateProductUuid")
+        self.generate_product_id_button.clicked.connect(self._generate_product_id)
+        settings_layout.addWidget(self.generate_product_id_button, 0, Qt.AlignLeft)
+        self.contact_info_checkbox = QCheckBox("Kontaktinfos anzeigen", settings_group)
+        self.contact_info_checkbox.setChecked(values["show_contact_info"])
+        settings_layout.addWidget(self.contact_info_checkbox)
+        self.contact_edits = {}
+        for field, caption in (
+            ("contact_name", "Kontakt-Name:"),
+            ("contact_website", "Webseite"),
+            ("contact_email", "Kontakt E-Mail"),
+            ("contact_phone", "Kontakt Telefon"),
+        ):
+            settings_layout.addWidget(QLabel(caption, settings_group))
+            field_edit = QLineEdit(settings_group)
+            field_edit.setObjectName("installerValidity" + field.title().replace("_", ""))
+            field_edit.setText(values[field])
+            self.contact_edits[field] = field_edit
+            settings_layout.addWidget(field_edit)
+        right.addWidget(settings_group)
+        right.addStretch(1)
+
+        self.expiry_enabled.toggled.connect(self._update_validity_controls)
+        self.counter_enabled.toggled.connect(self._update_validity_controls)
+        self.contact_info_checkbox.toggled.connect(self._update_validity_controls)
+        for radio in list(self.expiry_radios.values()) + list(self.counter_radios.values()):
+            radio.toggled.connect(self._update_validity_controls)
+        self._update_validity_controls()
+
+    def _update_validity_controls(self, *_args):
+        expiration = self.expiry_enabled.isChecked()
+        for radio in self.expiry_radios.values():
+            radio.setEnabled(expiration)
+        self.absolute_date_edit.setEnabled(expiration and self.expiry_radios["absolute"].isChecked())
+        self.days_after_creation_spin.setEnabled(
+            expiration and self.expiry_radios["after_creation"].isChecked())
+        self.days_after_start_spin.setEnabled(
+            expiration and self.expiry_radios["after_first_start"].isChecked())
+        self.expiry_registry_checkbox.setEnabled(expiration)
+        self.show_remaining_days_checkbox.setEnabled(expiration)
+        counting = self.counter_enabled.isChecked()
+        for radio in self.counter_radios.values():
+            radio.setEnabled(counting)
+        self.max_system_installations_spin.setEnabled(
+            counting and self.counter_radios["system"].isChecked())
+        self.max_user_installations_spin.setEnabled(
+            counting and self.counter_radios["user"].isChecked())
+        self.counter_registry_checkbox.setEnabled(counting)
+        self.show_remaining_count_checkbox.setEnabled(counting)
+        for edit in self.contact_edits.values():
+            edit.setEnabled(self.contact_info_checkbox.isChecked())
+
+    def _generate_product_id(self):
+        # Keine Registry-Schreiboperation im Editor: UUID nur projektseitig erzeugen.
+        import uuid
+        self.product_id_edit.setText(str(uuid.uuid4()))
+
+    def _collect_validity_settings(self):
+        return {
+            "expiry_enabled": self.expiry_enabled.isChecked(),
+            "expiry_mode": next(key for key, radio in self.expiry_radios.items()
+                                if radio.isChecked()),
+            "absolute_date": self.absolute_date_edit.date().toString(Qt.ISODate),
+            "days_after_creation": self.days_after_creation_spin.value(),
+            "days_after_first_start": self.days_after_start_spin.value(),
+            "expiry_abort_on_registry_error": self.expiry_registry_checkbox.isChecked(),
+            "show_remaining_days": self.show_remaining_days_checkbox.isChecked(),
+            "counter_enabled": self.counter_enabled.isChecked(),
+            "counter_mode": next(key for key, radio in self.counter_radios.items()
+                                 if radio.isChecked()),
+            "max_system_installations": self.max_system_installations_spin.value(),
+            "max_user_installations": self.max_user_installations_spin.value(),
+            "counter_abort_on_registry_error": self.counter_registry_checkbox.isChecked(),
+            "show_remaining_count": self.show_remaining_count_checkbox.isChecked(),
+            "product_id": self.product_id_edit.text().strip(),
+            "show_contact_info": self.contact_info_checkbox.isChecked(),
+            **{name: edit.text() for name, edit in self.contact_edits.items()},
+        }
+
+    def _tab_changed(self, index):
+        for button in self.list_buttons:
+            button.setVisible(index == 0)
+
+    def _current_row(self):
+        selected = self.lists_table.selectionModel().selectedRows()
+        return selected[0].row() if selected else -1
+
+    def _update_list_table(self, row=None):
+        self.lists_table.setRowCount(len(self.serial_lists))
+        for i, entry in enumerate(self.serial_lists):
+            for j, value in enumerate((entry["name"], str(len(entry["serial_numbers"])),
+                                       ", ".join(entry["configurations"]))):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.lists_table.setItem(i, j, item)
+        if row is not None and 0 <= row < len(self.serial_lists):
+            self.lists_table.selectRow(row)
+
+    def _open_properties(self, entry=None, *, excluding_row=None):
+        names = [item["name"] for index, item in enumerate(self.serial_lists)
+                 if index != excluding_row]
+        child = InstallerSerialListPropertiesDialog(
+            entry, self, dark_mode=self._dark_mode,
+            help_callback=self.help_callback, existing_names=names)
+        if child.exec_() != QDialog.Accepted:
+            return None
+        return child.result_entry
+
+    def _add_list(self):
+        entry = self._open_properties()
+        if entry is not None:
+            self.serial_lists.append(entry)
+            self._update_list_table(len(self.serial_lists) - 1)
+
+    def _edit_list(self, *_args):
+        index = self._current_row()
+        if index < 0:
+            return
+        entry = self._open_properties(self.serial_lists[index], excluding_row=index)
+        if entry is not None:
+            self.serial_lists[index] = entry
+            self._update_list_table(index)
+
+    def _remove_list(self):
+        index = self._current_row()
+        if index >= 0:
+            del self.serial_lists[index]
+            self._update_list_table(min(index, len(self.serial_lists) - 1))
+
+    def _accept_changes(self):
+        try:
+            self.serialized = encode_security_settings(
+                {"serial_lists": self.serial_lists,
+                 "validity": self._collect_validity_settings()})
+        except (ValueError, TypeError) as error:
+            installer_themed_warning(self, "Sicherheit", str(error),
+                                     dark_mode=self._dark_mode)
+            return
+        self.accept()
+
+    def _help(self):
+        if callable(self.help_callback):
+            self.help_callback("Sicherheit")
 
 class InstallerDestinationDialog(InstallerThemedDialog):
     """Legacy-Dialog fuer alte Aufrufer; Wizard-Seite 2 ist jetzt Platform."""
