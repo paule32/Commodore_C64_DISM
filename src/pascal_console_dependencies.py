@@ -207,6 +207,70 @@ def validate_console_library(path: str | Path, machine: int,
     return None
 
 
+def console_library_candidates(
+    output_path: str | Path,
+    target: str,
+    *,
+    source_path: str | Path | None = None,
+    project_dir: str | Path | None = None,
+    program_root: str | Path | None = None,
+    current_dir: str | Path | None = None,
+    search_directories: Iterable[str | Path] = (),
+) -> tuple[Path, ...]:
+    """Ordered, de-duplicated paths for the target's native console DLL.
+
+    A Pascal source's ``pe32``/``pe64`` sibling is not necessarily the
+    configured EXE output directory.  The latter is still checked first.
+    No recursive search and no PE32/PE64 cross-architecture fallback.
+    """
+    target = str(target).casefold()
+    if target not in {"pe32", "pe64"}:
+        return ()
+    arch = "win32" if target == "pe32" else "win64"
+    output_dir = Path(output_path).expanduser().resolve().parent
+    folders: list[Path] = [output_dir]
+
+    if source_path is not None:
+        source_dir = Path(source_path).expanduser().resolve().parent
+        folders.extend((
+            source_dir / target,
+            source_dir,
+            source_dir / "runtime" / "pascal" / target,
+            source_dir / "runtime" / "compiler" / arch,
+        ))
+
+    for item in (project_dir, current_dir):
+        if item is None:
+            continue
+        folder = Path(item).expanduser().resolve()
+        folders.extend((
+            folder / target,
+            folder / "runtime" / "pascal" / target,
+            folder / "runtime" / "compiler" / arch,
+            folder,
+        ))
+
+    for item in search_directories:
+        if item is None:
+            continue
+        folder = Path(item).expanduser().resolve()
+        folders.extend((folder, folder / target, folder / "runtime" / "compiler" / arch))
+
+    if program_root is not None:
+        folders.append(Path(program_root).expanduser().resolve()
+                       / "runtime" / "compiler" / arch)
+
+    result: list[Path] = []
+    seen: set[str] = set()
+    for folder in folders:
+        path = folder / CONSOLE_DLL
+        key = str(path).casefold()
+        if key not in seen:
+            result.append(path)
+            seen.add(key)
+    return tuple(result)
+
+
 def diagnose_package(directory: str | Path) -> list[str]:
     """Useful for inspecting a user's produced artifacts without running them."""
     directory = Path(directory)

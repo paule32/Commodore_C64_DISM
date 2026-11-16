@@ -68,7 +68,8 @@ class Stage537Tests(unittest.TestCase):
                                     optimization_level=level).generate()
                     text = generated.assembly
                     self.assertIn("__pas_cookie_failure:", text)
-                    self.assertIn("BCryptGenRandom", text)
+                    self.assertIn("jit_pas_cookie_initialize32" if target == "pe32"
+                                  else "BCryptGenRandom", text)
                     self.assertIn("__pas_global_nextvalue:", text)
                     self.assertIn("section .data", text)
                     self.assertIn("section .bss", text)

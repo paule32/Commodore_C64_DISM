@@ -1,8 +1,6 @@
 extern ExitProcess
-import __d64_cookie_BCryptGenRandom, "bcrypt.dll", "BCryptGenRandom"
-import __d64_cookie_InterlockedCompareExchange, "kernel32.dll", "InterlockedCompareExchange"
-import __d64_cookie_RaiseFailFastException, "kernel32.dll", "RaiseFailFastException"
-import __d64_cookie_ExitProcess, "kernel32.dll", "ExitProcess"
+import __d64_pas_cookie_initialize32, "libd64_runtime.dll", "jit_pas_cookie_initialize32"
+import __d64_pas_cookie_failure32, "libd64_runtime.dll", "jit_pas_cookie_failure32"
 import _jit_object_instance_new, "libd64_runtime.dll", "jit_object_instance_new"
 import _GetModuleHandleA@4, "kernel32.dll", "GetModuleHandleA"
 import _ExitProcess@4, "kernel32.dll", "ExitProcess"

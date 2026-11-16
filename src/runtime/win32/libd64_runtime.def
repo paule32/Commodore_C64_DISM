@@ -119,3 +119,11 @@ EXPORTS
     _Z23_jit_error_array_boundsPKciii
     _Z22_jit_error_nil_pointerPKc
     _Z18_jit_set_exceptionP10JitContextPKc
+
+    ; Stage 578: Pascal integer/string conversion, PE32 cdecl
+    jit_pas_inttostr
+    jit_pas_strtoint
+
+    ; Stage 583: Pascal PE32 shared stack-cookie services
+    jit_pas_cookie_initialize32
+    jit_pas_cookie_failure32

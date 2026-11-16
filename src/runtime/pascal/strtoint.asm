@@ -23,10 +23,12 @@ section .text
 
 global StrToInt
 global _StrToInt
+global _jit_pas_strtoint
 
 
 StrToInt:
 _StrToInt:
+_jit_pas_strtoint:
     push ebp
     mov  ebp, esp
 

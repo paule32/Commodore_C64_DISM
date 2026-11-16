@@ -36,6 +36,7 @@ from .compiler import (
     DBaseMenuProperty,
     DBaseWithStatement,
     DBaseRoutineDefinition,
+    DBaseClassDefinition,
     DBaseToken,
     DBaseUnaryExpression,
     DBaseValue,

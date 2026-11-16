@@ -123,6 +123,25 @@ echo "123"
   done
   
   nasm -fwin32 -o win32/obj/setjmp32.o setjmp32.asm
+
+  # Stage 578: native Pascal integer/string conversions live in the runtime.
+  if ! nasm -Ox -f win32 -dJIT_PASCAL_RUNTIME_INTERNAL=1 \
+      -o win32/obj/pas_inttostr.o ../pascal/inttostr.asm; then
+      echo "Pascal IntToStr runtime assembly failed."
+      exit 1
+  fi
+  if ! nasm -Ox -f win32 -o win32/obj/pas_strtoint.o \
+      ../pascal/strtoint.asm; then
+      echo "Pascal StrToInt runtime assembly failed."
+      exit 1
+  fi
+
+  # Stage 583: shared PE32 stack-cookie services (CSPRNG + fail-fast).
+  if ! nasm -Ox -f win32 -o win32/obj/pas_cookie32.o \
+      ../pascal/cookie32.asm; then
+      echo "Pascal cookie runtime assembly failed."
+      exit 1
+  fi
   
   RUNTIME_OBJECTS=("${RUNTIME_FILES[@]/#/win32/obj/}")
   RUNTIME_OBJECTS=("${RUNTIME_OBJECTS[@]/%/.o}")
@@ -136,7 +155,15 @@ echo "123"
   nasm -f win32 -f win32 -o win32/obj/crypto/blake2/blake2.o crypto/blake2/blake2s.asm
   
   echo "create ALL in One DLL..."
-  if ! gcc -m32 -fPIC -shared -nostdlib -o win32/libd64_runtime.dll \
+  # Stage 584: This is a freestanding PE32 DLL with its own DllMainCRTStartup.
+  # GCC 16/MinGW may otherwise synthesize ertr000001.o which references
+  # _pei386_runtime_relocator (unavailable with -nostdlib).  Never silently
+  # auto-import DLL data or emit pseudo-relocations without a CRT to apply them.
+  # Remove stale outputs so a failed link cannot leave an older DLL looking new.
+  rm -f win32/libd64_runtime.dll win32/libd64_runtime.dll.a
+  if ! gcc -m32 -fPIC -shared -nostdlib \
+     -Wl,--disable-auto-import,--disable-runtime-pseudo-reloc \
+     -o win32/libd64_runtime.dll \
      win32/obj/allocator.o \
      win32/obj/args.o      \
      win32/obj/dllmain.o   \
@@ -149,12 +176,16 @@ echo "123"
      win32/obj/memory.o    \
      win32/obj/print.o     \
      win32/obj/setjmp32.o  \
+     win32/obj/pas_inttostr.o \
+     win32/obj/pas_strtoint.o \
+     win32/obj/pas_cookie32.o \
      win32/obj/string.o    \
      win32/obj/vector.o    \
      win32/obj/windows.o   \
      \
      \
      win32/libd64_runtime.def    \
+     -lbcrypt -lkernel32 \
      -Wl,--out-implib,win32/libd64_runtime.dll.a; then
      echo "relocation link error."
      exit 1

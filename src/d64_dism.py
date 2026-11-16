@@ -49,6 +49,10 @@ from collections  import defaultdict, deque
 from contextlib   import redirect_stderr, redirect_stdout
 
 from text_manager import translate_qt
+from asm_stack_frame_tooltips import (
+    stack_frame_pair_tooltip, stack_frame_allocation_tooltip,
+    stack_frame_memory_tooltip, esp_stack_slot_tooltip, StackFrameTooltip
+)
 from debug_options import DebugOptions, DebugSettingsPage
 from pascal_parallel_build import (
     PascalParallelBuildError,
@@ -353,6 +357,7 @@ from fractions                          import Fraction
 from fraction_math_help                 import FractionHelpWidget                   # Stage 368: QPainter-Bruchhilfen
 from rotation_matrix_fact               import RotationMatrixFactWidget             # Stage 421/422: Matrix-Rotationsseite
 from multiplication_matrix_fact         import MultiplicationMatrixFactWidget       # Stage 422: Matrix-Multiplikation
+from matrix_multiplication_panel        import MatrixMultiplicationPanel          # Stage 570: interaktive Matrizen
 from number_sets_fact                   import NumberSetsFactWidget                 # Stage 425: Zahlen-Mengen
 from roman_numerals_fact                import RomanNumeralsFactWidget              # Stage 442: römische Zahlentafel als Qt-Text
 from trigonometry_right_triangle_fact   import TrigonometryRightTriangleFactWidget  # Stage 426: Rechtwinkliges Dreieck
@@ -2034,6 +2039,26 @@ _CONTROL_DEFAULTS = {
 # Quellen und Medien. Die sichtbaren Kategorien sind feste Root-Knoten und
 # koennen in der GUI weder umbenannt noch geloescht werden.
 # ---------------------------------------------------------------------------
+from project_target_menu import ProjectTargetMenuButton
+from project_named_targets import (
+    LANGUAGES as NAMED_PROJECT_LANGUAGES,
+    PROFILE_FIELDS as NAMED_PROJECT_PROFILE_FIELDS,
+    profile_key as named_project_profile_key,
+    profile_name as named_project_profile_name,
+    assignment_matches as named_project_assignment_matches,
+    assignment_is_valid as named_project_assignment_is_valid,
+    LANGUAGE_IDS as NAMED_PROJECT_LANGUAGE_IDS,
+    NAMES_KEY as PROJECT_NAMED_NAMES_KEY,
+    SELECTED_KEY as PROJECT_NAMED_SELECTED_KEY,
+    ASSIGNMENTS_KEY as PROJECT_NAMED_ASSIGNMENTS_KEY,
+    normalize_names as normalize_named_project_names,
+    normalize_selection as normalize_named_project_selection,
+    leaf_key as named_project_leaf_key,
+    rebase_leaf_key as rebase_named_project_leaf_key,
+    encode_names as encode_named_project_metadata,
+    decode_names as decode_named_project_metadata,
+)
+
 PROJECT_CATEGORIES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     # Stage 387: BASIC ist ein Root; der C64-Projektzweig ist sein Unterknoten.
     ("basic"            , "BASIC - Programme", (".bas", ".basic")),
@@ -33165,14 +33190,51 @@ def _pascal_pp_expand_identifier(
 # are likewise blanked while every original newline remains present. This
 # keeps ANTLR error line numbers aligned with the editor/source file.
 # -----------------------------------------------------------------------
+def _pascal_ide_target_macros(
+    predefined_macros: Optional[Dict[str, object]],
+    target: Optional[str],
+) -> Dict[str, object]:
+    """Use the selected backend for IDE/CLI conditional Pascal directives.
+
+    The IDE preprocessor consumes {$ifdef} branches before the ANTLR compiler
+    sees the source. Keep its target flags identical to c64pascal.compiler's
+    _pascal_target_macros; otherwise compiling a UNIT such as System.Strings
+    directly chooses the legacy Pascal wrapper implementations for PE32.
+    """
+    incoming = dict(predefined_macros or {})
+    if target is None:
+        return incoming  # existing callers without a backend retain semantics
+    result = {name: value for name, value in incoming.items()
+              if str(name).casefold() not in {
+                  "__d64_target_pe32__", "__d64_target_pe64__",
+                  "windows", "win32", "win64", "linux"}}
+    normalized = str(target).strip().casefold()
+    if normalized in {"pe32", "win32", "windows", "windows-pe32", "windows32", "nt32"}:
+        result["__D64_TARGET_PE32__"] = "1"
+        result["WINDOWS"] = "1"
+        result["WIN32"] = "1"
+    elif normalized in {"pe64", "pe32+", "win64", "windows64",
+                        "windows-pe64", "windows-pe32+", "amd64", "x64"}:
+        result["__D64_TARGET_PE64__"] = "1"
+        result["WINDOWS"] = "1"
+        result["WIN32"] = "1"
+        result["WIN64"] = "1"
+    elif normalized.startswith(("linux", "elf")):
+        result["LINUX"] = "1"
+    # {$IFDEF} fragt nach Existenz, daher inaktive Zielmakros entfernen.
+    return result
+
+
 def preprocess_pascal_source(
     source: str,
     *,
     filename: str = "<memory>",
     predefined_macros: Optional[Dict[str, object]] = None,
     link_search_paths: Iterable[Path | str] = (),
+    target: Optional[str] = None,
 ) -> PascalPreprocessResult:
     text = str(source or "")
+    predefined_macros = _pascal_ide_target_macros(predefined_macros, target)
     macros: Dict[str, str] = {}
     defined = set()
     explicit_value_macros = set()
@@ -38356,9 +38418,12 @@ def _pe32_rebuild_with_mszip_loader(
     *,
     original_entry_rva: int,
     image_base: int,
+    ces_enabled: Optional[bool] = None,
 ) -> Tuple[bytes, bytes]:
-    # Stage 549: a stable CES choice for both probe and final loader.
-    ces_enabled = bool(stage527_debug_options("pe32").ces)
+    # Stage 581: an explicit CES snapshot overrides mutable process-global state.
+    if ces_enabled is None:
+        ces_enabled = bool(stage527_debug_options("pe32").ces)
+    ces_enabled = bool(ces_enabled)
     image = bytes(stage167_image)
     text = bytes(patched_text)
     if len(image) < 0x100 or image[:2] != b"MZ":
@@ -38578,8 +38643,12 @@ def build_pe32_image_with_imports_exports(
     base_relocations: Optional[Sequence[int]] = None,
     compress_text_mszip: Optional[bool] = None,
     bss_size: int = 0,
+    ces_enabled: Optional[bool] = None,
 ) -> Tuple[bytes, bytes]:
     """Stage-169-Wrapper: vollständigen Stage-167-PE32-Writer optional packen."""
+    if ces_enabled is None:
+        ces_enabled = bool(stage527_debug_options("pe32").ces)
+    ces_enabled = bool(ces_enabled)
     if compress_text_mszip is None:
         compress_text_mszip = _pe_packing_enabled("pe32")
 
@@ -38630,6 +38699,7 @@ def build_pe32_image_with_imports_exports(
         effective_import_specs,
         original_entry_rva=original_entry_rva,
         image_base=image_base,
+        ces_enabled=ces_enabled,
     )
 
 
@@ -39217,6 +39287,32 @@ def parse_coff32_archive(data: bytes) -> Tuple[Tuple[str, bytes], ...]:
 # werden. Nicht explizit zugeordnete Win32-Symbole dürfen weiterhin über
 # ``PE32_DEFAULT_IMPORTS`` aufgelöst werden.
 # -----------------------------------------------------------------------
+def _stage590_should_pack_dll(target: str, is_dll: bool, override=None) -> bool:
+    """PE image-specific project choice; never redirect EXE packing."""
+    return bool(is_dll and (
+        _pe_packing_enabled(target) if override is None else bool(override)
+    ))
+
+
+def _stage590_loader_imports() -> Dict[str, Tuple[str, str]]:
+    # This module is intentionally imported only for a packed DLL build.
+    from d64dbase.pe_dll_payload import DLL_LOADER_IMPORTS
+    return dict(DLL_LOADER_IMPORTS)
+
+
+def _stage590_pack_dll(image: bytes, target: str) -> bytes:
+    """Pack a linked DLL after IAT, exports and relocations have been written."""
+    from d64dbase.pe_dll_payload import pack_pe_dll, parse_pe
+    pe = parse_pe(image)
+    expected = 0x14c if target == "pe32" else 0x8664
+    if pe['machine'] != expected:
+        raise ValueError(f"D64Z-DLL-Packing: falsche Architektur ({target}).")
+    result = pack_pe_dll(image)
+    if not any(section['name'] == b'.ztext' for section in parse_pe(result)['secs']):
+        raise ValueError("D64Z-DLL-Packing: komprimierter Payload fehlt.")
+    return result
+
+
 def link_coff32_objects(
     objects: Sequence[bytes],
     *,
@@ -39225,7 +39321,10 @@ def link_coff32_objects(
     dll: bool = False,
     imports: Optional[Dict[str, Tuple[str, str]]] = None,
     exports: Optional[Dict[str, str]] = None,
-    dll_name: Optional[str] = None) -> PE32Program:
+    dll_name: Optional[str] = None,
+    ces_enabled: Optional[bool] = None,
+    pack_dll: Optional[bool] = None) -> PE32Program:
+    # CES is an image/link setting; keep the caller's immutable snapshot.
     parsed = [parse_coff32_object(item) for item in objects]
     code = bytearray()
     object_bases: List[int] = []
@@ -39269,6 +39368,7 @@ def link_coff32_objects(
         declared_dll_name = str(dll_name)
 
     effective_dll = bool(dll or declared_exports)
+    pack_this_dll = _stage590_should_pack_dll("pe32", effective_dll, pack_dll)
     image_base = PE32_DLL_IMAGE_BASE if effective_dll else PE32_IMAGE_BASE
     base_relocations: List[int] = []
 
@@ -39508,6 +39608,14 @@ def link_coff32_objects(
         ))
         base_relocations.append(PE32_SECTION_RVA + anchor_offset)
 
+    if pack_this_dll:
+        # The native loader's API imports must exist in the ordinary Windows
+        # IAT BEFORE .text is replaced by the compressed D64Z payload.
+        for name, spec in _stage590_loader_imports().items():
+            old = import_specs.setdefault(name, spec)
+            if old != spec:
+                raise PE32AssemblerError(f"D64Z-DLL-Import {name} kollidiert mit {old}.")
+
     executable, patched_code = build_pe32_image_with_imports_exports(
         bytes(code),
         entry,
@@ -39520,7 +39628,15 @@ def link_coff32_objects(
         image_base=image_base,
         base_relocations=base_relocations,
         bss_size=total_bss_size,
+        ces_enabled=ces_enabled,
     )
+    if pack_this_dll:
+        executable = _stage590_pack_dll(executable, "pe32")
+    if effective_dll:
+        # Stage 591: preserve RVAs/exports/IAT; remove only entire
+        # unnecessary FileAlignment blocks. The EXE path is untouched.
+        from d64dbase.pe_dll_compact import compact_pe_dll_layout
+        executable, _dll_compaction = compact_pe_dll_layout(executable)
     from pascal_import_manager import link_manifest_from_parsed_objects
     return PE32Program(
         executable=executable,
@@ -39836,6 +39952,8 @@ def link_coff32_inputs(
     imports: Optional[Dict[str, Tuple[str, str]]] = None,
     exports: Optional[Dict[str, str]] = None,
     dll_name: Optional[str] = None,
+    ces_enabled: Optional[bool] = None,
+    pack_dll: Optional[bool] = None,
 ) -> PE32Program:
     objects = _coff_link_input_objects(paths, target="pe32", required_symbols=(entry_symbol,))
     if not objects:
@@ -39848,6 +39966,8 @@ def link_coff32_inputs(
         imports=imports,
         exports=exports,
         dll_name=dll_name,
+        ces_enabled=ces_enabled,
+        pack_dll=pack_dll,
     )
 
 
@@ -40676,10 +40796,10 @@ def link_coff64_objects(objects: Sequence[bytes], *, entry_symbol="_start", gui=
         link_manifest_from_parsed_objects(parsed, "pe64", import_specs))
 
 
-def link_coff64_inputs(paths: Sequence[Path], *, entry_symbol="_start", gui=False, dll=False, imports=None, exports=None, dll_name=None) -> PE64Program:
+def link_coff64_inputs(paths: Sequence[Path], *, entry_symbol="_start", gui=False, dll=False, imports=None, exports=None, dll_name=None, pack_dll=None) -> PE64Program:
     objects = _coff_link_input_objects(paths, target="pe64", required_symbols=(entry_symbol,))
     if not objects: raise PE64AssemblerError("Der COFF64-Linker benötigt mindestens ein Objekt.")
-    return link_coff64_objects(objects,entry_symbol=entry_symbol,gui=gui,dll=dll,imports=imports,exports=exports,dll_name=dll_name)
+    return link_coff64_objects(objects,entry_symbol=entry_symbol,gui=gui,dll=dll,imports=imports,exports=exports,dll_name=dll_name,pack_dll=pack_dll)
 
 
 def assemble_pe64_source(source: str, *, filename="<PE64-Assembler>", gui=False, include_dirs=()) -> PE64Program:
@@ -42264,7 +42384,7 @@ def build_pe64_image_with_imports_exports(
 
 def link_coff64_objects(
     objects: Sequence[bytes], *, entry_symbol="_start", gui=False, dll=False,
-    imports=None, exports=None, dll_name=None,
+    imports=None, exports=None, dll_name=None, pack_dll=None,
 ) -> PE64Program:
     parsed = [parse_coff64_object(x) for x in objects]
     text = bytearray(); init_data = bytearray()
@@ -42287,6 +42407,7 @@ def link_coff64_objects(
     if dll_name:
         declared_dll = str(dll_name)
     effective_dll = bool(dll or declared_exports)
+    pack_this_dll = _stage590_should_pack_dll("pe64", effective_dll, pack_dll)
     image_base = PE64_DLL_IMAGE_BASE if effective_dll else PE64_IMAGE_BASE
 
     for obj in parsed:
@@ -42354,6 +42475,12 @@ def link_coff64_objects(
         raise PE64AssemblerError(
             "COFF64-Linker: externe Symbole nicht aufgeloest: " + ", ".join(unresolved)
         )
+
+    if pack_this_dll:
+        for name, spec in _stage590_loader_imports().items():
+            old = import_specs.setdefault(name, spec)
+            if old != spec:
+                raise PE64AssemblerError(f"D64Z-DLL-Import {name} kollidiert mit {old}.")
 
     text_rva = PE64_SECTION_RVA
     next_rva = _align_up(text_rva + max(1, len(text)), PE64_SECTION_ALIGNMENT)
@@ -42439,6 +42566,13 @@ def link_coff64_objects(
         base = {".text": text_rva, ".data": data_rva, ".bss": bss_rva}.get(sec, text_rva)
         public_symbols[name] = base - text_rva + off
 
+    if pack_this_dll:
+        image = _stage590_pack_dll(image, "pe64")
+    if effective_dll:
+        # Stage 591: preserve RVAs/exports/IAT; remove only entire
+        # unnecessary FileAlignment blocks. The EXE path is untouched.
+        from d64dbase.pe_dll_compact import compact_pe_dll_layout
+        image, _dll_compaction = compact_pe_dll_layout(image)
     from pascal_import_manager import link_manifest_from_parsed_objects
     return PE64Program(image, patched, int(entry or 0), 0, public_symbols,
                        link_manifest_from_parsed_objects(parsed, "pe64", import_specs))
@@ -43017,6 +43151,20 @@ PE_PACKING_RUNTIME_SETTINGS: Dict[str, bool] = {
     "pe32": PE_PACKING_DEFAULT,
     "pe64": PE_PACKING_DEFAULT,
 }
+
+# Stage 610: separate from the D64Z/MSZIP setting.
+PE_COMPACT_RUNTIME_SETTINGS: Dict[str, bool] = {"pe32": False, "pe64": False}
+PE_COMPACT_LAST_RESULT: Dict[str, dict] = {}
+
+
+def _pe_compact_enabled(target: str) -> bool:
+    return bool(PE_COMPACT_RUNTIME_SETTINGS.get(
+        _pe_import_packer_target_key(target), False))
+
+
+def _set_pe_compact_enabled(target: str, enabled: bool) -> None:
+    PE_COMPACT_RUNTIME_SETTINGS[_pe_import_packer_target_key(target)] = bool(enabled)
+
 
 
 def _pe_packing_enabled(target: str) -> bool:
@@ -44293,12 +44441,15 @@ def build_pe32_image_with_imports_exports(
     compress_text_mszip: Optional[bool] = None,
     imports_by_local_ordinal: Optional[bool] = None,
     bss_size: int = 0,
+    ces_enabled: Optional[bool] = None,
 ) -> Tuple[bytes, bytes]:
     if compress_text_mszip is None:
         compress_text_mszip = _pe_packing_enabled("pe32")
 
     _import_packer = _pe_import_packer_settings("pe32")
-    ces_enabled = bool(stage527_debug_options("pe32").ces)
+    if ces_enabled is None:
+        ces_enabled = bool(stage527_debug_options("pe32").ces)
+    ces_enabled = bool(ces_enabled)
     peb_resolver = bool(_import_packer.get("peb_resolver", False))
     exact_runtime = bool(_import_packer.get("exact_runtime_check", False))
     bootstrap_imports = _pe_d64i_bootstrap_imports(exact_runtime)
@@ -44322,6 +44473,7 @@ def build_pe32_image_with_imports_exports(
             base_relocations=base_relocations,
             compress_text_mszip=compress_text_mszip,
             bss_size=bss_size,
+            ces_enabled=ces_enabled,
         )
 
     pack_text = (
@@ -44345,6 +44497,7 @@ def build_pe32_image_with_imports_exports(
             base_relocations=base_relocations,
             compress_text_mszip=False,
             bss_size=bss_size,
+            ces_enabled=ces_enabled,
         )
 
     text = bytearray(code)
@@ -44528,6 +44681,7 @@ def build_pe32_image_with_imports_exports(
             base_relocations=base_relocations,
             compress_text_mszip=compress_text_mszip,
             bss_size=bss_size,
+            ces_enabled=ces_enabled,
         )
         if not _pe_import_packer_accepts("pe32", len(image), len(baseline_image)):
             if int(bss_size) > 0:
@@ -44582,6 +44736,7 @@ def link_coff64_objects(
     imports=None,
     exports=None,
     dll_name=None,
+    pack_dll=None,
 ) -> PE64Program:
     """Stage209-PE32+: D64Z program image + compressed D64I imports."""
     _import_packer = _pe_import_packer_settings("pe64")
@@ -44603,6 +44758,7 @@ def link_coff64_objects(
             imports=imports,
             exports=exports,
             dll_name=dll_name,
+            pack_dll=pack_dll,
         )
 
     parsed = [parse_coff64_object(x) for x in objects]
@@ -44624,6 +44780,7 @@ def link_coff64_objects(
             imports=imports,
             exports=exports,
             dll_name=dll_name,
+            pack_dll=pack_dll,
         )
 
     text = bytearray()
@@ -45613,6 +45770,7 @@ def build_pe32_image_with_imports_exports(
     imports_by_local_ordinal: Optional[bool] = None,
     compact_packed_image: Optional[bool] = None,
     bss_size: int = 0,
+    ces_enabled: Optional[bool] = None,
 ) -> Tuple[bytes, bytes]:
     """Stage172 wrapper: Stage171 build + optional safe packed-PE32 compact."""
     image, patched_text = _build_pe32_image_with_imports_exports_stage171(
@@ -45629,6 +45787,7 @@ def build_pe32_image_with_imports_exports(
         compress_text_mszip=compress_text_mszip,
         imports_by_local_ordinal=imports_by_local_ordinal,
         bss_size=bss_size,
+        ces_enabled=ces_enabled,
     )
 
     if compact_packed_image is None:
@@ -50449,7 +50608,9 @@ PROJECT_DBASE_REPORTS_KEY = "__dbase_reports__"
 PROJECT_DBASE_LABELS_KEY = "__dbase_labels__"
 PROJECT_DBASE_OBJECTS_KEY = "__dbase_objects__"
 PROJECT_DBASE_ARCHIVES_KEY = "__dbase_archives__"
+PROJECT_DBASE_MODULES_KEY = "__dbase_modules__"
 PROJECT_DBASE_GROUPS: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
+    ("modules", "Module", (".prg", ".dbase", ".dbp"), PROJECT_DBASE_MODULES_KEY),
     ("programs", "Programme", (".prg",), "dbase"),
     ("forms", "Formulare", (".wfm",), PROJECT_DBASE_FORMS_KEY),
     ("tables", "Tabellen", (".dbf",), PROJECT_DBASE_TABLES_KEY),
@@ -50462,6 +50623,7 @@ PROJECT_DBASE_GROUPS: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
 PROJECT_DBASE_GROUP_BY_ROLE = {role: (title, exts, key) for role, title, exts, key in PROJECT_DBASE_GROUPS}
 PROJECT_DBASE_ENTRY_KEYS = tuple(key for _role, _title, _exts, key in PROJECT_DBASE_GROUPS if key != "dbase")
 PROJECT_DBASE_SECTIONS = {
+    PROJECT_DBASE_MODULES_KEY: "Category.dbase.modules",
     PROJECT_DBASE_FORMS_KEY: "Category.dbase.forms",
     PROJECT_DBASE_TABLES_KEY: "Category.dbase.tables",
     PROJECT_DBASE_QUERIES_KEY: "Category.dbase.queries",
@@ -50662,14 +50824,25 @@ def _project_document_output_path(document, filename: str) -> Path:
         if owner is not None:
             target = document.build_target
             suffix = Path(str(filename)).suffix.casefold()
+            language = _project_document_compiler_language(document)
             if suffix == ".asm":
-                setting = getattr(owner, "project_windows_assembler_cache", {})
-            elif suffix in {".pui", ".o", ".obj"}:
+                if language:
+                    setting = getattr(owner, "project_windows_language_assembler_cache", {}).get(
+                        target, {})
+                    setting = {target: setting.get(language, "")}
+                else:
+                    setting = getattr(owner, "project_windows_assembler_cache", {})
+            elif suffix in {".pui", ".o", ".obj"} and language == "pascal":
                 unit_paths = getattr(owner, "project_windows_pascal_unit_output_directories", {})
                 setting = (unit_paths if unit_paths.get(target) else
-                           getattr(owner, "project_windows_output_directories", {}))
-            elif suffix in {".exe", ".dll"}:
-                setting = getattr(owner, "project_windows_output_directories", {})
+                           {target: getattr(owner, "project_windows_language_output_directories", {})
+                            .get(target, {}).get(language, "")})
+            elif suffix in {".o", ".obj", ".exe", ".dll"}:
+                if language:
+                    setting = {target: getattr(owner, "project_windows_language_output_directories", {})
+                               .get(target, {}).get(language, "")}
+                else:
+                    setting = getattr(owner, "project_windows_output_directories", {})
             else:
                 setting = {}
             value = str(setting.get(target, "") or "").strip()
@@ -50799,6 +50972,8 @@ PROJECT_WINDOWS_PE64_IMAGE_LAYOUT_KEY = "__windows_pe64_image_layout__"
 # ---------------------------------------------------------------------------
 PROJECT_WINDOWS_PE32_PE_PACKING_ENABLED_KEY = "__windows_pe32_pe_packing_enabled__"
 PROJECT_WINDOWS_PE64_PE_PACKING_ENABLED_KEY = "__windows_pe64_pe_packing_enabled__"
+PROJECT_WINDOWS_PE32_COMPACT_ENABLED_KEY = "__windows_pe32_compact_enabled__"
+PROJECT_WINDOWS_PE64_COMPACT_ENABLED_KEY = "__windows_pe64_compact_enabled__"
 
 # ---------------------------------------------------------------------------
 # Stage 227: Authenticode-Signierung pro Windows ABI.
@@ -50837,6 +51012,37 @@ PROJECT_WINDOWS_PE64_DEBUG_THEME_WORKSTATION_KEY = "__windows_pe64_debug_theme_w
 # Stage 287: optionale Prolog-Clause-Descriptor-Optimierung pro Windows ABI.
 PROJECT_WINDOWS_PE32_PROLOG_WITH_DESCRIPTORS_KEY = "__windows_pe32_prolog_with_descriptors__"
 PROJECT_WINDOWS_PE64_PROLOG_WITH_DESCRIPTORS_KEY = "__windows_pe64_prolog_with_descriptors__"
+
+# ---------------------------------------------------------------------------
+# Stage 610: optional Compact post-link operation for *both* PE ABIs and
+# EXE/DLL.  Wrap final link implementations so every internal COFF build
+# path receives the same feature, regardless of D64Z packing choice.
+# ---------------------------------------------------------------------------
+_stage610_link_coff32_uncompacted = link_coff32_objects
+_stage610_link_coff64_uncompacted = link_coff64_objects
+
+
+def _stage610_compact_linked_program(program, target: str):
+    if not _pe_compact_enabled(target):
+        return program
+    from dataclasses import replace
+    from d64dbase.pe_image_compact import compact_pe_image
+    result, info = compact_pe_image(program.executable)
+    PE_COMPACT_LAST_RESULT[target] = dict(info)
+    if not info['changed']:
+        return program
+    return replace(program, executable=result)
+
+
+def link_coff32_objects(*args, **kwargs):
+    return _stage610_compact_linked_program(
+        _stage610_link_coff32_uncompacted(*args, **kwargs), 'pe32')
+
+
+def link_coff64_objects(*args, **kwargs):
+    return _stage610_compact_linked_program(
+        _stage610_link_coff64_uncompacted(*args, **kwargs), 'pe64')
+
 
 # ---------------------------------------------------------------------------
 # Stage 198: projektweite Darstellung der Quelltext-Eingabeeditoren.
@@ -50978,6 +51184,7 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "cut_multiple_codes_key": PROJECT_WINDOWS_PE32_CUT_MULTIPLE_CODES_KEY,
         "image_layout_key": PROJECT_WINDOWS_PE32_IMAGE_LAYOUT_KEY,
         "pe_packing_enabled_key": PROJECT_WINDOWS_PE32_PE_PACKING_ENABLED_KEY,
+        "compact_enabled_key": PROJECT_WINDOWS_PE32_COMPACT_ENABLED_KEY,
         "signing_key": PROJECT_WINDOWS_PE32_SIGNING_KEY,
         "abi_major_key": PROJECT_WINDOWS_PE32_ABI_MAJOR_KEY,
         "abi_minor_key": PROJECT_WINDOWS_PE32_ABI_MINOR_KEY,
@@ -50996,6 +51203,9 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "dbase_store_binary_key": "__windows_pe32_dbase_store_binary__",
         "dbase_static_numeric_slots_key": "__windows_pe32_dbase_static_numeric_slots__",
         "dbase_dynamic_typed_variables_key": "__windows_pe32_dbase_dynamic_typed_variables__",
+        "dbase_peephole_register_width_key": "__windows_pe32_dbase_peephole_register_width__",
+        "dbase_peephole_processor_flags_key": "__windows_pe32_dbase_peephole_processor_flags__",
+        "dbase_peephole_stack_state_key": "__windows_pe32_dbase_peephole_stack_state__",
         "dbase_optimization_section": "Settings.Windows.32Bit.Compiler.dBASE.Optimierung",
         "console_dll_directory_key": "__windows_pe32_console_dll_directory__",
         "console_dll_pack_key": "__windows_pe32_console_dll_pack__",
@@ -51034,6 +51244,7 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "cut_multiple_codes_key": PROJECT_WINDOWS_PE64_CUT_MULTIPLE_CODES_KEY,
         "image_layout_key": PROJECT_WINDOWS_PE64_IMAGE_LAYOUT_KEY,
         "pe_packing_enabled_key": PROJECT_WINDOWS_PE64_PE_PACKING_ENABLED_KEY,
+        "compact_enabled_key": PROJECT_WINDOWS_PE64_COMPACT_ENABLED_KEY,
         "signing_key": PROJECT_WINDOWS_PE64_SIGNING_KEY,
         "abi_major_key": PROJECT_WINDOWS_PE64_ABI_MAJOR_KEY,
         "abi_minor_key": PROJECT_WINDOWS_PE64_ABI_MINOR_KEY,
@@ -51052,6 +51263,9 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "dbase_store_binary_key": "__windows_pe64_dbase_store_binary__",
         "dbase_static_numeric_slots_key": "__windows_pe64_dbase_static_numeric_slots__",
         "dbase_dynamic_typed_variables_key": "__windows_pe64_dbase_dynamic_typed_variables__",
+        "dbase_peephole_register_width_key": "__windows_pe64_dbase_peephole_register_width__",
+        "dbase_peephole_processor_flags_key": "__windows_pe64_dbase_peephole_processor_flags__",
+        "dbase_peephole_stack_state_key": "__windows_pe64_dbase_peephole_stack_state__",
         "dbase_optimization_section": "Settings.Windows.64Bit.Compiler.dBASE.Optimierung",
         "console_dll_directory_key": "__windows_pe64_console_dll_directory__",
         "console_dll_pack_key": "__windows_pe64_console_dll_pack__",
@@ -51073,6 +51287,14 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "title": "64-Bit",
     },
 }
+
+# Stage 593: Zielarchitektur UND Compiler-Sprache sind eigenständige
+# Persistenzdimensionen. Die alten Compiler-Abschnitte dienen nur zur Migration.
+from project_compiler_directories import (
+    LANGUAGES as PROJECT_WINDOWS_COMPILER_LANGUAGES,
+    settings_for as _project_compiler_directory_settings,
+    compiler_language as _project_document_compiler_language,
+)
 
 # Stage 185/187 legacy sections are read-only migration inputs. Stage 196
 # writes only the architecture-specific sections above.
@@ -51459,6 +51681,9 @@ def project_untitled_filename(
 
 def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     entries = {key: [] for key, _title, _extensions in PROJECT_CATEGORIES}
+    entries[PROJECT_NAMED_NAMES_KEY] = []
+    entries[PROJECT_NAMED_SELECTED_KEY] = []
+    entries[PROJECT_NAMED_ASSIGNMENTS_KEY] = []
     # Verschachtelte COFF-Archive liegen bewusst nicht als neue Root-Kategorie
     # vor, sondern unter C-Programme -> Archive. Der reservierte Schlüssel
     # hält diese Hierarchie in der *.pro-Datei getrennt von normalen C-Dateien.
@@ -51492,6 +51717,14 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     # Stage 150: getrennte Resource-Listen pro Sprache und Windows-Ziel.
     for _resource_key in PROJECT_WINDOWS_RESOURCE_ENTRY_KEYS.values():
         entries[_resource_key] = []
+    for _target in PROJECT_WINDOWS_TARGET_SETTINGS:
+        for _language in PROJECT_WINDOWS_COMPILER_LANGUAGES:
+            _language_settings = _project_compiler_directory_settings(_target, _language)
+            entries[_language_settings["input_key"]] = []
+            entries[_language_settings["output_key"]] = []
+            entries[_language_settings["cache_key"]] = []
+            entries[_language_settings["input_relative_key"]] = [{"value": "true"}]
+            entries[_language_settings["output_relative_key"]] = [{"value": "true"}]
     for _settings in PROJECT_WINDOWS_TARGET_SETTINGS.values():
         entries[_settings["input_key"]] = []
         entries[_settings["output_key"]] = []
@@ -51501,6 +51734,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["output_relative_key"]] = [{"value": "true"}]
         entries[_settings["link_with_ordinals_key"]] = [{"value": "false"}]
         entries[_settings["pe_packing_enabled_key"]] = [{"value": "false"}]
+        entries[_settings["compact_enabled_key"]] = [{"value": "false"}]
         entries[_settings["signing_key"]] = [normalize_signing_settings()]
         entries[_settings["import_packer_enabled_key"]] = [{"value": "true"}]
         entries[_settings["import_packer_require_savings_key"]] = [{"value": "true"}]
@@ -51533,6 +51767,9 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["dbase_store_binary_key"]] = [{"value": "false"}]
         entries[_settings["dbase_static_numeric_slots_key"]] = [{"value": "false"}]
         entries[_settings["dbase_dynamic_typed_variables_key"]] = [{"value": "false"}]
+        entries[_settings["dbase_peephole_register_width_key"]] = [{"value": "false"}]
+        entries[_settings["dbase_peephole_processor_flags_key"]] = [{"value": "false"}]
+        entries[_settings["dbase_peephole_stack_state_key"]] = [{"value": "false"}]
         entries[_settings["manifest_key"]] = [normalize_manifest_settings()]
     entries[PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY] = [{"value": ""}]
     entries[PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY] = [{"value": "9"}]
@@ -51832,6 +52069,21 @@ def format_project_ini(
             _payload, ensure_ascii=False, separators=(",", ":")
         )
 
+    # Stage 596: named project profiles are separate from the existing categories.
+    _named_names = {
+        str(row.get("language", "")): str(row.get("name", ""))
+        for row in entries.get(PROJECT_NAMED_NAMES_KEY, ())
+    }
+    _named_selection = (entries.get(PROJECT_NAMED_SELECTED_KEY) or [{}])[0]
+    _named_files = {
+        rebase_named_project_leaf_key(
+            str(row.get("key", "")), project_path,
+            to_storage=True, path_converter=_project_storage_path,
+        ): str(row.get("language", ""))
+        for row in entries.get(PROJECT_NAMED_ASSIGNMENTS_KEY, ())
+    }
+    encode_named_project_metadata(parser, _named_names, _named_selection, _named_files)
+
     for key, title, _extensions in PROJECT_CATEGORIES:
         section = f"Category.{key}"
         parser[section] = {"Title": title}
@@ -52072,6 +52324,31 @@ def format_project_ini(
                     relative=_output_relative,
                 )
 
+        # Stage 593: Kein gemeinsamer Such-/Ausgabepfad im neuen Projektformat.
+        for _language in PROJECT_WINDOWS_COMPILER_LANGUAGES:
+            _ls = _project_compiler_directory_settings(_target, _language)
+            _in_relative = _project_bool_entry(entries, _ls["input_relative_key"], True)
+            _out_relative = _project_bool_entry(entries, _ls["output_relative_key"], True)
+            parser[_ls["input_section"]] = {
+                "Title": f"Windows {_settings['title']} {_language} Eingabe-Verzeichnis",
+                "RelativePaths": "true" if _in_relative else "false",
+            }
+            for _i, _entry in enumerate(entries.get(_ls["input_key"], ()), 1):
+                _value = str(_entry.get("path", "")).strip()
+                if _value:
+                    parser[_ls["input_section"]][f"Path{_i:04d}"] = _project_storage_path_mode(
+                        _value, project_path, relative=_in_relative)
+            parser[_ls["output_section"]] = {
+                "Title": f"Windows {_settings['title']} {_language} Ausgabe-Verzeichnis",
+                "RelativePaths": "true" if _out_relative else "false",
+            }
+            for _field, _entry_key in (("Path", "output_key"), ("AssemblerCache", "cache_key")):
+                _items = entries.get(_ls[_entry_key], ())
+                _value = str(_items[0].get("path", "")).strip() if _items else ""
+                if _value:
+                    parser[_ls["output_section"]][_field] = _project_storage_path_mode(
+                        _value, project_path, relative=_out_relative)
+
         _cache_entries = entries.get(_settings["asm_cache_key"], ())
         if _cache_entries:
             _cache_path = str(_cache_entries[0].get("path", "")).strip()
@@ -52083,9 +52360,10 @@ def format_project_ini(
         if _unit_entries:
             _unit_path = str(_unit_entries[0].get("path", "")).strip()
             if _unit_path:
-                parser[_output_section]["PascalUnitOutput"] = _project_storage_path_mode(
-                    _unit_path, project_path, relative=_output_relative
-                )
+                _pascal_ls = _project_compiler_directory_settings(_target, "pascal")
+                parser[_pascal_ls["output_section"]]["PascalUnitOutput"] = _project_storage_path_mode(
+                    _unit_path, project_path,
+                    relative=_project_bool_entry(entries, _pascal_ls["output_relative_key"], True))
         _mode_entries = entries.get(_settings["asm_mode_key"], ())
         parser[_output_section]["AssemblerSyntax"] = (
             str(_mode_entries[0].get("value", "intel")) if _mode_entries else "intel"
@@ -52100,6 +52378,9 @@ def format_project_ini(
             "StoreBinaryData": "true" if _project_bool_entry(entries, _settings["dbase_store_binary_key"], False) else "false",
             "StaticNumericInternalSlots": "true" if _project_bool_entry(entries, _settings["dbase_static_numeric_slots_key"], False) else "false",
             "DynamicTypedVariables": "true" if _project_bool_entry(entries, _settings["dbase_dynamic_typed_variables_key"], False) else "false",
+            "PeepholeRegisterWidth": "true" if _project_bool_entry(entries, _settings["dbase_peephole_register_width_key"], False) else "false",
+            "PeepholeProcessorFlags": "true" if _project_bool_entry(entries, _settings["dbase_peephole_processor_flags_key"], False) else "false",
+            "PeepholeStackState": "true" if _project_bool_entry(entries, _settings["dbase_peephole_stack_state_key"], False) else "false",
         }
         parser[_settings["prolog_optimization_section"]] = {
             "Title": f"Windows {_settings['title']} Compiler Prolog Optimierung",
@@ -52159,6 +52440,9 @@ def format_project_ini(
 
         _pe_packing_enabled_value = _project_bool_entry(
             entries, _settings["pe_packing_enabled_key"], PE_PACKING_DEFAULT
+        )
+        _compact_enabled_value = _project_bool_entry(
+            entries, _settings["compact_enabled_key"], False
         )
         _link_with_ordinals = _project_bool_entry(
             entries, _settings["link_with_ordinals_key"], False
@@ -52234,6 +52518,7 @@ def format_project_ini(
             "Title": f"Windows {_settings['title']} Linker Optionen",
             "PEPackingEnabled": "true" if _pe_packing_enabled_value else "false",
             "PEPackingFormat": "D64Z/MSZIP" if _pe_packing_enabled_value else "Standard PE",
+            "Compact": "true" if _compact_enabled_value else "false",
         }
         parser[_settings["optimization_section"]] = {
             "Title": f"Windows {_settings['title']} Linker Optimierung",
@@ -52514,6 +52799,23 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
     parser.optionxform = str
     parser.read_string(text)
     entries = empty_project_entries()
+
+    # Stage 596: optional named project metadata. Old .pro files remain valid.
+    _names, _selection, _assignments = decode_named_project_metadata(parser)
+    entries[PROJECT_NAMED_NAMES_KEY] = [
+        {"language": language, "name": name}
+        for language, name in _names.items() if name
+    ]
+    entries[PROJECT_NAMED_SELECTED_KEY] = [
+        {"language": _selection[0], "kind": _selection[1]}
+    ] if _selection[0] else []
+    entries[PROJECT_NAMED_ASSIGNMENTS_KEY] = [
+        {"key": rebase_named_project_leaf_key(
+            key, project_path, to_storage=False,
+            path_converter=_project_loaded_path,
+        ), "language": language}
+        for key, language in _assignments.items()
+    ]
 
     # Stage 530: legacy [Settings.Debug] is copied to each target only if
     # that target has no architecture-specific section of its own.
@@ -53022,7 +53324,10 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                              ("dbase_compress_json_key", "CompressJson"),
                              ("dbase_store_binary_key", "StoreBinaryData"),
                              ("dbase_static_numeric_slots_key", "StaticNumericInternalSlots"),
-                             ("dbase_dynamic_typed_variables_key", "DynamicTypedVariables")):
+                             ("dbase_dynamic_typed_variables_key", "DynamicTypedVariables"),
+                             ("dbase_peephole_register_width_key", "PeepholeRegisterWidth"),
+                             ("dbase_peephole_processor_flags_key", "PeepholeProcessorFlags"),
+                             ("dbase_peephole_stack_state_key", "PeepholeStackState")):
             _enabled = (
                 parser.has_section(_dbase_optimization_section)
                 and _parse_project_bool(parser.get(_dbase_optimization_section, _field, fallback="false"), False)
@@ -53183,6 +53488,13 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
             )
         entries[_settings["pe_packing_enabled_key"]] = [{
             "value": "true" if _pe_packing_enabled_value else "false"
+        }]
+        _compact_enabled_value = _parse_project_bool(
+            parser.get(_options_section, "Compact", fallback="false")
+            if parser.has_section(_options_section) else "false", False,
+        )
+        entries[_settings["compact_enabled_key"]] = [{
+            "value": "true" if _compact_enabled_value else "false"
         }]
 
         _optimization_section = _settings["optimization_section"]
@@ -53544,6 +53856,45 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                 ):
                     _mapped = _arch_output
                 entries[_settings["input_key"]].append({"path": _mapped})
+
+    # Stage 593: getrennte Verzeichnisse lesen; nur wenn die Sprachsektionen
+    # *fehlen* werden die alten gemeinsamen ABI-Pfade kopiert. Leere neue
+    # Sektionen sind bewusst leer und werden niemals durch Legacy überschrieben.
+    for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
+        for _language in PROJECT_WINDOWS_COMPILER_LANGUAGES:
+            _ls = _project_compiler_directory_settings(_target, _language)
+            _input_section = _ls["input_section"]
+            _output_section = _ls["output_section"]
+            if parser.has_section(_input_section):
+                _relative = _parse_project_bool(
+                    parser.get(_input_section, "RelativePaths", fallback="true"), True)
+                entries[_ls["input_relative_key"]] = [{"value": "true" if _relative else "false"}]
+                entries[_ls["input_key"]] = [
+                    {"path": _project_loaded_path(str(value), Path(project_path))}
+                    for name, value in sorted(parser.items(_input_section))
+                    if name.casefold().startswith("path") and str(value).strip()
+                ]
+            else:
+                entries[_ls["input_relative_key"]] = list(entries[_settings["input_relative_key"]])
+                entries[_ls["input_key"]] = [dict(item) for item in entries[_settings["input_key"]]]
+            if parser.has_section(_output_section):
+                _relative = _parse_project_bool(
+                    parser.get(_output_section, "RelativePaths", fallback="true"), True)
+                entries[_ls["output_relative_key"]] = [{"value": "true" if _relative else "false"}]
+                _path = parser.get(_output_section, "Path", fallback="").strip()
+                _cache = parser.get(_output_section, "AssemblerCache", fallback="").strip()
+                entries[_ls["output_key"]] = (
+                    [{"path": _project_loaded_path(_path, Path(project_path))}] if _path else [])
+                entries[_ls["cache_key"]] = (
+                    [{"path": _project_loaded_path(_cache, Path(project_path))}] if _cache else [])
+                if _language == "pascal":
+                    _unit = parser.get(_output_section, "PascalUnitOutput", fallback="").strip()
+                    entries[_settings["pascal_unit_output_key"]] = (
+                        [{"path": _project_loaded_path(_unit, Path(project_path))}] if _unit else [])
+            else:
+                entries[_ls["output_relative_key"]] = list(entries[_settings["output_relative_key"]])
+                entries[_ls["output_key"]] = [dict(item) for item in entries[_settings["output_key"]]]
+                entries[_ls["cache_key"]] = [dict(item) for item in entries.get(_settings["asm_cache_key"], ())]
 
     return entries
 
@@ -60866,6 +61217,20 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
             r"(?<![A-Za-z0-9_])[+-]?[0-9]+(?:\.[0-9]+)?"
             r"(?:[eE][+-]?[0-9]+)?(?![A-Za-z0-9_])"
         )
+        # Stage 594: preprocessor directives and typed DLL FFI declarations.
+        # Use the actual FFI type registry so added aliases get editor colors
+        # automatically. Strings and comments are painted over these tokens
+        # by _highlight_dbase_block's existing lexical scanner.
+        from d64dbase.ffi_types import FFI_TYPES as _DBASE_FFI_TYPES
+        DBASE_FFI_TYPE_PATTERN = re.compile(
+            r"(?<![A-Za-z0-9_])(?:" + "|".join(
+                sorted(_DBASE_FFI_TYPES, key=lambda item: (-len(item), item))
+            ) + r")(?![A-Za-z0-9_])", re.IGNORECASE
+        )
+        DBASE_DIRECTIVE_PATTERN = re.compile(
+            r"^\s*(#[ \t]*(?:define|undef|ifdef|ifndef|if|elif|else|endif|include|"
+            r"error|warning|warn|info|pragma))\b", re.IGNORECASE
+        )
         DBASE_BLOCK_STATE = 0xDBA5
         MARKDOWN_FENCE_STATE = 0x4D44
         MARKDOWN_HEADING_PATTERN = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
@@ -60904,6 +61269,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
             self.pascal_keyword_format.setFontWeight(QFont.Bold)
             self.pascal_string_format = QTextCharFormat()
             self.pascal_number_format = QTextCharFormat()
+            self.dbase_ffi_orange_format = QTextCharFormat()
+            self.dbase_ffi_orange_format.setFontWeight(QFont.Bold)
             self.markdown_heading_format = QTextCharFormat()
             self.markdown_heading_format.setFontWeight(QFont.Bold)
             self.markdown_marker_format = QTextCharFormat()
@@ -60965,6 +61332,10 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
             )
             self.pascal_number_format.setForeground(
                 QColor(255, 135, 255) if self.dark_mode else QColor(125, 0, 125)
+            )
+            # Orange in both themes; light mode uses a darker shade for contrast.
+            self.dbase_ffi_orange_format.setForeground(
+                QColor("#FFA630") if self.dark_mode else QColor("#B65A00")
             )
             self.markdown_heading_format.setForeground(
                 QColor("#58A6FF") if self.dark_mode else QColor("#0969DA")
@@ -61165,6 +61536,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
                     match.start(),
                     match.end() - match.start(),
                     self.pascal_number_format,
+                )
+            for match in self.DBASE_FFI_TYPE_PATTERN.finditer(text):
+                self.setFormat(
+                    match.start(), match.end() - match.start(),
+                    self.dbase_ffi_orange_format,
+                )
+            directive = self.DBASE_DIRECTIVE_PATTERN.match(text)
+            if directive is not None:
+                self.setFormat(
+                    directive.start(1), directive.end(1) - directive.start(1),
+                    self.dbase_ffi_orange_format,
                 )
             length = len(text)
             index = 0
@@ -63945,9 +64327,33 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
             ):
                 return None
             cursor = self.cursorForPosition(point)
+            block = cursor.block()
+            code = block.text().split(";", 1)[0]
+            match = self._assembler_highlighter.JUMP_TARGET_PATTERN.match(code)
+            if match is None:
+                return None
+
+            # Stage 589: cursorForPosition() liefert auch weit rechts neben
+            # dem Zeilenende den letzten Textcursor zurück. Dadurch war dort
+            # bisher der Link aktiv. Die Hitbox muss am tatsächlichen
+            # sichtbaren Zielnamen enden (variable Fonts/Tabs berücksichtigt).
+            target_start, target_end = match.span("target")
+            begin = QTextCursor(self.document())
+            begin.setPosition(block.position() + target_start)
+            end = QTextCursor(self.document())
+            end.setPosition(block.position() + target_end)
+            begin_rect = self.cursorRect(begin)
+            end_rect = self.cursorRect(end)
+            if begin_rect.top() != end_rect.top():
+                return None
+            left, right = begin_rect.left(), end_rect.left()
+            if not (
+                left <= point.x() < right
+                and begin_rect.top() <= point.y() <= begin_rect.bottom()
+            ):
+                return None
             return self._assembler_highlighter.jump_target_at(
-                cursor.block().text(),
-                cursor.positionInBlock(),
+                block.text(), cursor.positionInBlock()
             )
 
         def _jump_to_label(self, target: str) -> bool:
@@ -64079,6 +64485,106 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
                 return None
             return code, match, info
 
+        @staticmethod
+        def _adjacent_asm_instruction_block(block, direction: int):
+            """Naechste Befehlszeile; hoechstens vier Leer-/Kommentarzeilen."""
+            neighbor = block
+            for _ in range(5):
+                neighbor = (neighbor.next() if direction > 0
+                            else neighbor.previous())
+                if not neighbor.isValid():
+                    return None
+                text = neighbor.text().strip()
+                if not text or text.startswith(";"):
+                    continue
+                return neighbor
+            return None
+
+        def _stack_frame_tooltip_for_block(self, block):
+            """Zeigt Prolog/Epilog und die lokale Stack-Reservierung beim SUB."""
+            if self._assembler_target not in ("pe32", "pe64"):
+                return None
+            # Stage 590: ESP-Stackslots auch ohne Prolog anzeigen. Fünf
+            # aufeinanderfolgende MOV-Speicherungen gemeinsam erklären.
+            if self._assembler_target == "pe32" and "esp" in block.text().lower():
+                preceding = []
+                walker = block
+                for _ in range(20):
+                    walker = walker.previous()
+                    if not walker.isValid():
+                        break
+                    preceding.append(walker.text())
+                preceding.reverse()
+                at = len(preceding)
+                following = []
+                walker = block
+                for _ in range(20):
+                    walker = walker.next()
+                    if not walker.isValid():
+                        break
+                    following.append(walker.text())
+                slot_tip = esp_stack_slot_tooltip(
+                    preceding + [block.text()] + following,
+                    at,
+                    self._assembler_target,
+                )
+                if slot_tip is not None:
+                    return slot_tip
+
+            # Stage 589: bei [EBP-n] nur mit belegtem Prolog-Kontext von
+            # lokalen Slots bzw. gesicherten Registern sprechen. Negative
+            # EBP-Offsets sind nicht die Funktionsparameter.
+            if self._assembler_target == "pe32" and "ebp" in block.text().lower():
+                history = [block.text()]
+                walker = block
+                for _ in range(1024):
+                    walker = walker.previous()
+                    if not walker.isValid():
+                        break
+                    history.append(walker.text())
+                    code = walker.text().split(";", 1)[0].strip()
+                    if (re.match(r"^ret(?:n|f)?\b", code, re.I)
+                            or re.match(r"^push\s+ebp$", code, re.I)):
+                        break
+                history.reverse()
+                hovered = len(history) - 1
+                walker = block
+                for _ in range(5):
+                    walker = walker.next()
+                    if not walker.isValid():
+                        break
+                    history.append(walker.text())
+                memory_tip = stack_frame_memory_tooltip(
+                    history, hovered, self._assembler_target
+                )
+                if memory_tip is not None:
+                    return memory_tip
+
+            # Nur beim Hover/Cursor auf SUB die drei zusammengehoerigen
+            # Befehle erklaeren. Sonst bleibt die bestehende Paarhilfe aktiv.
+            before = self._adjacent_asm_instruction_block(block, -1)
+            if before is not None:
+                first = self._adjacent_asm_instruction_block(before, -1)
+                if first is not None:
+                    allocation = stack_frame_allocation_tooltip(
+                        first.text(), before.text(), block.text(),
+                        self._assembler_target,
+                    )
+                    if allocation is not None:
+                        return allocation
+            if before is not None:
+                tip = stack_frame_pair_tooltip(
+                    before.text(), block.text(), self._assembler_target
+                )
+                if tip is not None:
+                    return tip
+            after = self._adjacent_asm_instruction_block(block, 1)
+            if after is not None:
+                return stack_frame_pair_tooltip(
+                    block.text(), after.text(), self._assembler_target
+                )
+            return None
+
         def _assembler_instruction_context_from_cursor(
             self,
             cursor: QTextCursor,
@@ -64102,6 +64608,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
                 semantic = c64_assembler_call_description(
                     info.mnemonic, operand
                 )
+            elif self._assembler_target in ("pe32", "pe64"):
+                semantic = self._stack_frame_tooltip_for_block(cursor.block())
             return info, operand, semantic
 
         def _assembler_instruction_info_at_cursor(self):
@@ -64155,6 +64663,8 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
                 semantic = c64_assembler_call_description(
                     info.mnemonic, operand
                 )
+            elif self._assembler_target in ("pe32", "pe64"):
+                semantic = self._stack_frame_tooltip_for_block(block)
             anchor = QRect(left, top, max(1, right - left), max(1, bottom - top + 1))
             return (info, operand, semantic), anchor
 
@@ -64220,7 +64730,13 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
                 self.instruction_help_current.hide()
 
             description = info.description
-            if semantic:
+            if isinstance(semantic, StackFrameTooltip):
+                self._instruction_help_mnemonic = semantic.instructions
+                self._instruction_help_operands = ""
+                self.instruction_help_current.clear()
+                self.instruction_help_current.hide()
+                description = semantic.title + "\n\n" + semantic.description
+            elif semantic:
                 description += f"\nZielbeschreibung: {semantic}"
                 if self._assembler_target == "c64":
                     stability = c64_assembler_call_stability(
@@ -87990,6 +88506,49 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             layout.addLayout(action_layout)
 
 
+    class DBaseProjectFileNameEditDelegate(QStyledItemDelegate):
+        """Stage 613: rahmenfreier Inline-Editor fuer Datei-/Ordnernamen.
+
+        QStyledItemDelegate behaelt die Qt-Standardlogik fuer EditRole,
+        Dateinamensvalidierung und Model-Commit bei. Nur das QLineEdit und
+        dessen Bearbeitungsgeometrie werden angepasst. Die Einrueckung des
+        QTreeView und das normale Zeichnen der Dateinamen bleiben erhalten.
+        """
+
+        def createEditor(self, parent, option, index):
+            editor = super().createEditor(parent, option, index)
+            if isinstance(editor, QLineEdit):
+                editor.setObjectName("dbase_project_inline_name_editor")
+                editor.setFrame(False)
+                editor.setContentsMargins(0, 0, 0, 0)
+                editor.setTextMargins(0, 0, 0, 0)
+                # Lokale Regeln verhindern, dass allgemeine QFileDialog-
+                # Styles die schmale Editorflaeche nochmals einengen.
+                editor.setStyleSheet(
+                    "QLineEdit#dbase_project_inline_name_editor {"
+                    "border:0px; margin:0px; padding:0px; }"
+                )
+            return editor
+
+        def updateEditorGeometry(self, editor, option, index):
+            super().updateEditorGeometry(editor, option, index)
+            if not isinstance(editor, QLineEdit):
+                return
+            # Qt verwendet sonst nur das Namensfeld der Detailspalte. Beim
+            # Umbenennen darf das Eingabefeld bis an den rechten Rand des
+            # sichtbaren Viewports reichen; bei Ende der Bearbeitung bleibt
+            # das gewohnte Spaltenlayout unveraendert.
+            view = self.parent()
+            if not isinstance(view, QTreeView):
+                return
+            rect = editor.geometry()
+            viewport_width = view.viewport().width()
+            remaining = max(0, viewport_width - max(0, rect.x()))
+            if remaining > rect.width():
+                rect.setWidth(remaining)
+                editor.setGeometry(rect)
+
+
     class DBaseProjectOpenFileDialog(QDialog):
         """Stage 434: gemeinsamer 640x480-Browser zum Erstellen und Öffnen."""
 
@@ -88050,6 +88609,21 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             self.file_dialog.setWindowFlags(Qt.Widget)
             self.file_dialog.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             framed_layout.addWidget(self.file_dialog, 1)
+
+            # Stage 613: Die Standard-Qt-Inline-Editoren fuer Datei- und
+            # Verzeichnisnamen hatten in der Detailansicht nur eine sehr
+            # schmale Editierflaeche. Den Delegate fuer Spalte 0 ersetzen,
+            # ohne Model, Navigationsverhalten oder Dateisystemaktionen
+            # des eingebetteten QFileDialog anzutasten.
+            self._filename_edit_delegates = []
+            for view_type, view_name in (
+                (QTreeView, "treeView"), (QListView, "listView"),
+            ):
+                view = self.file_dialog.findChild(view_type, view_name)
+                if view is not None:
+                    delegate = DBaseProjectFileNameEditDelegate(view)
+                    view.setItemDelegateForColumn(0, delegate)
+                    self._filename_edit_delegates.append(delegate)
 
             # Interne Öffnen-/Abbrechen-Schaltflächen ausblenden; wir stellen
             # alle drei Aktionen außerhalb des QFileDialog ausdrücklich bereit.
@@ -88210,6 +88784,10 @@ background:{button_hover};
 }}
 QFileDialog QComboBox QAbstractItemView {{
 background:{field};color:{foreground};selection-background-color:{selection};
+}}
+/* Stage 613: nur der Inline-Editor von Datei-/Verzeichniseintraegen. */
+QFileDialog QLineEdit#dbase_project_inline_name_editor {{
+margin:0px;padding:0px;border:0px;
 }}
 """)
             self.findChild(QWidget, "dbase_project_file_actions").setStyleSheet(
@@ -103527,6 +104105,7 @@ QToolButton:hover {{ background: {selection}; }}"""
         """Lern-Workspace mit linksseitigen Tabs und rechts eingebetteter Szene."""
 
         interest_focus_changed = pyqtSignal(bool)
+        matrix_multiplication_focus_changed = pyqtSignal(bool)  # Stage 570
         close_requested = pyqtSignal()
 
         def __init__(self, parent=None):
@@ -103739,11 +104318,21 @@ QToolButton:hover {{ background: {selection}; }}"""
             # Breite nach _add_fact_scroll_page() setzen: die Hilfsfunktion
             # setzt die Mindestgröße des eingebetteten Widgets zurück.
             self.basic_math_rules_widget.setMinimumWidth(760)
-            # Stage 421: eigenständige QPainter-Seite mit Originaldiagrammen.
+            # Stage 570: interaktive Toolbar oberhalb des bisherigen
+            # QPainter-Inhalts. Das ursprüngliche Fakten-Widget bleibt erhalten.
             self.multiplication_matrix_widget = MultiplicationMatrixFactWidget()
+            self.matrix_multiplication_panel = MatrixMultiplicationPanel()
+            self.multiplication_matrix_page = QWidget(self.content_stack)
+            self.multiplication_matrix_page.setObjectName('multiplication_matrix_page')
+            matrix_page_layout = QVBoxLayout(self.multiplication_matrix_page)
+            matrix_page_layout.setContentsMargins(0, 0, 0, 0)
+            matrix_page_layout.setSpacing(8)
+            matrix_page_layout.addWidget(self.matrix_multiplication_panel)
+            matrix_page_layout.addWidget(self.multiplication_matrix_widget)
             self.multiplication_matrix_scroll = _add_fact_scroll_page(
-                self.multiplication_matrix_widget, 'multiplication_matrix_scroll_area'
+                self.multiplication_matrix_page, 'multiplication_matrix_scroll_area'
             )
+            self.multiplication_matrix_page.setMinimumWidth(980)
             self.multiplication_matrix_widget.setMinimumSize(980, 1520)
             self.rotation_matrix_widget = RotationMatrixFactWidget()
             self.rotation_matrix_scroll = _add_fact_scroll_page(
@@ -104290,6 +104879,7 @@ QStackedWidget#learning_content_stack {{
             self.trigonometry_right_triangle_widget.set_dark_mode(enabled)
             self.basic_math_rules_widget.set_dark_mode(enabled)
             self.multiplication_matrix_widget.set_dark_mode(enabled)
+            self.matrix_multiplication_panel.set_dark_mode(enabled)
             self.rotation_matrix_widget.set_dark_mode(enabled)
             self.math_magic_37_widget.set_dark_mode(enabled)
             self.math_magic_88_widget.set_dark_mode(enabled)
@@ -104345,6 +104935,9 @@ QStackedWidget#learning_content_stack {{
             # Fakten ist Tab 0; Spiele ist durch Stage 142 Tab 1.
             self.left_tabs.setCurrentIndex(0)
             self.interest_focus_changed.emit(fact_key == 'interest_calculation')
+            # Andere Workspace-Docks vor dem Anzeigen der Multiplikation
+            # verstecken. Das Signal wird vom QMainWindow verarbeitet.
+            self.matrix_multiplication_focus_changed.emit(fact_key == 'matrix_multiplication')
 
             if fact_key == 'number_sets':
                 self.content_stack.setCurrentWidget(self.number_sets_scroll)
@@ -106614,9 +107207,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 f"project_windows_{tag}_pascal_no_stack_frames")
             self.no_stack_frames_checkbox.setChecked(False)
             self.no_stack_frames_checkbox.setToolTip(
-                "Entfernt Prolog/Epilog nur bei nachweislich frame-unabhaengigen "
-                "Routinen. Stack-Cookies, lokale Stackvariablen, Parameterzugriffe "
-                "und Exception-Frames bleiben erhalten.")
+                "Entfernt den EBP/RBP-Frame nur bei nachweislich sicheren Routinen. "
+                "PE32: balancierte Aufrufe und einfache Parameterzugriffe sind "
+                "moeglich. PE64: nur echte Leaf-Routinen. Stack-Cookies, "
+                "lokale Framevariablen und Exception-Frames bleiben erhalten.")
             frame_layout.addWidget(self.no_stack_frames_checkbox)
             layout.addWidget(self.frame_group_box)
             note = QLabel(
@@ -106698,6 +107292,241 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.maximum_processes_combo.setCurrentIndex(
                 values["max_compiler_processes"] - 1)
 
+
+    class WindowsCompilerLanguageDirectories(QWidget):
+        """Stage 593: zwei echte GUI-Blätter für einen Compiler/eine Architektur."""
+
+        def __init__(self, owner, target, language, parent=None):
+            super().__init__(parent)
+            self.owner = owner
+            self.target = target
+            self.language = language
+            self._syncing = False
+            self._relative = {"input": True, "output": True}
+            self._output = ""
+            self._cache = ""
+            self.input_page = QWidget(parent)
+            self.output_page = QWidget(parent)
+            self.input_page.setObjectName(f"compiler_{target}_{language}_input")
+            self.output_page.setObjectName(f"compiler_{target}_{language}_output")
+            inputs = QVBoxLayout(self.input_page)
+            self.input_relative = QCheckBox("relative Pfade", self.input_page)
+            self.input_relative.setChecked(True)
+            inputs.addWidget(self.input_relative)
+            row = QHBoxLayout()
+            row.addWidget(QLabel("Verzeichnis:", self.input_page))
+            self.input_edit = QLineEdit(self.input_page)
+            self.input_edit.setObjectName(f"compiler_{target}_{language}_input_edit")
+            browse_input = QPushButton("...", self.input_page)
+            browse_input.setFixedWidth(42)
+            row.addWidget(self.input_edit, 1)
+            row.addWidget(browse_input)
+            inputs.addLayout(row)
+            row = QHBoxLayout()
+            self.input_list = QListWidget(self.input_page)
+            row.addWidget(self.input_list, 1)
+            column = QVBoxLayout()
+            buttons = {}
+            for title in ("Hinzufügen", "Löschen", "Alle löschen", "↑", "↓"):
+                button = QPushButton(title, self.input_page)
+                buttons[title] = button
+                column.addWidget(button)
+            column.addStretch()
+            row.addLayout(column)
+            inputs.addLayout(row, 1)
+            outputs = QVBoxLayout(self.output_page)
+            self.output_relative = QCheckBox("relative Pfade", self.output_page)
+            self.output_relative.setChecked(True)
+            outputs.addWidget(self.output_relative)
+            self.output_edit = QLineEdit(self.output_page)
+            self.output_edit.setObjectName(f"compiler_{target}_{language}_output_edit")
+            self.cache_edit = QLineEdit(self.output_page)
+            self.cache_edit.setObjectName(f"compiler_{target}_{language}_cache_edit")
+            for text, field, handler in (
+                ("Ausgabeverzeichnis (EXE / DLL)", self.output_edit, self._output_changed),
+                ("Assembler-Zwischenspeicherung", self.cache_edit, self._cache_changed),
+            ):
+                outputs.addWidget(QLabel(text, self.output_page))
+                line = QHBoxLayout()
+                line.addWidget(field, 1)
+                choose = QPushButton("...", self.output_page)
+                choose.setFixedWidth(42)
+                choose.clicked.connect(lambda _v=False, edit=field, changed=handler:
+                    self._browse(edit, changed))
+                line.addWidget(choose)
+                outputs.addLayout(line)
+                field.editingFinished.connect(handler)
+            if language == "pascal":
+                outputs.addWidget(QLabel("Pascal-Units (*.pui / *.o)", self.output_page))
+                self.unit_edit = QLineEdit(self.output_page)
+                self.unit_edit.setObjectName(f"compiler_{target}_pascal_unit_edit")
+                line = QHBoxLayout()
+                line.addWidget(self.unit_edit, 1)
+                button = QPushButton("...", self.output_page)
+                button.setFixedWidth(42)
+                button.clicked.connect(lambda _checked=False: self._browse(self.unit_edit, self._unit_changed))
+                line.addWidget(button)
+                outputs.addLayout(line)
+                self.unit_edit.editingFinished.connect(self._unit_changed)
+            outputs.addStretch(1)
+            browse_input.clicked.connect(lambda _checked=False: self._browse(self.input_edit, lambda: None))
+            self.input_edit.returnPressed.connect(self._add_input)
+            buttons["Hinzufügen"].clicked.connect(self._add_input)
+            buttons["Löschen"].clicked.connect(self._remove_input)
+            buttons["Alle löschen"].clicked.connect(self._clear_input)
+            buttons["↑"].clicked.connect(lambda _checked=False: self._move_input(-1))
+            buttons["↓"].clicked.connect(lambda _checked=False: self._move_input(1))
+            self.input_relative.toggled.connect(lambda enabled: self._relative_changed("input", enabled))
+            self.output_relative.toggled.connect(lambda enabled: self._relative_changed("output", enabled))
+
+        def _absolute(self, text):
+            if not str(text or "").strip():
+                return ""
+            return self.owner._project_windows_absolute_directory(text)
+
+        def _display(self, text, kind):
+            if not text:
+                return ""
+            return self.owner._project_windows_display_directory(
+                text, relative=self._relative[kind])
+
+        def _browse(self, field, commit):
+            start = self._absolute(field.text()) or str(
+                getattr(self.owner, "current_directory", Path.cwd()))
+            selected = QFileDialog.getExistingDirectory(
+                self, f"{self.language} Verzeichnis wählen", start,
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
+            if selected:
+                kind = "input" if field is self.input_edit else "output"
+                field.setText(self._display(self._absolute(selected), kind))
+                commit()
+
+        def paths(self):
+            return tuple(str(self.input_list.item(i).data(Qt.UserRole) or "")
+                         for i in range(self.input_list.count()))
+
+        def _send_paths(self):
+            if not self._syncing:
+                self.owner.set_project_windows_language_search_paths(
+                    self.target, self.language, self.paths())
+
+        def _add_input(self):
+            path = self._absolute(self.input_edit.text().strip())
+            if not path:
+                return
+            if path.casefold() not in {p.casefold() for p in self.paths()}:
+                item = QListWidgetItem(self._display(path, "input"))
+                item.setData(Qt.UserRole, path)
+                self.input_list.addItem(item)
+                self.input_list.setCurrentItem(item)
+                self._send_paths()
+            self.input_edit.clear()
+
+        def _remove_input(self):
+            index = self.input_list.currentRow()
+            if index >= 0:
+                self.input_list.takeItem(index)
+                self._send_paths()
+
+        def _clear_input(self):
+            if self.input_list.count():
+                self.input_list.clear()
+                self._send_paths()
+
+        def _move_input(self, offset):
+            index = self.input_list.currentRow()
+            dest = index + offset
+            if index < 0 or dest < 0 or dest >= self.input_list.count():
+                return
+            item = self.input_list.takeItem(index)
+            self.input_list.insertItem(dest, item)
+            self.input_list.setCurrentRow(dest)
+            self._send_paths()
+
+        def _output_changed(self):
+            value = self._absolute(self.output_edit.text().strip())
+            self._output = value
+            self.output_edit.setText(self._display(value, "output"))
+            if not self._syncing:
+                self.owner.set_project_windows_language_output_directory(
+                    self.target, self.language, value)
+
+        def _cache_changed(self):
+            value = self._absolute(self.cache_edit.text().strip())
+            self._cache = value
+            self.cache_edit.setText(self._display(value, "output"))
+            if not self._syncing:
+                self.owner.set_project_windows_language_assembler_cache(
+                    self.target, self.language, value)
+
+        def _unit_changed(self):
+            if self.language != "pascal":
+                return
+            value = self._absolute(self.unit_edit.text().strip())
+            self.unit_edit.setText(self._display(value, "output"))
+            if not self._syncing:
+                self.owner.set_project_windows_pascal_unit_output_directory(
+                    self.target, value)
+
+        def set_pascal_unit(self, value):
+            if self.language != "pascal":
+                return
+            self._syncing = True
+            try:
+                self.unit_edit.setText(self._display(value, "output"))
+            finally:
+                self._syncing = False
+
+        def _relative_changed(self, kind, enabled):
+            if self._syncing:
+                return
+            pending = self._absolute(self.input_edit.text()) if kind == "input" else ""
+            if kind == "output":
+                self._output_changed()
+                self._cache_changed()
+                if self.language == "pascal":
+                    self._unit_changed()
+            self._relative[kind] = bool(enabled)
+            if kind == "input":
+                for i in range(self.input_list.count()):
+                    item = self.input_list.item(i)
+                    item.setText(self._display(item.data(Qt.UserRole), "input"))
+                if pending:
+                    self.input_edit.setText(self._display(pending, "input"))
+            else:
+                self.output_edit.setText(self._display(self._output, "output"))
+                self.cache_edit.setText(self._display(self._cache, "output"))
+                if self.language == "pascal":
+                    value = self.owner.project_windows_pascal_unit_output_directories.get(self.target, "")
+                    self.set_pascal_unit(value)
+            self.owner.set_project_windows_language_relative_paths(
+                self.target, self.language, kind, enabled)
+
+        def set_values(self, paths, output, cache, modes):
+            self._syncing = True
+            try:
+                self._relative = {"input": bool(modes.get("input", True)),
+                                  "output": bool(modes.get("output", True))}
+                self.input_relative.setChecked(self._relative["input"])
+                self.output_relative.setChecked(self._relative["output"])
+                self.input_relative.setText("relative Pfade" if self._relative["input"] else "absolute Pfade")
+                self.output_relative.setText("relative Pfade" if self._relative["output"] else "absolute Pfade")
+                self.input_list.clear()
+                for value in paths:
+                    canonical = self._absolute(value)
+                    if canonical:
+                        item = QListWidgetItem(self._display(canonical, "input"))
+                        item.setData(Qt.UserRole, canonical)
+                        self.input_list.addItem(item)
+                self._output = str(output or "")
+                self._cache = str(cache or "")
+                self.output_edit.setText(self._display(self._output, "output"))
+                self.cache_edit.setText(self._display(self._cache, "output"))
+                if self.language == "pascal":
+                    value = self.owner.project_windows_pascal_unit_output_directories.get(self.target, "")
+                    self.unit_edit.setText(self._display(value, "output"))
+            finally:
+                self._syncing = False
 
     class WindowsCompilerDirectorySettingsPage(QWidget):
         """Stage 197: architekturspezifische Pfade mit relativer/absoluter Ansicht."""
@@ -106812,6 +107641,26 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 0, Qt.UserRole, "compiler.prolog.optimization"
             )
             self.compiler_prolog_item.setExpanded(True)
+            # Stage 593: bisherige globale Blätter entfernen; eigene Blätter
+            # unter dBASE, Pascal und Prolog einfügen.
+            self.nodes["compiler"].removeChild(self.compiler_input_directories_item)
+            self.nodes["compiler"].removeChild(self.compiler_output_directory_item)
+            self.language_directory_items = {}
+            for _language, _parent in (
+                ("dbase", self.compiler_dbase_item),
+                ("pascal", self.compiler_pascal_item),
+                ("prolog", self.compiler_prolog_item),
+            ):
+                for _kind, _title in (("input", "Eingabe-Verzeichnis"),
+                                      ("output", "Ausgabe-Verzeichnis")):
+                    _item = QTreeWidgetItem([_title])
+                    _parent.insertChild(0 if _kind == "input" else 1, _item)
+                    _item.setData(0, Qt.UserRole, f"compiler.{_language}.{_kind}")
+                    self.language_directory_items[(_language, _kind)] = _item
+            # Alte Zugriffe auf die Default-Auswahl bleiben gueltig, zeigen
+            # aber nun auf den richtigen dBASE-Unterknoten.
+            self.compiler_input_directories_item = self.language_directory_items[("dbase", "input")]
+            self.compiler_output_directory_item = self.language_directory_items[("dbase", "output")]
             # Stage 536: parallel Pascal compilation, separate for each ABI.
             self.compiler_parallel_item = QTreeWidgetItem(
                 self.nodes["compiler"], ["Parallelisierung"])
@@ -106928,9 +107777,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.console_runtime_pack_checkbox.setObjectName(
                 f"project_windows_{target_tag}_dbase_runtime_pack")
             self.console_runtime_pack_checkbox.setToolTip(
-                "Komprimiert die erzeugte DLL transparent auf einem NTFS-Laufwerk. "
-                "Die PE-Datei bleibt direkt durch Windows ladbar; "
-                "beim Kopieren auf andere Dateisysteme kann die Komprimierung entfallen.")
+                "Aktiviert D64Z/MSZIP für c64_dbase_runtime.dll und dBASE-Runtime-"
+                "Projektbibliotheken (z. B. RuntimeDB.dll), auch wenn das "
+                "allgemeine PE-Packing ausgeschaltet ist. "
+                "Bei aktivem Linker-Packing wird die DLL automatisch gepackt. "
+                "Der separate DLL-Entpacker startet beim DLL_PROCESS_ATTACH; "
+                "ein NTFS-Kompressionsattribut wird nicht benötigt.")
             self.console_runtime_pack_checkbox.setChecked(bool(
                 getattr(self.owner, "project_windows_console_dll_pack", {}).get(self.target, False)
             ))
@@ -107426,6 +108278,18 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             output_layout.addStretch(1)
             self.stack.addWidget(self.output_directory_page)
 
+            self.language_directory_pages = {}
+            for _language in PROJECT_WINDOWS_COMPILER_LANGUAGES:
+                _directory_page = WindowsCompilerLanguageDirectories(
+                    self.owner, self.target, _language, self.stack)
+                self.language_directory_pages[_language] = _directory_page
+                self.stack.addWidget(_directory_page.input_page)
+                self.stack.addWidget(_directory_page.output_page)
+            # Nur Pascal bekommt die Unit/COFF-Ausgabeeinstellung. Die bisherigen
+            # Felder bleiben aus Kompatibilitätsgründen intern, jedoch unsichtbar.
+            for _legacy_widget in (self.pascal_unit_output_edit,
+                                   self.pascal_unit_output_button):
+                _legacy_widget.hide()
             # Stage 479: Zielarchitektur-spezifische Syntaxwahl.
             self.assembler_mode_page = QWidget(self.stack)
             assembler_mode_layout = QVBoxLayout(self.assembler_mode_page)
@@ -107520,6 +108384,42 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             slot_layout.addWidget(self.dbase_static_numeric_slots_checkbox)
             slot_layout.addWidget(self.dbase_dynamic_typed_variables_checkbox)
             dbase_opt_layout.addWidget(self.dbase_slot_group)
+            # Stage 609: shared, independently guarded dBASE/Pascal PE peephole.
+            self.dbase_peephole_group = QGroupBox(
+                "Peephole Optimierung", self.dbase_optimization_page
+            )
+            self.dbase_peephole_group.setObjectName(
+                f"project_windows_{target_tag}_dbase_peephole_group"
+            )
+            peephole_layout = QVBoxLayout(self.dbase_peephole_group)
+            self.dbase_peephole_register_width_checkbox = QCheckBox(
+                "Registerbreite", self.dbase_peephole_group)
+            self.dbase_peephole_register_width_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_peephole_register_width")
+            self.dbase_peephole_register_width_checkbox.setToolTip(
+                "Prueft EAX/RAX-Breite und verhindert 16-Bit-Teilregisterfehler. "
+                "Erst mit mindestens einer weiteren Peephole-Option wird ersetzt.")
+            self.dbase_peephole_processor_flags_checkbox = QCheckBox(
+                "Prozessorflags", self.dbase_peephole_group)
+            self.dbase_peephole_processor_flags_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_peephole_processor_flags")
+            self.dbase_peephole_processor_flags_checkbox.setToolTip(
+                "Erlaubt MOV -> XOR/INC nur bei nachweislich unbeobachteten EFLAGS.")
+            self.dbase_peephole_stack_state_checkbox = QCheckBox(
+                "Stackzustand", self.dbase_peephole_group)
+            self.dbase_peephole_stack_state_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_peephole_stack_state")
+            self.dbase_peephole_stack_state_checkbox.setToolTip(
+                "Erlaubt balancierte PUSH/POP-Konstanten nur direkt vor RET. "
+                "Der Stackzustand am Ruecksprung bleibt unveraendert.")
+            for _checkbox in (
+                self.dbase_peephole_register_width_checkbox,
+                self.dbase_peephole_processor_flags_checkbox,
+                self.dbase_peephole_stack_state_checkbox,
+            ):
+                _checkbox.setChecked(False)  # Legacy projects: no behavior change
+                peephole_layout.addWidget(_checkbox)
+            dbase_opt_layout.addWidget(self.dbase_peephole_group)
             dbase_opt_layout.addStretch(1)
             self.stack.addWidget(self.dbase_optimization_page)
 
@@ -107613,8 +108513,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             self.pe_packing_checkbox.setChecked(PE_PACKING_DEFAULT)
             self.pe_packing_checkbox.setToolTip(
-                "Komprimiert den Programmcode in einen D64Z/MSZIP-Block und startet "
-                "das Programm über den internen Loader."
+                "Komprimiert den Programmcode in einen D64Z/MSZIP-Block. "
+                "Die dBASE-Konsolenruntime c64_dbase_runtime.dll sowie "
+                "dBASE-Klassenbibliotheken (z. B. RuntimeDB.dll) erhalten "
+                "einen eigenen DLL-Entpacker. "
+                "Für EXE und DLL gelten getrennte Startpfade."
             )
             pe_packing_layout.addWidget(self.pe_packing_checkbox)
 
@@ -107632,6 +108535,19 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             self.pe_packing_hint.setWordWrap(True)
             pe_packing_layout.addWidget(self.pe_packing_hint)
+
+            # Stage 610: opt-in PE physical layout and zero-block compaction.
+            self.pe_compact_checkbox = QCheckBox("Compact", self.pe_packing_group)
+            self.pe_compact_checkbox.setObjectName(
+                f"project_windows_{target_tag}_pe_compact_enabled")
+            self.pe_compact_checkbox.setChecked(False)
+            self.pe_compact_checkbox.setToolTip(
+                "Minimiert entbehrliche ganze FileAlignment-Nullblöcke und "
+                "Dateilücken beim Linken von EXE und DLL. "
+                "PE-Importe, Exporte, Relocations und RVAs bleiben erhalten; "
+                "signierte oder nicht eindeutig interpretierbare Dateien "
+                "werden unverändert gelassen.")
+            pe_packing_layout.addWidget(self.pe_compact_checkbox)
 
             linker_options_layout.addWidget(self.pe_packing_group)
             linker_options_layout.addStretch(1)
@@ -108058,9 +108974,16 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                     ("Editor", self.editor_scroll),
                     ("Workstation", self.workstation_scroll),
                 ),
-                "compiler": (
-                    ("Eingabe-Verzeichnis", self.input_directories_page),
-                    ("Ausgabe-Verzeichnis", self.output_directory_page),
+                "compiler": tuple(
+                    (f"{lang.upper() if lang == 'dbase' else lang.title()} {title}", page)
+                    for lang, panels in self.language_directory_pages.items()
+                    for title, page in (("Eingabe-Verzeichnis", panels.input_page),
+                                        ("Ausgabe-Verzeichnis", panels.output_page))
+                ) + (("dBASE Optimierung", self.dbase_optimization_page),),
+                "compiler.dbase": (
+                    ("Eingabe-Verzeichnis", self.language_directory_pages["dbase"].input_page),
+                    ("Ausgabe-Verzeichnis", self.language_directory_pages["dbase"].output_page),
+                    ("Optimierung", self.dbase_optimization_page),
                 ),
                 "linker": (
                     ("Optionen", self.linker_options_scroll),
@@ -108129,6 +109052,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dbase_compress_json_checkbox.toggled.connect(self._dbase_visual_changed)
             self.dbase_static_numeric_slots_checkbox.toggled.connect(self._dbase_slots_changed)
             self.dbase_dynamic_typed_variables_checkbox.toggled.connect(self._dbase_slots_changed)
+            for _checkbox in (
+                self.dbase_peephole_register_width_checkbox,
+                self.dbase_peephole_processor_flags_checkbox,
+                self.dbase_peephole_stack_state_checkbox,
+            ):
+                _checkbox.toggled.connect(self._dbase_peephole_changed)
             self.dbase_store_binary_checkbox.setEnabled(False)
             self.dbase_compress_json_checkbox.setEnabled(False)
             self.prolog_with_descriptors_checkbox.toggled.connect(
@@ -108136,6 +109065,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             self.pe_packing_checkbox.toggled.connect(
                 self._pe_packing_toggled
+            )
+            self.pe_compact_checkbox.toggled.connect(
+                self._pe_compact_toggled
             )
             self.link_with_ordinals_checkbox.toggled.connect(
                 self._link_with_ordinals_toggled
@@ -108632,10 +109564,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 page = self.resource_mapping_scroll
             elif key == "umgebung":
                 page = self._overview_widgets["umgebung"]
-            elif key == "compiler.input_directories":
-                page = self.input_directories_page
-            elif key == "compiler.output_directory":
-                page = self.output_directory_page
+            elif key.startswith("compiler.") and key.count(".") == 2 and key.rsplit(".", 1)[-1] in {"input", "output"}:
+                _lang, _kind = key.split(".")[1:]
+                _panels = self.language_directory_pages.get(_lang)
+                page = (_panels.input_page if _kind == "input" else _panels.output_page) if _panels else self.placeholder
             elif key == "compiler.security":
                 page = self.security_page
             elif key == "compiler.parallelization":
@@ -108649,7 +109581,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             elif key == "compiler.dbase.optimization":
                 page = self.dbase_optimization_page
             elif key == "compiler.dbase":
-                page = self.dbase_optimization_page
+                page = self._overview_widgets["compiler.dbase"]
             elif key == "compiler.prolog.optimization":
                 page = self.prolog_optimization_scroll
             elif key == "compiler.prolog":
@@ -109013,6 +109945,32 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 callback(self.target, options["static_numeric_internal_slots"],
                          options["dynamic_typed_variables"], mark_modified=True)
 
+        def dbase_peephole_settings(self) -> dict:
+            from windows_peephole import normalize_peephole_options
+            return normalize_peephole_options({
+                "register_width": self.dbase_peephole_register_width_checkbox.isChecked(),
+                "processor_flags": self.dbase_peephole_processor_flags_checkbox.isChecked(),
+                "stack_state": self.dbase_peephole_stack_state_checkbox.isChecked(),
+            })
+
+        def set_dbase_peephole_settings(self, options) -> None:
+            from windows_peephole import normalize_peephole_options
+            values = normalize_peephole_options(options)
+            self._syncing = True
+            try:
+                for name in ("register_width", "processor_flags", "stack_state"):
+                    getattr(self, f"dbase_peephole_{name}_checkbox").setChecked(values[name])
+            finally:
+                self._syncing = False
+            self._overview_refresh_later()
+
+        def _dbase_peephole_changed(self, _checked: bool) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_dbase_peephole_settings", None)
+            if callable(callback):
+                callback(self.target, self.dbase_peephole_settings(), mark_modified=True)
+
         def prolog_with_descriptors(self) -> bool:
             return bool(self.prolog_with_descriptors_checkbox.isChecked())
 
@@ -109231,6 +110189,23 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             finally:
                 self._syncing = False
 
+        def pe_compact_enabled(self) -> bool:
+            return bool(self.pe_compact_checkbox.isChecked())
+
+        def set_pe_compact_enabled(self, enabled: bool) -> None:
+            self._syncing = True
+            try:
+                self.pe_compact_checkbox.setChecked(bool(enabled))
+            finally:
+                self._syncing = False
+
+        def _pe_compact_toggled(self, checked: bool) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_compact", None)
+            if callable(callback):
+                callback(self.target, bool(checked), mark_modified=True)
+
         def signing_settings(self) -> dict:
             return self.signing_page.settings()
 
@@ -109241,13 +110216,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             enabled = bool(self.pe_packing_checkbox.isChecked())
             if enabled:
                 self.pe_packing_status_label.setText(
-                    "Aktueller Modus: D64Z/MSZIP – Programmcode wird gepackt und "
-                    "über den internen Loader gestartet."
+                    "Aktueller Modus: D64Z/MSZIP – EXE-Programme werden über den "
+                    "Startloader entpackt; DLLs (LIBRARY) über einen separaten "
+                    "DLL_PROCESS_ATTACH-Loader. Exporte bleiben erhalten."
                 )
             else:
                 self.pe_packing_status_label.setText(
-                    "Aktueller Modus: Standard PE – Programmcode liegt direkt in "
-                    ".text; kein D64Z/MSZIP-Selbstentpacker."
+                    "Aktueller Modus: Standard PE – .text bleibt unkomprimiert; "
+                    "weder EXE noch DLL erhalten einen D64Z-Entpacker."
                 )
             if hasattr(self, "import_packer_group"):
                 self._update_import_packer_controls()
@@ -110814,7 +111790,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             return self.page_for_target(target).pascal_unit_output_directory()
 
         def set_pascal_unit_output_directory(self, target: str, path: str) -> None:
-            self.page_for_target(target).set_pascal_unit_output_directory(path)
+            page = self.page_for_target(target)
+            page.set_pascal_unit_output_directory(path)
+            if hasattr(page, "language_directory_pages"):
+                page.language_directory_pages["pascal"].set_pascal_unit(path)
 
         def set_assembler_syntax(self, target: str, mode: str) -> None:
             self.page_for_target(target).set_assembler_syntax(mode)
@@ -110831,6 +111810,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         def set_pe_packing_enabled(self, target: str, enabled: bool) -> None:
             self.page_for_target(target).set_pe_packing_enabled(enabled)
 
+        def pe_compact_enabled(self, target: str = "pe32") -> bool:
+            return self.page_for_target(target).pe_compact_enabled()
+
+        def set_pe_compact_enabled(self, target: str, enabled: bool) -> None:
+            self.page_for_target(target).set_pe_compact_enabled(enabled)
+
         def dbase_visual_settings(self, target: str = "pe32") -> dict:
             return self.page_for_target(target).dbase_visual_settings()
 
@@ -110845,6 +111830,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
         def set_dbase_slot_settings(self, target: str, static_numeric: bool, dynamic_typed: bool) -> None:
             self.page_for_target(target).set_dbase_slot_settings(static_numeric, dynamic_typed)
+
+        def dbase_peephole_settings(self, target: str = "pe32") -> dict:
+            return self.page_for_target(target).dbase_peephole_settings()
+
+        def set_dbase_peephole_settings(self, target: str, options) -> None:
+            self.page_for_target(target).set_dbase_peephole_settings(options)
 
         def prolog_with_descriptors(self, target: str = "pe32") -> bool:
             return self.page_for_target(target).prolog_with_descriptors()
@@ -112563,6 +113554,20 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.project_windows_output_directories: Dict[str, str] = {
                 "pe32": "", "pe64": "",
             }
+            # Stage 593: pro ABI UND Sprache getrennte Compilerverzeichnisse.
+            self.project_windows_language_search_paths = {
+                target: {language: [] for language in PROJECT_WINDOWS_COMPILER_LANGUAGES}
+                for target in ("pe32", "pe64")}
+            self.project_windows_language_output_directories = {
+                target: {language: "" for language in PROJECT_WINDOWS_COMPILER_LANGUAGES}
+                for target in ("pe32", "pe64")}
+            self.project_windows_language_assembler_cache = {
+                target: {language: "" for language in PROJECT_WINDOWS_COMPILER_LANGUAGES}
+                for target in ("pe32", "pe64")}
+            self.project_windows_language_relative_paths = {
+                target: {language: {"input": True, "output": True}
+                         for language in PROJECT_WINDOWS_COMPILER_LANGUAGES}
+                for target in ("pe32", "pe64")}
             self.project_windows_assembler_cache: Dict[str, str] = {
                 "pe32": "", "pe64": "",
             }
@@ -112604,6 +113609,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe32": PE_PACKING_DEFAULT,
                 "pe64": PE_PACKING_DEFAULT,
             }
+            self.project_windows_compact_enabled: Dict[str, bool] = {
+                "pe32": False, "pe64": False,
+            }
             self.project_windows_dbase_visual: Dict[str, dict] = {
                 "pe32": {"external_ui_components": False, "compress_json": False, "store_binary_data": False},
                 "pe64": {"external_ui_components": False, "compress_json": False, "store_binary_data": False},
@@ -112611,6 +113619,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.project_windows_dbase_slots: Dict[str, dict] = {
                 "pe32": {"static_numeric_internal_slots": False, "dynamic_typed_variables": False},
                 "pe64": {"static_numeric_internal_slots": False, "dynamic_typed_variables": False},
+            }
+            # Per-architecture options shared by dBASE/Pascal generated PE code.
+            self.project_windows_dbase_peephole: Dict[str, dict] = {
+                target: {"register_width": False, "processor_flags": False,
+                         "stack_state": False}
+                for target in ("pe32", "pe64")
             }
             self.project_windows_prolog_with_descriptors: Dict[str, bool] = {
                 "pe32": False,
@@ -112623,6 +113637,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._signing_session_passwords: Dict[str, str] = {}
             for _target_key, _enabled in self.project_windows_pe_packing_enabled.items():
                 _set_pe_packing_enabled(_target_key, _enabled)
+            for _target_key, _enabled in self.project_windows_compact_enabled.items():
+                _set_pe_compact_enabled(_target_key, _enabled)
             self.project_windows_import_packer: Dict[str, Dict[str, object]] = {
                 "pe32": dict(PE_IMPORT_PACKER_RUNTIME_SETTINGS["pe32"]),
                 "pe64": dict(PE_IMPORT_PACKER_RUNTIME_SETTINGS["pe64"]),
@@ -112823,6 +113839,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._music_workspace_active = False
             self._math_learning_workspace_active = False
             self._math_learning_hidden_docks = []
+            self._math_multiplication_focus_active = False
+            self._math_multiplication_hidden_bottom = False
+            self._math_multiplication_restore_pending = False
             self._math_interest_focus_active = False
             self._math_interest_extra_docks = []
             self._math_learning_replaced_filesystem_dock = False
@@ -113254,6 +114273,18 @@ border-radius: 7px;}}"""
                 # aus, ohne sie zu schliessen. Nach der Wiederherstellung nur
                 # den weiterhin aktiven Installer-Workspace sichtbar machen.
                 QTimer.singleShot(0, self._ensure_installer_workspace_after_restore)
+                QTimer.singleShot(0, self._ensure_math_multiplication_workspace_after_restore)
+            elif event.type() == QEvent.WindowStateChange and self.isMinimized():
+                # Stage 570: ein temporär unsichtbarer Qt-Dock ist nicht
+                # dasselbe wie ein vom Benutzer geschlossenes Dock.
+                widget = getattr(self, 'math_learning_widget', None)
+                self._math_multiplication_restore_pending = bool(
+                    getattr(self, '_math_learning_workspace_active', False)
+                    and getattr(self, '_math_multiplication_focus_active', False)
+                    and widget is not None
+                    and widget.content_stack.currentWidget()
+                    is widget.multiplication_matrix_scroll
+                )
 
         def paintEvent(self, event) -> None:
             """Paint the beige resize frame with a visible 3-px outline."""
@@ -114925,6 +115956,9 @@ border-radius: 7px;}}"""
             if not getattr(self, '_math_learning_workspace_active', False):
                 return
             self._set_math_interest_focus(False)
+            self._math_multiplication_focus_active = False
+            self._math_multiplication_restore_pending = False
+            self._math_multiplication_hidden_bottom = False
             self._math_learning_workspace_active = False
 
             if self._math_learning_replaced_central_widget:
@@ -114977,6 +116011,79 @@ border-radius: 7px;}}"""
             self._enforce_math_learning_height_limit()
             QTimer.singleShot(0, self._expand_math_learning_dock)
 
+        def _set_math_multiplication_focus(self, enabled: bool) -> None:
+            """Stage 570: Multiplikation exklusiv anzeigen, andere Docks ausblenden.
+
+            Die Objekte werden nicht geschlossen; das Standard-Workspace-
+            Restore stellt die zuvor sichtbaren Docks später wieder her.
+            """
+            enabled = bool(enabled)
+            dock = getattr(self, 'math_learning_dock', None)
+            if dock is None:
+                return
+            if not enabled:
+                if getattr(self, '_math_multiplication_hidden_bottom', False):
+                    bottom = getattr(self, 'bottom_dock', None)
+                    if bottom is not None and getattr(self, '_math_learning_workspace_active', False):
+                        bottom.show()
+                self._math_multiplication_hidden_bottom = False
+                self._math_multiplication_focus_active = False
+                return
+            self._math_multiplication_focus_active = True
+            hidden = getattr(self, '_math_learning_hidden_docks', [])
+            bottom = getattr(self, 'bottom_dock', None)
+            for candidate in self.findChildren(QDockWidget):
+                if candidate is dock or not candidate.isVisible():
+                    continue
+                if candidate is bottom:
+                    self._math_multiplication_hidden_bottom = True
+                if candidate not in hidden:
+                    hidden.append(candidate)
+                blocked = candidate.blockSignals(True)
+                try:
+                    candidate.hide()
+                finally:
+                    candidate.blockSignals(blocked)
+            self._math_learning_hidden_docks = hidden
+            central = self.centralWidget()
+            if central is not None and central.isVisible():
+                self._math_learning_replaced_central_widget = True
+                central.hide()
+            # Nach Minimieren/Wiederherstellen kann Qt die Splittergröße
+            # verzögert aktualisieren: Seite aktivieren und Layout anstoßen.
+            widget = getattr(self, 'math_learning_widget', None)
+            if widget is not None:
+                widget.content_stack.setCurrentWidget(widget.multiplication_matrix_scroll)
+                widget.content_stack.updateGeometry()
+                widget.multiplication_matrix_scroll.updateGeometry()
+            QTimer.singleShot(0, self._expand_math_learning_dock)
+
+        def _ensure_math_multiplication_workspace_after_restore(self) -> None:
+            """Nach WindowStateChange das Multiplikationspanel wieder sichtbar machen."""
+            if self.isMinimized():
+                return
+            if not (getattr(self, '_math_multiplication_restore_pending', False)
+                    or getattr(self, '_math_multiplication_focus_active', False)):
+                return
+            dock = getattr(self, 'math_learning_dock', None)
+            widget = getattr(self, 'math_learning_widget', None)
+            if dock is None or widget is None:
+                return
+            if widget.content_stack.currentWidget() is not widget.multiplication_matrix_scroll:
+                self._math_multiplication_restore_pending = False
+                return
+            if not getattr(self, '_math_learning_workspace_active', False):
+                self._prepare_math_learning_workspace(dock)
+            self._set_math_multiplication_focus(True)
+            if not dock.isVisible():
+                dock.show()
+            dock.raise_()
+            widget.content_stack.setCurrentWidget(widget.multiplication_matrix_scroll)
+            widget.content_stack.show()
+            widget.multiplication_matrix_scroll.show()
+            self._math_multiplication_restore_pending = False
+            QTimer.singleShot(0, self._expand_math_learning_dock)
+
         def _prepare_math_learning_workspace(self, math_dock) -> None:
             if getattr(self, '_math_learning_workspace_active', False):
                 return
@@ -115014,8 +116121,18 @@ border-radius: 7px;}}"""
 
             self._math_learning_workspace_active = True
 
+        def _maybe_restore_math_learning_workspace(self) -> None:
+            """Echtes Schließen von temporärem Hide beim Minimieren unterscheiden."""
+            if (self.isMinimized()
+                    or getattr(self, '_math_multiplication_restore_pending', False)):
+                return
+            dock = getattr(self, 'math_learning_dock', None)
+            if dock is not None and dock.isVisible():
+                return
+            self._restore_math_learning_workspace()
+
         def _math_learning_dock_visibility_changed(self, visible: bool) -> None:
-            """Mathematik nutzt die komplette freie Arbeitsfläche; nur das Protokoll bleibt sichtbar."""
+            """Mathematik nutzt die komplette freie Arbeitsfläche; Matrix exklusiv."""
             dock = getattr(self, 'math_learning_dock', None)
             if dock is None:
                 return
@@ -115025,7 +116142,10 @@ border-radius: 7px;}}"""
                 QTimer.singleShot(0, self._enforce_math_learning_height_limit)
                 QTimer.singleShot(0, self._expand_math_learning_dock)
             else:
-                self._restore_math_learning_workspace()
+                # Stage 570: Nicht direkt restaurieren: während Qt/Win32 die
+                # Fenster minimiert, kann der Child-Dock noch False melden,
+                # bevor QMainWindow.isMinimized() bereits True liefert.
+                QTimer.singleShot(0, self._maybe_restore_math_learning_workspace)
 
         def _math_learning_dock_top_level_changed(self, floating: bool) -> None:
             """Stage 151: Floating-Dock bleibt normal mit der Maus resizbar."""
@@ -115181,6 +116301,7 @@ border-radius: 7px;}}"""
             widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             widget.set_dark_mode(self.dark_mode_enabled)
             widget.interest_focus_changed.connect(self._set_math_interest_focus)
+            widget.matrix_multiplication_focus_changed.connect(self._set_math_multiplication_focus)
             widget.close_requested.connect(dock.close)
             dock.setWidget(widget)
             dock.hide()
@@ -115682,6 +116803,7 @@ border-radius: 7px;}}"""
                 )
             is_dll = target.suffix.casefold() == ".dll"
             try:
+                _set_pe_compact_enabled('pe32', self.project_windows_compact_enabled.get('pe32', False))
                 program = link_coff32_inputs(
                     [Path(name) for name in filenames],
                     entry_symbol="__d64_dll_entry" if is_dll else "_start",
@@ -115690,6 +116812,13 @@ border-radius: 7px;}}"""
                     dll_name=target.name if is_dll else None,
                 )
                 target.write_bytes(program.executable)
+                if self.project_windows_compact_enabled.get("pe32", False):
+                    _report = PE_COMPACT_LAST_RESULT.get("pe32", {})
+                    self.log(
+                        f"PE COMPACT (pe32): {target.name}; "
+                        f"{_report.get('before_size', len(program.executable))} -> "
+                        f"{_report.get('after_size', len(program.executable))} Bytes "
+                        f"(-{_report.get('saved_bytes', 0)} Bytes)")
                 if not self._sign_windows_output_if_enabled(target, "pe32"):
                     return
             except (OSError, PE32AssemblerError) as exc:
@@ -115751,12 +116880,20 @@ border-radius: 7px;}}"""
                 target=target.with_suffix(".dll" if "DLL" in selected_filter else ".exe")
             is_dll=target.suffix.casefold()==".dll"
             try:
+                _set_pe_compact_enabled('pe64', self.project_windows_compact_enabled.get('pe64', False))
                 program=link_coff64_inputs(
                     [Path(name) for name in filenames],
                     entry_symbol="__d64_dll_entry" if is_dll else "_start",
                     gui=True, dll=is_dll, dll_name=target.name if is_dll else None,
                 )
                 target.write_bytes(program.executable)
+                if self.project_windows_compact_enabled.get("pe64", False):
+                    _report = PE_COMPACT_LAST_RESULT.get("pe64", {})
+                    self.log(
+                        f"PE COMPACT (pe64): {target.name}; "
+                        f"{_report.get('before_size', len(program.executable))} -> "
+                        f"{_report.get('after_size', len(program.executable))} Bytes "
+                        f"(-{_report.get('saved_bytes', 0)} Bytes)")
                 if not self._sign_windows_output_if_enabled(target, "pe64"):
                     return
             except (OSError,PE64AssemblerError) as exc:
@@ -117757,6 +118894,23 @@ border-radius: 7px;}}"""
             for ffi in ffi_prototypes.values():
                 if ffi.import_line not in assembly:
                     missing_imports.append(ffi.import_line + "\n")
+            # Stage 595: WFM string slots contain UTF-8, whereas native C
+            # LPSTR/LPCSTR return CP1252. Conversion uses kernel32 code-page
+            # APIs and a temporary wide buffer, without a new Qt5 DLL export.
+            from d64dbase.ffi_string_result import returns_ansi_string
+            wfm_ffi_ansi_result_used = any(
+                returns_ansi_string(ffi.return_type) for ffi in ffi_prototypes.values()
+            )
+            if wfm_ffi_ansi_result_used:
+                for symbol, dll, entry in (
+                    ('MultiByteToWideChar', 'kernel32.dll', 'MultiByteToWideChar'),
+                    ('WideCharToMultiByte', 'kernel32.dll', 'WideCharToMultiByte'),
+                    ('__dbase_ffi_malloc', 'msvcrt.dll', 'malloc'),
+                    ('__dbase_ffi_free', 'msvcrt.dll', 'free'),
+                ):
+                    declaration = f'import {symbol}, "{dll}", "{entry}"'
+                    if declaration not in assembly:
+                        missing_imports.append(declaration + "\n")
 
             if missing_imports:
                 asm_lines = assembly.splitlines(keepends=True)
@@ -119415,7 +120569,11 @@ border-radius: 7px;}}"""
                     if (isinstance(node, DBaseCallExpression) and
                             node.name.casefold() in ffi_prototypes):
                         emit_wfm_ffi_call(out, node, destination)
-                        runtime_memory_kinds[destination_key] = 'integer'
+                        from d64dbase.ffi_string_result import returns_ansi_string
+                        runtime_memory_kinds[destination_key] = (
+                            'string' if returns_ansi_string(
+                                ffi_prototypes[node.name.casefold()].return_type)
+                            else 'integer')
                         return True
 
                 # Stage 464: native WFM variant type inspection; the answer
@@ -120114,6 +121272,11 @@ border-radius: 7px;}}"""
                     return
                 if isinstance(node, DBaseCallExpression):
                     if node.name.casefold() in ffi_prototypes:
+                        from d64dbase.ffi_string_result import returns_ansi_string
+                        if returns_ansi_string(ffi_prototypes[node.name.casefold()].return_type):
+                            raise AssemblerError(
+                                f'{filename}: ANSI-String-DLL-Rueckgabe von {node.name} '
+                                'kann nicht als numerische IF-Bedingung verwendet werden.')
                         result_slot = memory_slot(wfm_flow_label('ffi_cond'))
                         emit_wfm_ffi_call(out, node, result_slot)
                         out.append(f"    fld qword ptr [{memory_number_label(result_slot)}]")
@@ -120253,7 +121416,7 @@ border-radius: 7px;}}"""
                             f"    mov dword ptr [{memory_type_label(destination)}], {WFM_VALUE_STRING}"])
 
             def emit_wfm_ffi_call(out, node, destination=None):
-                """Call typed WinAPI imports in a WFM method (Win32 stdcall/x64)."""
+                """Call typed DLL imports in a WFM method (PE32 cdecl/stdcall, PE64 ABI)."""
                 from d64dbase.ffi_types import ffi_type_info, ffi_return_instructions
                 if not isinstance(node, DBaseCallExpression):
                     return False
@@ -120353,13 +121516,26 @@ border-radius: 7px;}}"""
                             out.append(f'    push dword ptr [{memory_pointer_label(arg_slot)}]')
                             out.append(f'{done}:')
                     out.append(f'    call {ffi.label}')
+                    if ffi.calling_convention == 'cdecl':
+                        from d64dbase.ffi import ffi_stack_argument_bytes
+                        cleanup = ffi_stack_argument_bytes(ffi.argument_types, target='pe32')
+                        if cleanup:
+                            out.append(f'    add esp, {cleanup}')
                 if destination is not None:
-                    out.extend(ffi_return_instructions(ffi.return_type, is64=is64))
-                    out.extend([
-                        '    fild qword ptr [__dbase_ffi_return]',
-                        f'    fstp qword ptr [{memory_number_label(destination)}]',
-                    ])
-                    emit_wfm_numeric_header(out, destination, WFM_VALUE_INTEGER)
+                    from d64dbase.ffi_string_result import (
+                        returns_ansi_string, wfm_utf8_result,
+                    )
+                    if returns_ansi_string(ffi.return_type):
+                        out.extend(wfm_utf8_result(
+                            destination, is64=is64,
+                            prefix=wfm_flow_label('ffi_string_result')))
+                    else:
+                        out.extend(ffi_return_instructions(ffi.return_type, is64=is64))
+                        out.extend([
+                            '    fild qword ptr [__dbase_ffi_return]',
+                            f'    fstp qword ptr [{memory_number_label(destination)}]',
+                        ])
+                        emit_wfm_numeric_header(out, destination, WFM_VALUE_INTEGER)
                 return True
 
             def emit_wfm_condition_true(out, node, true_label):
@@ -121587,6 +122763,17 @@ border-radius: 7px;}}"""
                         "    resd 1",
                     ])
 
+            if wfm_ffi_ansi_result_used:
+                bss_lines.extend([
+                    '', '; Stage 595: ANSI C -> WFM UTF-8 conversion scratch',
+                    '__dbase_ffi_ansi_src:',
+                    '    resq 1' if is64 else '    resd 1',
+                    '__dbase_ffi_ansi_wide:',
+                    '    resq 1' if is64 else '    resd 1',
+                    '__dbase_ffi_ansi_wcount:', '    resd 1',
+                    '__dbase_ffi_utf8_count:', '    resd 1',
+                ])
+
             if runtime_number_constants:
                 data_lines.extend([
                     "",
@@ -122100,7 +123287,8 @@ border-radius: 7px;}}"""
                         assembly_text = preprocess_windows_asm(
                             assembly_text,
                             filename=str(_asm_path),
-                            include_dirs=self._project_windows_asm_include_paths(document.build_target),
+                            include_dirs=self._project_windows_asm_include_paths(
+                                document.build_target, _project_document_compiler_language(document) or "dbase"),
                         ).source
                     except WindowsAsmMacroError:
                         pass  # actual assembler reports the include error with its source location
@@ -124895,6 +126083,20 @@ border-radius: 7px;}}"""
                 return
             dock = QDockWidget("Projekt-Einstellungen", self)
             dock.setObjectName("project_settings_dock")
+            # Stage 604: ausschliesslich die Projekt-Einstellungen um 1 pt
+            # vergroessern. Der Font wird vor dem Erzeugen der Kind-Widgets
+            # gesetzt, damit TreeLists, Tabs, Labels, Eingabefelder, Buttons
+            # und deren Popup-Menues denselben vererbten Wert verwenden.
+            # Die separate Editor-Vorschau besitzt absichtlich ihre eigene
+            # konfigurierbare Schrift und wird dadurch nicht ueberschrieben.
+            settings_font = QFont(dock.font())
+            settings_point_size = settings_font.pointSizeF()
+            if settings_point_size <= 0:
+                settings_point_size = QApplication.font().pointSizeF()
+            if settings_point_size <= 0:
+                settings_point_size = 10.0
+            settings_font.setPointSizeF(settings_point_size + 1.0)
+            dock.setFont(settings_font)
             dock.setFeatures(self._dock_features())
             dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
             # Stage ASM 61: Das Settings-Dock darf niemals eine vergroesserte
@@ -124952,6 +126154,8 @@ border-radius: 7px;}}"""
                 panel.set_assembler_cache_directory(
                     _target, self.project_windows_assembler_cache.get(_target, ""),
                 )
+                for _language in PROJECT_WINDOWS_COMPILER_LANGUAGES:
+                    self._sync_language_directories_page(_target, _language)
                 panel.set_pascal_unit_output_directory(
                     _target, self.project_windows_pascal_unit_output_directories.get(_target, ""),
                 )
@@ -124983,6 +126187,8 @@ border-radius: 7px;}}"""
                         _target, PE_PACKING_DEFAULT
                     ),
                 )
+                panel.set_pe_compact_enabled(
+                    _target, self.project_windows_compact_enabled.get(_target, False))
                 panel.set_signing_settings(
                     _target,
                     self.project_windows_signing.get(_target, normalize_signing_settings()),
@@ -125218,6 +126424,8 @@ border-radius: 7px;}}"""
                 self.project_settings_panel.set_assembler_cache_directory(
                     _target, self.project_windows_assembler_cache.get(_target, ""),
                 )
+                for _language in PROJECT_WINDOWS_COMPILER_LANGUAGES:
+                    self._sync_language_directories_page(_target, _language)
                 self.project_settings_panel.set_pascal_unit_output_directory(
                     _target, self.project_windows_pascal_unit_output_directories.get(_target, ""),
                 )
@@ -125231,6 +126439,8 @@ border-radius: 7px;}}"""
                         _target, PE_PACKING_DEFAULT
                     ),
                 )
+                self.project_settings_panel.set_pe_compact_enabled(
+                    _target, self.project_windows_compact_enabled.get(_target, False))
                 _ui_opt = self.project_windows_dbase_visual.get(_target, {})
                 self.project_settings_panel.set_dbase_visual_settings(
                     _target, bool(_ui_opt.get("external_ui_components", False)),
@@ -125241,6 +126451,9 @@ border-radius: 7px;}}"""
                 self.project_settings_panel.set_dbase_slot_settings(
                     _target, bool(_slot_opt.get("static_numeric_internal_slots", False)),
                     bool(_slot_opt.get("dynamic_typed_variables", False)),
+                )
+                self.project_settings_panel.set_dbase_peephole_settings(
+                    _target, self.project_windows_dbase_peephole.get(_target, {}),
                 )
                 self.project_settings_panel.set_prolog_with_descriptors(
                     _target,
@@ -125381,8 +126594,11 @@ border-radius: 7px;}}"""
                     _active_target = "pe32"
                 self.project_settings_panel.select_windows_target(_active_target)
                 _page = self.project_settings_panel.page_for_target(_active_target)
-                _page.tree.setCurrentItem(_page.compiler_input_directories_item)
-                _page.directory_edit.setFocus(Qt.OtherFocusReason)
+                _current_language = _project_document_compiler_language(current) or "dbase"
+                _page.tree.setCurrentItem(
+                    _page.language_directory_items[(_current_language, "input")])
+                _page.language_directory_pages[_current_language].input_edit.setFocus(
+                    Qt.OtherFocusReason)
                 self.statusBar().showMessage(
                     "Projekt-Einstellungen geöffnet: "
                     + ("Windows 64-Bit" if _active_target == "pe64" else "Windows 32-Bit")
@@ -126383,6 +127599,7 @@ border-radius: 7px;}}"""
             value = bool(enabled)
             changed = bool(modes.get(kind_key, True)) != value
             modes[kind_key] = value
+            self.project_windows_language_relative_paths[target_key]["dbase"][kind_key] = value
             panel = getattr(self, "project_settings_panel", None)
             if panel is not None:
                 page = panel.page_for_target(target_key)
@@ -126474,6 +127691,31 @@ border-radius: 7px;}}"""
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_windows_dbase_peephole_settings(
+            self, target: str, options, *, mark_modified: bool = True,
+        ) -> None:
+            from windows_peephole import normalize_peephole_options
+            key = self._project_windows_target_key(target)
+            values = normalize_peephole_options(options)
+            changed = self.project_windows_dbase_peephole.get(key) != values
+            self.project_windows_dbase_peephole[key] = values
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and panel.dbase_peephole_settings(key) != values:
+                panel.set_dbase_peephole_settings(key, values)
+            if changed and mark_modified:
+                # Previously generated code cannot safely be de-optimized.
+                # A recompile is mandatory before re-assembling/linking.
+                for index in range(self.document_tabs.count()):
+                    document = self.document_tabs.widget(index)
+                    if (isinstance(document, DocumentEditor)
+                            and (document.is_dbase_document or document.is_pascal_document)
+                            and document.build_target == key):
+                        document.invalidate_assembly_result(
+                            "Peephole-Optionen geaendert: neu kompilieren")
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
         def set_project_windows_prolog_with_descriptors(
             self,
             target: str,
@@ -126510,6 +127752,26 @@ border-radius: 7px;}}"""
                             )
                     except Exception:
                         pass
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_compact(
+            self,
+            target: str,
+            enabled: bool,
+            *,
+            mark_modified: bool = True,
+        ) -> None:
+            key = self._project_windows_target_key(target)
+            value = bool(enabled)
+            changed = bool(self.project_windows_compact_enabled.get(key, False)) != value
+            self.project_windows_compact_enabled[key] = value
+            _set_pe_compact_enabled(key, value)
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and panel.pe_compact_enabled(key) != value:
+                panel.set_pe_compact_enabled(key, value)
+            if changed and mark_modified:
                 self.set_project_modified(True)
                 if self.current_project_path is not None:
                     self.save_project()
@@ -126971,6 +128233,7 @@ border-radius: 7px;}}"""
             current = list(self.project_windows_search_paths.get(target_key, ()))
             changed = normalized != current
             self.project_windows_search_paths[target_key] = normalized
+            self.project_windows_language_search_paths[target_key]["dbase"] = list(normalized)
             panel = getattr(self, "project_settings_panel", None)
             if panel is not None and tuple(panel.paths(target_key)) != tuple(normalized):
                 panel.set_paths(target_key, normalized)
@@ -127099,8 +128362,21 @@ border-radius: 7px;}}"""
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def _dbase_console_runtime_pack_enabled(self, target: str) -> bool:
+            """Stage 607: pack the console DLL when PE packing OR DLL packing is on.
+
+            Use the current project's per-architecture snapshot.  The console
+            DLL does not become an EXE loader; it retains its DLL-specific
+            D64Z/MSZIP DLL_PROCESS_ATTACH bootstrap.
+            """
+            key = self._project_windows_target_key(target)
+            return bool(
+                self.project_windows_pe_packing_enabled.get(key, PE_PACKING_DEFAULT)
+                or self.project_windows_console_dll_pack.get(key, False)
+            )
+
         def create_dbase_runtime_dll(self, target: str, directory: str = None) -> bool:
-            """Stage 447: actual PE32/PE32+ DLL creation using internal linker only."""
+            """Stage 447/607: actual PE32/PE32+ DLL creation using internal linker."""
             try:
                 from d64dbase.runtime_builder import create_runtime_dll
                 key = str(target).casefold()
@@ -127118,9 +128394,9 @@ border-radius: 7px;}}"""
                     coff32=write_coff32_object, link32=link_coff32_objects,
                     assemble64=assemble_pe64_object_source,
                     coff64=write_coff64_object, link64=link_coff64_objects,
-                    pack_dll=bool(self.project_windows_console_dll_pack.get(key, False)),
+                    pack_dll=self._dbase_console_runtime_pack_enabled(key),
                 )
-                if self.project_windows_console_dll_pack.get(key, False):
+                if self._dbase_console_runtime_pack_enabled(key):
                     from d64dbase.pe_dll_payload import is_payload_packed, parse_pe
                     if not is_payload_packed(destination):
                         raise ValueError('D64Z-Payload der DLL konnte nicht bestätigt werden')
@@ -127197,6 +128473,7 @@ border-radius: 7px;}}"""
             )
             changed = normalized != current
             self.project_windows_output_directories[target_key] = normalized
+            self.project_windows_language_output_directories[target_key]["dbase"] = normalized
             panel = getattr(self, "project_settings_panel", None)
             if (
                 panel is not None
@@ -127208,13 +128485,121 @@ border-radius: 7px;}}"""
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def _project_windows_language(self, language: str) -> str:
+            value = str(language or "").casefold()
+            if value not in PROJECT_WINDOWS_COMPILER_LANGUAGES:
+                raise ValueError(f"Unbekannte Compiler-Sprache: {language}")
+            return value
+
+        def set_project_windows_language_search_paths(
+            self, target: str, language: str, paths, *, mark_modified=True,
+        ) -> None:
+            lang = self._project_windows_language(language)
+            if lang == "dbase":
+                self.set_project_windows_search_paths(target, paths, mark_modified=mark_modified)
+            else:
+                target = self._project_windows_target_key(target)
+                normalized = []
+                seen = set()
+                for value in paths or ():
+                    text = str(value or "").strip()
+                    if not text:
+                        continue
+                    path = self._project_windows_absolute_directory(text)
+                    key = path.casefold()
+                    if key not in seen:
+                        seen.add(key)
+                        normalized.append(path)
+                old = self.project_windows_language_search_paths[target].get(lang, [])
+                self.project_windows_language_search_paths[target][lang] = normalized
+                if old != normalized and mark_modified:
+                    self.set_project_modified(True)
+                    if self.current_project_path is not None:
+                        self.save_project()
+            self._sync_language_directories_page(target, lang)
+
+        def set_project_windows_language_output_directory(
+            self, target: str, language: str, value, *, mark_modified=True,
+        ) -> None:
+            lang = self._project_windows_language(language)
+            if lang == "dbase":
+                self.set_project_windows_output_directory(target, value, mark_modified=mark_modified)
+            else:
+                target = self._project_windows_target_key(target)
+                text = str(value or "").strip()
+                normalized = self._project_windows_absolute_directory(text) if text else ""
+                old = self.project_windows_language_output_directories[target].get(lang, "")
+                self.project_windows_language_output_directories[target][lang] = normalized
+                if old != normalized and mark_modified:
+                    self.set_project_modified(True)
+                    if self.current_project_path is not None:
+                        self.save_project()
+            self._sync_language_directories_page(target, lang)
+
+        def set_project_windows_language_assembler_cache(
+            self, target: str, language: str, value, *, mark_modified=True,
+        ) -> None:
+            target = self._project_windows_target_key(target)
+            lang = self._project_windows_language(language)
+            text = str(value or "").strip()
+            normalized = self._project_windows_absolute_directory(text) if text else ""
+            old = self.project_windows_language_assembler_cache[target].get(lang, "")
+            self.project_windows_language_assembler_cache[target][lang] = normalized
+            if old != normalized and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+            self._sync_language_directories_page(target, lang)
+
+        def set_project_windows_language_relative_paths(
+            self, target: str, language: str, kind: str, enabled: bool,
+            *, mark_modified=True,
+        ) -> None:
+            lang = self._project_windows_language(language)
+            if lang == "dbase":
+                self.set_project_windows_relative_paths(target, kind, enabled, mark_modified=mark_modified)
+            else:
+                target = self._project_windows_target_key(target)
+                kind = "output" if str(kind).casefold() == "output" else "input"
+                modes = self.project_windows_language_relative_paths[target][lang]
+                changed = bool(modes[kind]) != bool(enabled)
+                modes[kind] = bool(enabled)
+                if changed and mark_modified:
+                    self.set_project_modified(True)
+                    if self.current_project_path is not None:
+                        self.save_project()
+            self._sync_language_directories_page(target, lang)
+
+        def _sync_language_directories_page(self, target: str, language: str) -> None:
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is None:
+                return
+            page = panel.page_for_target(target)
+            language_page = getattr(page, "language_directory_pages", {}).get(language)
+            if language_page is None:
+                return
+            language_page.set_values(
+                self.project_windows_language_search_paths[target][language],
+                self.project_windows_language_output_directories[target][language],
+                self.project_windows_language_assembler_cache[target][language],
+                self.project_windows_language_relative_paths[target][language],
+            )
+
+        def _project_windows_language_output_path(
+            self, target: str, language: str,
+        ) -> Optional[Path]:
+            key = self._project_windows_target_key(target)
+            value = self.project_windows_language_output_directories.get(key, {}).get(
+                self._project_windows_language(language), "")
+            return (Path(self._project_windows_absolute_directory(value)) if value else None)
+
         def _project_windows_link_search_paths(
-            self,
-            target: str,
+            self, target: str, language: str = "dbase",
         ) -> Tuple[Path, ...]:
             target_key = self._project_windows_target_key(target)
+            lang = self._project_windows_language(language)
             result: List[Path] = []
-            for value in self.project_windows_search_paths.get(target_key, ()):
+            for value in self.project_windows_language_search_paths.get(target_key, {}).get(lang, ()):
                 text = self._project_windows_absolute_directory(value)
                 if text:
                     path = Path(text)
@@ -127239,7 +128624,7 @@ border-radius: 7px;}}"""
             ]
             if document.path is not None:
                 directories.append(Path(document.path).expanduser().resolve().parent)
-            directories.extend(self._project_windows_link_search_paths(target))
+            directories.extend(self._project_windows_link_search_paths(target, "pascal"))
             result: List[Path] = []
             seen = set()
             for directory in directories:
@@ -127252,9 +128637,11 @@ border-radius: 7px;}}"""
                     seen.add(key)
             return tuple(result)
 
-        def _project_windows_asm_include_paths(self, target: str) -> Tuple[Path, ...]:
-            """Existing Compiler -> Eingabe-Verzeichnis, independent for PE32/PE64."""
-            return self._project_windows_link_search_paths(target)
+        def _project_windows_asm_include_paths(
+            self, target: str, language: str = "dbase",
+        ) -> Tuple[Path, ...]:
+            """Stage 593: nur die Includes der aktiven Compiler-Sprache."""
+            return self._project_windows_link_search_paths(target, language)
 
         def _project_windows_ordinal_search_paths(
             self,
@@ -127263,7 +128650,7 @@ border-radius: 7px;}}"""
             candidates: List[Path] = []
             if document.path is not None:
                 candidates.append(Path(document.path).expanduser().resolve().parent)
-            output = self._project_windows_output_path(document.build_target)
+            output = self._document_windows_output_path(document)
             if output is not None:
                 candidates.append(output)
             unit_output = self._document_windows_pascal_unit_output_path(document)
@@ -127271,7 +128658,7 @@ border-radius: 7px;}}"""
                 candidates.append(unit_output)
             candidates.append(self._project_windows_base_directory())
             candidates.extend(
-                self._project_windows_link_search_paths(document.build_target)
+                self._project_windows_link_search_paths(document.build_target, "pascal")
             )
             result: List[Path] = []
             seen = set()
@@ -127338,7 +128725,9 @@ border-radius: 7px;}}"""
             override = getattr(
                 document, "project_tree_compile_output_directory", None
             )
-            output = self._project_windows_output_path(document.build_target)
+            language = _project_document_compiler_language(document)
+            output = (self._project_windows_language_output_path(document.build_target, language)
+                      if language else self._project_windows_output_path(document.build_target))
             # Configured link destination takes priority over the old project-tree
             # generic output; if unset, preserve the legacy per-tree override.
             if output is None and override:
@@ -127354,6 +128743,8 @@ border-radius: 7px;}}"""
             """PUI und Pascal-UNIT-COFF: drittes Ausgabefeld; ansonsten alter Zielpfad."""
             key = self._project_windows_target_key(document.build_target)
             raw = str(self.project_windows_pascal_unit_output_directories.get(key, "") or "").strip()
+            if _project_document_compiler_language(document) != "pascal":
+                return self._document_windows_output_path(document)
             if not raw:
                 return self._document_windows_output_path(document)
             return Path(self._project_windows_absolute_directory(raw))
@@ -127387,6 +128778,7 @@ border-radius: 7px;}}"""
             *,
             source_path: Optional[Path] = None,
             target: str = "pe32",
+            language: str = "dbase",
         ) -> Path:
             candidate = Path(value).expanduser()
             if candidate.is_file():
@@ -127407,16 +128799,16 @@ border-radius: 7px;}}"""
             # eingehalten; die andere Architektur wird niemals durchsucht.
             _raw_units = str(self.project_windows_pascal_unit_output_directories.get(
                 self._project_windows_target_key(target), "") or "").strip()
-            if _raw_units:
+            if _raw_units and language == "pascal":
                 _candidate_dir = Path(self._project_windows_absolute_directory(_raw_units))
                 candidates.append(_candidate_dir / leaf)
             # Stage 548: link inputs can also be placed next to the final
             # executable/DLL (Compiler -> Ausgabe-Verzeichnis), not only in
             # the Unit/COFF directory or explicit input search paths.
-            executable_output = self._project_windows_output_path(target)
+            executable_output = self._project_windows_language_output_path(target, language)
             if executable_output is not None:
                 candidates.append(executable_output / leaf)
-            for directory in self._project_windows_link_search_paths(target):
+            for directory in self._project_windows_link_search_paths(target, language):
                 candidates.append(directory / leaf)
             for path in candidates:
                 if path.is_file():
@@ -127957,6 +129349,18 @@ border-radius: 7px;}}"""
                 "Deutschen Grammatikparser öffnen (Syntax, Kongruenz, Intent)")
             self.agent_0001_action.triggered.connect(self.show_agent_0001_dock)
             self.agent_menu.addAction(self.agent_0001_action)
+            self.agent_0002_action = QAction("0002", self)
+            self.agent_0002_action.setObjectName("agent_0002_action")
+            self.agent_0002_action.setStatusTip(
+                "Textassoziationen erkennen und Formen zeichnen (Kreis, Dreieck)")
+            self.agent_0002_action.triggered.connect(self.show_agent_0002_dock)
+            self.agent_menu.addAction(self.agent_0002_action)
+            self.agent_0003_action = QAction("0003 - Bild-Erkennung", self)
+            self.agent_0003_action.setObjectName("agent_0003_action")
+            self.agent_0003_action.setStatusTip(
+                "OpenCV-Bilderkennung, deutsche Bildfragen und DBF-Wortanalyse öffnen")
+            self.agent_0003_action.triggered.connect(self.show_agent_0003_dock)
+            self.agent_menu.addAction(self.agent_0003_action)
 
             help_menu = self.main_menu_bar.addMenu("&Hilfe")
             help_menu.addAction(self.chm_viewer_action)
@@ -128057,14 +129461,42 @@ border-radius: 7px;}}"""
 
         def show_agent_0001_dock(self):
             """Agent -> 0001: Parser im bestehenden exklusiven Dock-Workspace."""
-            from agent_0001 import GermanGrammarWidget
+            # Stage 573: Agent aus genau diesem Programmverzeichnis laden.
+            # Andernfalls kann ein älteres agent_0001-Modul aus sys.modules
+            # oder einer anderen PYTHONPATH-Position ohne set_dark_mode kommen.
+            import importlib.util as _agent_importlib_util
+            _agent_source = Path(__file__).resolve().with_name("agent_0001.py")
+            if _agent_source.is_file():
+                _agent_directory = str(_agent_source.parent)
+                if _agent_directory not in sys.path:
+                    sys.path.insert(0, _agent_directory)
+                _agent_module_name = "_d64_agent_0001_local"
+                _agent_module = sys.modules.get(_agent_module_name)
+                if (_agent_module is None or
+                        Path(str(getattr(_agent_module, "__file__", "") or "")).resolve() != _agent_source):
+                    _agent_spec = _agent_importlib_util.spec_from_file_location(
+                        _agent_module_name, str(_agent_source))
+                    if _agent_spec is None or _agent_spec.loader is None:
+                        raise ImportError(f"Agent 0001 kann nicht geladen werden: {_agent_source}")
+                    _agent_module = _agent_importlib_util.module_from_spec(_agent_spec)
+                    sys.modules[_agent_module_name] = _agent_module
+                    try:
+                        _agent_spec.loader.exec_module(_agent_module)
+                    except Exception:
+                        sys.modules.pop(_agent_module_name, None)
+                        raise
+                GermanGrammarWidget = _agent_module.GermanGrammarWidget
+            else:
+                # Im PyInstaller-Bundle kann die Moduldatei im Archiv liegen.
+                from agent_0001 import GermanGrammarWidget
 
             dock = getattr(self, "agent_0001_dock", None)
             if dock is None:
                 dock = QDockWidget("Agent 0001 – Deutscher Grammatikparser", self)
                 dock.setObjectName("agent_0001_grammar_dock")
                 dock.setAllowedAreas(Qt.AllDockWidgetAreas)
-                dock.setWidget(GermanGrammarWidget(dock))
+                self.agent_0001_widget = GermanGrammarWidget(dock)
+                dock.setWidget(self.agent_0001_widget)
                 self.addDockWidget(Qt.LeftDockWidgetArea, dock)
                 dock.visibilityChanged.connect(
                     lambda visible, current=dock:
@@ -128074,6 +129506,12 @@ border-radius: 7px;}}"""
                 self.agent_0001_dock = dock
 
             self._activate_exclusive_tool_workspace(dock)
+            agent_widget = getattr(self, "agent_0001_widget", None)
+            if agent_widget is None:
+                agent_widget = dock.widget()
+                self.agent_0001_widget = agent_widget
+            if agent_widget is not None and hasattr(agent_widget, "set_dark_mode"):
+                agent_widget.set_dark_mode(bool(self.dark_mode_enabled))
             dock.show()
             dock.raise_()
             self._expand_exclusive_tool_workspace(dock)
@@ -128082,6 +129520,129 @@ border-radius: 7px;}}"""
                 self._expand_exclusive_tool_workspace(current)
             )
             self.statusBar().showMessage("Agent 0001: Grammatikparser geöffnet")
+
+        def show_agent_0002_dock(self):
+            """Agent -> 0002: geteilte Textanalyse und zeichnende Assoziation."""
+            import importlib.util as _association_importlib
+            _agent_source = Path(__file__).resolve().with_name("agent_0002.py")
+            if _agent_source.is_file():
+                _agent_dir = str(_agent_source.parent)
+                if _agent_dir not in sys.path:
+                    sys.path.insert(0, _agent_dir)
+                _module_name = "_d64_agent_0002_local"
+                _agent_module = sys.modules.get(_module_name)
+                if (_agent_module is None or
+                        Path(str(getattr(_agent_module, "__file__", "") or "")).resolve()
+                        != _agent_source):
+                    _spec = _association_importlib.spec_from_file_location(
+                        _module_name, str(_agent_source))
+                    if _spec is None or _spec.loader is None:
+                        raise ImportError("Agent 0002 kann nicht geladen werden: " + str(_agent_source))
+                    _agent_module = _association_importlib.module_from_spec(_spec)
+                    sys.modules[_module_name] = _agent_module
+                    try:
+                        _spec.loader.exec_module(_agent_module)
+                    except Exception:
+                        sys.modules.pop(_module_name, None)
+                        raise
+                AssociationWidget = _agent_module.GermanAssociationWidget
+            else:
+                from agent_0002 import GermanAssociationWidget as AssociationWidget
+
+            dock = getattr(self, "agent_0002_dock", None)
+            if dock is None:
+                dock = QDockWidget("Agent 0002 – Grammatik-Assoziationen", self)
+                dock.setObjectName("agent_0002_association_dock")
+                dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+                self.agent_0002_widget = AssociationWidget(dock)
+                dock.setWidget(self.agent_0002_widget)
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+                dock.visibilityChanged.connect(
+                    lambda visible, current=dock:
+                    self._exclusive_tool_workspace_visibility_changed(
+                        bool(visible), current)
+                )
+                self.agent_0002_dock = dock
+
+            self._activate_exclusive_tool_workspace(dock)
+            association_widget = getattr(self, "agent_0002_widget", None)
+            if association_widget is None:
+                association_widget = dock.widget()
+                self.agent_0002_widget = association_widget
+            set_theme = getattr(association_widget, "set_dark_mode", None)
+            if callable(set_theme):
+                set_theme(bool(self.dark_mode_enabled))
+            dock.show()
+            dock.raise_()
+            self._expand_exclusive_tool_workspace(dock)
+            QTimer.singleShot(
+                0, lambda current=dock:
+                self._expand_exclusive_tool_workspace(current)
+            )
+            self.statusBar().showMessage("Agent 0002: visuelle Assoziation geöffnet")
+
+        def show_agent_0003_dock(self):
+            """Agent -> 0003: identischer Dock-Workspace wie Agent 0002."""
+            import importlib.util as _agent3_importlib
+            try:
+                import cv2 as _agent3_cv2
+                import numpy as _agent3_numpy
+            except ImportError as exc:
+                self.show_error(
+                    "Agent 0003: fehlende Abhängigkeit",
+                    "Für die Bild-Erkennung werden numpy und opencv-python benötigt.\n"
+                    "Bitte in derselben Python-Umgebung installieren:\n"
+                    "python -m pip install numpy opencv-python\n\n"
+                    f"Details: {exc}",
+                )
+                return
+            source = Path(__file__).resolve().with_name("agent_0003.py")
+            if source.is_file():
+                agent_dir = str(source.parent)
+                if agent_dir not in sys.path:
+                    sys.path.insert(0, agent_dir)
+                module_name = "_d64_agent_0003_local"
+                module = sys.modules.get(module_name)
+                if (module is None or
+                        Path(str(getattr(module, "__file__", "") or "")).resolve() != source):
+                    spec = _agent3_importlib.spec_from_file_location(module_name, str(source))
+                    if spec is None or spec.loader is None:
+                        raise ImportError(f"Agent 0003 kann nicht geladen werden: {source}")
+                    module = _agent3_importlib.module_from_spec(spec)
+                    sys.modules[module_name] = module
+                    try:
+                        spec.loader.exec_module(module)
+                    except Exception:
+                        sys.modules.pop(module_name, None)
+                        raise
+                ImageWidget = module.GermanImageRecognitionWidget
+            else:
+                from agent_0003 import GermanImageRecognitionWidget as ImageWidget
+
+            dock = getattr(self, "agent_0003_dock", None)
+            if dock is None:
+                dock = QDockWidget("Agent 0003 – Bild-Erkennung", self)
+                dock.setObjectName("agent_0003_image_dock")
+                dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+                self.agent_0003_widget = ImageWidget(dock)
+                dock.setWidget(self.agent_0003_widget)
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+                dock.visibilityChanged.connect(
+                    lambda visible, current=dock:
+                    self._exclusive_tool_workspace_visibility_changed(bool(visible), current)
+                )
+                self.agent_0003_dock = dock
+            self._activate_exclusive_tool_workspace(dock)
+            widget = getattr(self, "agent_0003_widget", None) or dock.widget()
+            self.agent_0003_widget = widget
+            if widget is not None and hasattr(widget, "set_dark_mode"):
+                widget.set_dark_mode(bool(self.dark_mode_enabled))
+            dock.show()
+            dock.raise_()
+            self._expand_exclusive_tool_workspace(dock)
+            QTimer.singleShot(0, lambda current=dock:
+                              self._expand_exclusive_tool_workspace(current))
+            self.statusBar().showMessage("Agent 0003: Bild-Erkennung geöffnet")
 
         def _sync_formula_zoom_control_checks(self, _value=None):
             controller = getattr(self, "_math_formula_designer_controller", None)
@@ -129472,6 +131033,94 @@ border-radius: 7px;}}"""
                         assets[f"{mode}_{state}"] = filename.as_posix()
             return assets
 
+        def _project_named_tree_header_stylesheet(self) -> str:
+            # Dark/light styles for the project TreeList header (Qt native
+            # palette does not reliably repaint on dark-mode toggles).
+            if self.dark_mode_enabled:
+                return """
+QTreeWidget#project_tree QHeaderView::section {
+    background:#303844; color:#f7f7f7; border:0;
+    border-right:1px solid #536172; border-bottom:1px solid #536172;
+    padding:4px 7px; font-weight:600;
+}
+"""
+            return """
+QTreeWidget#project_tree QHeaderView::section {
+    background:#e8ecf1; color:#222a35; border:0;
+    border-right:1px solid #abb4c0; border-bottom:1px solid #abb4c0;
+    padding:4px 7px; font-weight:600;
+}
+"""
+
+        def _project_named_panel_stylesheet(self) -> str:
+            if self.dark_mode_enabled:
+                return """
+QSplitter#project_tree_name_splitter::handle {
+    background:#4e5c70;
+}
+QSplitter#project_tree_name_splitter::handle:hover {
+    background:#7797b7;
+}
+QScrollArea#project_names_scroll_area,
+QWidget#project_names_scroll_content {
+    background:#222934;
+}
+QWidget#project_panel_tab QToolButton[projectNameButton="true"] {
+    background:#343e4d; color:#f5f5f5; border:1px solid #617185;
+    border-radius:3px; padding:3px;
+}
+QWidget#project_panel_tab QToolButton[projectNameButton="true"]:hover {
+    background:#495669; border-color:#91a0b2;
+}
+QToolButton#project_name_combo,
+QToolButton#project_leaf_name_combo {
+    background:#202630; color:#f4f4f4; border:1px solid #536172;
+    border-radius:3px; padding:2px 18px 2px 5px;
+}
+QToolButton#project_name_combo:hover,
+QToolButton#project_leaf_name_combo:hover {
+    background:#344355; border-color:#8ba2b9;
+}
+QToolButton#project_name_combo::menu-indicator,
+QToolButton#project_leaf_name_combo::menu-indicator {
+    subcontrol-origin:padding; subcontrol-position:right center;
+    width:12px; height:12px;
+}
+"""
+            return """
+QSplitter#project_tree_name_splitter::handle {
+    background:#b4bfca;
+}
+QSplitter#project_tree_name_splitter::handle:hover {
+    background:#8798a9;
+}
+QScrollArea#project_names_scroll_area,
+QWidget#project_names_scroll_content {
+    background:#f4f6f8;
+}
+QWidget#project_panel_tab QToolButton[projectNameButton="true"] {
+    background:#f2f4f6; color:#222a35; border:1px solid #adb7c4;
+    border-radius:3px; padding:3px;
+}
+QWidget#project_panel_tab QToolButton[projectNameButton="true"]:hover {
+    background:#e2e8ef; border-color:#8193aa;
+}
+QToolButton#project_name_combo,
+QToolButton#project_leaf_name_combo {
+    background:#fff; color:#222a35; border:1px solid #adb7c4;
+    border-radius:3px; padding:2px 18px 2px 5px;
+}
+QToolButton#project_name_combo:hover,
+QToolButton#project_leaf_name_combo:hover {
+    background:#e5effb; border-color:#8193aa;
+}
+QToolButton#project_name_combo::menu-indicator,
+QToolButton#project_leaf_name_combo::menu-indicator {
+    subcontrol-origin:padding; subcontrol-position:right center;
+    width:12px; height:12px;
+}
+"""
+
         def _project_tree_checkbox_stylesheet(self) -> str:
             assets = getattr(self, "project_checkbox_assets", {})
             mode = "dark" if self.dark_mode_enabled else "light"
@@ -129752,7 +131401,10 @@ border: 2px solid #2a69aa;
             if hasattr(self, "project_tree"):
                 self.project_tree.setStyleSheet(
                     self._project_tree_checkbox_stylesheet()
+                    + self._project_named_tree_header_stylesheet()
                 )
+                if hasattr(self, "project_tab"):
+                    self.project_tab.setStyleSheet(self._project_named_panel_stylesheet())
 
             for widget in application.allWidgets():
                 widget.update()
@@ -129829,6 +131481,34 @@ border: 2px solid #2a69aa;
             installer_widget = getattr(self, "software_installer_widget", None)
             if installer_widget is not None:
                 installer_widget.set_dark_mode(enabled)
+
+            # Stage 573: Theme-Wechsel auch mit alten Agent-Widgets robust.
+            # Die korrekte lokale Klasse besitzt set_dark_mode; eine ältere
+            # bereits geladene Klasse darf den GUI-Thread nicht abbrechen.
+            agent_widget = getattr(self, "agent_0001_widget", None)
+            if agent_widget is not None:
+                agent_set_theme = getattr(agent_widget, "set_dark_mode", None)
+                if callable(agent_set_theme):
+                    agent_set_theme(enabled)
+                else:
+                    print(
+                        "[Agent 0001] Veraltetes Widget ohne set_dark_mode: "
+                        f"{type(agent_widget).__module__}.{type(agent_widget).__name__} "
+                        "– bitte Anwendung mit Stage-573-Dateien neu starten."
+                    )
+
+            # Stage 575: Agent 0002 synchron mit dem globalen Theme schalten.
+            association_widget = getattr(self, "agent_0002_widget", None)
+            if association_widget is not None:
+                set_theme = getattr(association_widget, "set_dark_mode", None)
+                if callable(set_theme):
+                    set_theme(enabled)
+            # Stage 615: Agent 0003 haengt ebenfalls am globalen Theme.
+            image_widget = getattr(self, "agent_0003_widget", None)
+            if image_widget is not None:
+                set_theme = getattr(image_widget, "set_dark_mode", None)
+                if callable(set_theme):
+                    set_theme(enabled)
 
             # Stage 155: Server-Docks bleiben beim globalen Theme-Wechsel synchron.
             for server_widget_name in (
@@ -130891,6 +132571,110 @@ border: 2px solid #2a69aa;
             self.log(f"Neues dBase-Programm angelegt: {path}")
             return child
 
+        def _new_unsaved_dbase_module(self) -> Optional[DocumentEditor]:
+            """Stage 614: dBASE-Modul ohne Phantomdatei unter dBASE -> Module.
+
+            Erst ein erfolgreiches Speichern unter ... erzeugt die PRG-Datei
+            und den dauerhaften Verweis in der .pro-Projektdatei.
+            """
+            if not self._confirm_pending_dbase_module_before_other_action():
+                return None
+            self._ensure_project_for_new_document()
+            group = getattr(self, "project_dbase_group_nodes", {}).get("modules")
+            if group is None:
+                self.show_error("dBASE Module", "Der Projektknoten 'Module' fehlt.")
+                return None
+            used = {str(name).casefold() for name in self._project_existing_names()}
+            for index in range(group.childCount()):
+                used.add(group.child(index).text(0).casefold())
+            directory = self._project_new_file_directory()
+            number = 0
+            while True:
+                filename = "unbenannt.prg" if not number else f"unbenannt_{number}.prg"
+                if filename.casefold() not in used and not (directory / filename).exists():
+                    break
+                number += 1
+
+            document = self.new_document(text="", display_name=filename)
+            # .prg ist sonst global ein C64-Binärformat. Ein dBASE-Modul muss
+            # daher explizit auf den vorhandenen dBASE-Texteditor zeigen.
+            document.language_override = "dbase"
+            document.set_build_target("pe32")
+            document._dbase_module_needs_save_as = True
+            document.update_syntax_highlighting()
+            document.mark_saved()  # leerer Quelltext, aber Speichern-unter-Flag aktiv
+
+            item = QTreeWidgetItem(group, [filename])
+            item.setData(0, Qt.UserRole + 301, "dbase")
+            item.setData(0, Qt.UserRole + 303, PROJECT_NODE_DBASE_FILE)
+            item.setData(0, Qt.UserRole + 306, "modules")
+            item.setData(0, Qt.UserRole + 307, True)  # noch ohne Dateipfad
+            item.setToolTip(0, "Speichern unter ... erforderlich (Strg+S)")
+            item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
+            document._dbase_project_tree_item = item
+            group.setExpanded(True)
+            self.project_tree.setCurrentItem(item)
+            self.project_tree.scrollToItem(item)
+            self._project_named_assign_new_leaf(item)
+            self._project_named_schedule_refresh()  # Pfeil-ComboBox wie bei allen Blättern
+            self.set_project_modified(True)
+            self._update_document_tab(document)
+            self._project_activate_document_tab(document)
+            message = (f"dBASE/DOS-DEBUG: Neues Modul {filename} angelegt; "
+                       "Speichern unter ... erforderlich")
+            self.log(message)  # vorhandenes Protokoll; kein neues Ausgabefenster
+            self.statusBar().showMessage(message, 8000)
+            return document
+
+        @staticmethod
+        def _is_unsaved_dbase_module_leaf(item: QTreeWidgetItem) -> bool:
+            return bool(
+                item is not None
+                and item.data(0, Qt.UserRole + 307)
+                and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "dbase"
+                and str(item.data(0, Qt.UserRole + 306) or "").casefold() == "modules"
+                and not str(item.data(0, Qt.UserRole + 302) or "").strip()
+            )
+
+        def _activate_unsaved_dbase_module_leaf(self, item: QTreeWidgetItem) -> bool:
+            for index in range(self.document_tabs.count()):
+                document = self.document_tabs.widget(index)
+                if (isinstance(document, DocumentEditor)
+                        and getattr(document, "_dbase_project_tree_item", None) is item
+                        and getattr(document, "_dbase_module_needs_save_as", False)):
+                    self._project_activate_document_tab(document)
+                    return True
+            # Kein physischer Pfad vorhanden: niemals versuchen, eine Datei zu laden.
+            parent = item.parent()
+            if parent is not None:
+                parent.takeChild(parent.indexOfChild(item))
+            self._project_named_schedule_refresh()
+            return False
+
+        def _confirm_pending_dbase_module_before_other_action(
+            self, next_item: Optional[QTreeWidgetItem] = None,
+        ) -> bool:
+            """Vor Zugriff auf andere Projektdateien zuerst das Modul speichern."""
+            document = self.current_document()
+            if not (isinstance(document, DocumentEditor)
+                    and getattr(document, "_dbase_module_needs_save_as", False)):
+                return True
+            if next_item is getattr(document, "_dbase_project_tree_item", None):
+                return True
+            answer = self._show_message_box(
+                QMessageBox.Question,
+                "Speichern unter ...",
+                f"'{document.display_name}' ist noch nicht gespeichert.\n"
+                "Vor dem Bearbeiten anderer Projektdaten muss das Modul "
+                "gespeichert werden.\n\nJetzt Speichern unter ... ausführen?",
+                buttons=QMessageBox.Save | QMessageBox.Cancel,
+                default_button=QMessageBox.Save,
+            )
+            if answer == QMessageBox.Save and self._save_document(document, save_as=True):
+                return True
+            self._project_restore_current_editor(document)
+            return False
+
         def _new_project_item_for_category(
             self,
             category_key: str,
@@ -131887,6 +133671,8 @@ border: 2px solid #2a69aa;
 
         @staticmethod
         def _document_tooltip(document: DocumentEditor) -> str:
+            if getattr(document, "_dbase_module_needs_save_as", False):
+                return "dBASE-Modul – Speichern unter ... erforderlich"
             if document.path is None:
                 return "Noch nicht gespeichert"
             return str(document.path)
@@ -131901,6 +133687,8 @@ border: 2px solid #2a69aa;
             if index < 0:
                 return
             marker = " *" if document.is_modified else ""
+            if getattr(document, "_dbase_module_needs_save_as", False):
+                marker += " [Speichern unter ...]"
             self.document_tabs.setTabText(
                 index, f"{document.display_name}{marker}"
             )
@@ -132133,6 +133921,7 @@ border: 2px solid #2a69aa;
                 document.source_is_modified
                 or document.path is None and document.generated_assembly_editor.document().isModified()
                 or getattr(document, "_is_new_c64_project_file", False)
+                or getattr(document, "_dbase_module_needs_save_as", False)
             )
             source_ok = (
                 bool(self._save_document(document, save_as=False))
@@ -132186,7 +133975,9 @@ border: 2px solid #2a69aa;
                 for document in documents:
                     if not isinstance(document, DocumentEditor):
                         continue
-                    if not document.is_modified and not getattr(document, "_is_new_c64_project_file", False):
+                    if (not document.is_modified
+                            and not getattr(document, "_is_new_c64_project_file", False)
+                            and not getattr(document, "_dbase_module_needs_save_as", False)):
                         continue
                     label = str(document.path or document.display_name)
                     before = len(failed)
@@ -132317,6 +134108,22 @@ border: 2px solid #2a69aa;
                     suggested_name += ".txt"
                 initial = str(self.current_directory / suggested_name)
 
+            if getattr(document, "_dbase_module_needs_save_as", False):
+                initial = str(self._project_new_file_directory() / document.display_name)
+                filename, _selected = QFileDialog.getSaveFileName(
+                    self, "dBASE Modul – Speichern unter ...", initial,
+                    "dBASE-Modul (*.prg)",
+                )
+                if not filename:
+                    return None
+                target = Path(filename).expanduser()
+                if not target.suffix:
+                    target = target.with_suffix(".prg")
+                if target.suffix.casefold() != ".prg":
+                    self.show_error("Ungültiger Dateityp", "dBASE-Module benötigen die Endung .prg")
+                    return None
+                return target.resolve()
+
             # Stage 394: bei C64-Neudokumenten Formatwahl begrenzen und
             # Datei-/Verzeichniswahl im ersten Speichern-unter anbieten.
             if getattr(document, "_is_new_c64_project_file", False):
@@ -132397,7 +134204,8 @@ border: 2px solid #2a69aa;
 
             # Ein neu erzeugtes C64-Blatt darf niemals eine schon vorhandene
             # Datei überschreiben (auch nicht durch Save-Dialog-Bestätigung).
-            if getattr(document, "_is_new_c64_project_file", False):
+            if (getattr(document, "_is_new_c64_project_file", False)
+                    or getattr(document, "_dbase_module_needs_save_as", False)):
                 try:
                     collision = target.exists() or any(
                         entry.name.casefold() == target.name.casefold()
@@ -132439,6 +134247,26 @@ border: 2px solid #2a69aa;
 
             document.path = target.resolve()
             document.custom_display_name = None
+            new_dbase_item = getattr(document, "_dbase_project_tree_item", None)
+            if getattr(document, "_dbase_module_needs_save_as", False) and new_dbase_item is not None:
+                old_key = self._project_named_leaf_key(new_dbase_item)
+                new_dbase_item.setText(0, document.path.name)
+                new_dbase_item.setData(0, Qt.UserRole + 302, str(document.path))
+                new_dbase_item.setData(0, Qt.UserRole + 307, False)
+                new_dbase_item.setToolTip(0, str(document.path))
+                new_dbase_item.setIcon(0, self.icon_provider.icon(QFileInfo(str(document.path))))
+                document._dbase_module_needs_save_as = False
+                # Den bereits gewählten Projekt/Programm-Dropdown-Eintrag
+                # vom temporären Schlüssel auf den dauerhaften Pfad übernehmen.
+                new_key = self._project_named_leaf_key(new_dbase_item)
+                selected_assignment = self._named_project_assignments.pop(old_key, "")
+                if selected_assignment:
+                    self._named_project_assignments[new_key] = selected_assignment
+                self.set_project_modified(True)
+                self._project_named_schedule_refresh()
+                if self.current_project_path is not None:
+                    self.save_project()
+                self.log(f"dBASE/DOS-DEBUG: Modul gespeichert unter {document.path}")
             new_c64_item = getattr(document, "_c64_project_tree_item", None)
             if getattr(document, "_is_new_c64_project_file", False) and new_c64_item is not None:
                 new_c64_item.setText(0, document.path.name)
@@ -132685,6 +134513,30 @@ border: 2px solid #2a69aa;
                 self.show_error("Ordinalimporte konnten nicht erzeugt werden", message)
                 self.statusBar().showMessage("Ordinalimport-Erzeugung fehlgeschlagen")
                 return False
+            # Stage 609: both frontends use the same strictly guarded PE ASM
+            # peephole before externalization/AT&T conversion and COFF linking.
+            # Pascal source-line mapping is maintained if a rewrite adds lines.
+            if (document.build_target in {"pe32", "pe64"}
+                    and (document.is_dbase_document or document.is_pascal_document)):
+                from windows_peephole import optimize_windows_assembly, normalize_peephole_options
+                _peephole_options = normalize_peephole_options(
+                    self.project_windows_dbase_peephole.get(document.build_target, {}))
+                _peephole_result = optimize_windows_assembly(
+                    generated.assembly, target=document.build_target,
+                    options=_peephole_options,
+                    source_map=getattr(generated, "source_map", {}))
+                _change = {"assembly": _peephole_result.assembly}
+                if hasattr(generated, "source_map"):
+                    _change["source_map"] = _peephole_result.source_map
+                generated = replace(generated, **_change)
+                document.peephole_compile_snapshot = dict(_peephole_options)
+                self.log(
+                    f"PEEPHOLE {language_name} {document.build_target.upper()}: "
+                    f"Registerbreite={int(_peephole_options['register_width'])}, "
+                    f"Prozessorflags={int(_peephole_options['processor_flags'])}, "
+                    f"Stackzustand={int(_peephole_options['stack_state'])}; "
+                    f"{_peephole_result.replacements} Ersetzungen, "
+                    f"{_peephole_result.byte_savings} Bytes gespart")
             # Stage 470: dBase-/WFM-Imports live in a separate, adjacent .inc.
             # Keep a unique per-program/per-target filename to avoid collisions.
             _asm_import_include = None
@@ -133210,6 +135062,9 @@ border: 2px solid #2a69aa;
                 ]
                 if self.workspace_root not in include_paths:
                     include_paths.append(self.workspace_root)
+                for _input_dir in self._project_windows_asm_include_paths(document.build_target, "pascal"):
+                    if _input_dir not in include_paths:
+                        include_paths.append(_input_dir)
                 _project_output_directory = (
                     self._document_windows_output_path(document)
                     if document.build_target in {"pe32", "pe64"}
@@ -133255,6 +135110,10 @@ border: 2px solid #2a69aa;
                     ):
                         if _param in parameter_map:
                             compiler_kwargs[_param] = _value
+                    if "peephole_options" in parameter_map:
+                        compiler_kwargs["peephole_options"] = dict(
+                            self.project_windows_dbase_peephole.get(
+                                document.build_target, {}))
                     if "optimization_level" in parameter_map:
                         compiler_kwargs["optimization_level"] = _stage537_optimizer_level(
                             getattr(self, "project_windows_pascal_optimization_options", {})
@@ -133327,6 +135186,7 @@ border: 2px solid #2a69aa;
                         "predefined_macros", {}
                     ),
                     link_search_paths=_project_link_search_paths,
+                    target=document.build_target,
                 )
                 if "predefined_macros" in parameter_map:
                     compiler_kwargs["predefined_macros"] = dict(
@@ -133414,13 +135274,13 @@ border: 2px solid #2a69aa;
                             assemble_pe64_coff_object(
                                 generated.assembly,
                                 filename=str(assembly_path),
-                                include_dirs=self._project_windows_asm_include_paths(document.build_target),
+                                include_dirs=self._project_windows_asm_include_paths(document.build_target, "pascal"),
                             )
                             if document.build_target == "pe64"
                             else assemble_pe32_coff_object(
                                 generated.assembly,
                                 filename=str(assembly_path),
-                                include_dirs=self._project_windows_asm_include_paths(document.build_target),
+                                include_dirs=self._project_windows_asm_include_paths(document.build_target, "pascal"),
                             )
                         )
                         _write_cli_file(unit_object_path, unit_object_data)
@@ -133520,6 +135380,9 @@ border: 2px solid #2a69aa;
                 ]
                 if self.workspace_root not in include_paths:
                     include_paths.append(self.workspace_root)
+                for _input_dir in self._project_windows_asm_include_paths(document.build_target, "pascal"):
+                    if _input_dir not in include_paths:
+                        include_paths.append(_input_dir)
                 compiler_kwargs = {
                     "filename": str(document.path),
                     "include_paths": include_paths,
@@ -133683,15 +135546,28 @@ border: 2px solid #2a69aa;
                         qt_terminal=True,
                     )
                 else:
+                    # Stage 605: build an actual dBASE CLASS DLL when the
+                    # active named Runtime target owns this source file.
+                    _scope_language, _scope_kind = self._project_named_current_scope()
+                    _dbase_library = (
+                        _scope_language == "dbase"
+                        and _scope_kind == "library"
+                        and document.path is not None
+                        and self._project_named_matches_path(
+                            document.path, target=str(document.build_target))
+                    )
                     generated = compile_dbase_to_assembly(
                     source,
+                    peephole_options=self.project_windows_dbase_peephole.get(
+                        document.build_target, {}),
                     filename=str(document.path),
                     target=document.build_target,
+                    source_kind="library" if _dbase_library else "program",
                     windows_application_mode=document.windows_application_mode,
                     workstation_mode=self._project_windows_workstation_mode_for_target(
                         document.build_target
                     ),
-                    include_paths=self._project_windows_asm_include_paths(document.build_target),
+                    include_paths=self._project_windows_asm_include_paths(document.build_target, "dbase"),
                     debug_theme=self._project_windows_debug_theme_for_target(
                         document.build_target,
                         workstation=self._project_windows_workstation_mode_for_target(
@@ -133786,7 +135662,8 @@ border: 2px solid #2a69aa;
                         output_directory=_project_output_directory,
                     ),
                     output_directory=_project_output_directory,
-                    include_dirs=self._project_windows_asm_include_paths(document.build_target),
+                    include_dirs=self._project_windows_asm_include_paths(document.build_target,
+                        _project_document_compiler_language(document) or "dbase"),
                 )
                 if (
                     document.is_pascal_document
@@ -133854,40 +135731,47 @@ border: 2px solid #2a69aa;
             return bool(options.ces)
 
         def _stage551_deploy_pascal_console(
-            self, output_path, target: str, required_exports=()
+            self, output_path, target: str, required_exports=(),
+            *, source_path=None,
         ) -> bool:
-            """Stage 552: deploy and *verify* the console DLL, including exports.
+            """Stage 582: deploy an architecture- and export-verified DLL.
 
-            The Pascal link manifest must determine whether this is needed:
-            inspecting only the visible ASM misses externalized .imports.inc.
+            Search the Pascal source's ``pe32``/``pe64`` folder even when the
+            final EXE is directed to a different project output directory.
             """
-            from pascal_console_dependencies import validate_console_library
+            from pascal_console_dependencies import (
+                console_library_candidates, validate_console_library,
+            )
+            import shutil
 
-            target = str(target).lower()
+            self._stage551_pascal_console_last_error = ""
+            target = str(target).casefold()
             if target not in {"pe32", "pe64"}:
                 return True
-            destination = Path(output_path).resolve().parent / "libd64_console.dll"
             machine = (IMAGE_FILE_MACHINE_AMD64 if target == "pe64"
                        else IMAGE_FILE_MACHINE_I386)
             required = set(required_exports)
-            errors = []
-            if destination.is_file():
-                error = validate_console_library(destination, machine, required)
-                if not error:
-                    return True
-                errors.append(f"Vorhandene DLL: {error}")
-            base = Path(__file__).resolve().parent
-            arch = "win64" if target == "pe64" else "win32"
-            project_dir = (self.current_project_path.parent
+            project_dir = (Path(self.current_project_path).parent
                            if getattr(self, "current_project_path", None)
-                           else Path(self.current_directory))
-            for candidate in (
-                base / "runtime" / "compiler" / arch / "libd64_console.dll",
-                project_dir / "runtime" / "compiler" / arch / "libd64_console.dll",
-                Path(self.current_directory) / "runtime" / "compiler" / arch / "libd64_console.dll",
-                project_dir / "libd64_console.dll",
-                Path(self.current_directory) / "libd64_console.dll",
-            ):
+                           else None)
+            current_dir = getattr(self, "current_directory", None)
+            additional = []
+            if source_path is not None:
+                # The project-configured input paths may also contain a DLL.
+                getter = getattr(self, "_project_windows_link_search_paths", None)
+                if callable(getter):
+                    additional.extend(getter(target, "pascal"))
+            paths = console_library_candidates(
+                output_path, target,
+                source_path=source_path,
+                project_dir=project_dir,
+                current_dir=current_dir,
+                program_root=Path(__file__).resolve().parent,
+                search_directories=additional,
+            )
+            destination = paths[0]
+            errors = []
+            for candidate in paths:
                 if not candidate.is_file():
                     continue
                 error = validate_console_library(candidate, machine, required)
@@ -133895,27 +135779,37 @@ border: 2px solid #2a69aa;
                     errors.append(f"{candidate}: {error}")
                     continue
                 try:
-                    import shutil
-                    if candidate.resolve() != destination.resolve():
+                    if candidate != destination:
+                        destination.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(candidate, destination)
-                    # Recheck after copying: never claim success on a bad DLL.
+                    # Never accept a wrong-architecture or incomplete DLL.
                     error = validate_console_library(destination, machine, required)
                     if error:
-                        errors.append(f"Nach Kopieren: {error}")
+                        errors.append(f"Nach Kopieren ({destination}): {error}")
                         continue
-                    self.log(f"PASCAL CONSOLE RUNTIME: {candidate} -> {destination}")
+                    self.log(f"PASCAL CONSOLE RUNTIME OK: {candidate} -> {destination}")
                     return True
                 except OSError as exc:
-                    errors.append(f"Kopierfehler {candidate}: {exc}")
-            self.log(
-                "PASCAL CONSOLE RUNTIME FEHLT/UNGÜLTIG: " + str(destination)
-                + "; benötigt: " + ", ".join(sorted(required))
-                + ("; " + "; ".join(errors) if errors else "")
-                + "; zuerst runtime/compiler/build.console."
-                + ("win64" if target == "pe64" else "win32")
-                + ".sh im passenden MSYS2-Terminal ausführen"
-            )
+                    errors.append(f"Kopierfehler {candidate} -> {destination}: {exc}")
+
+            details = [
+                f"EXE-/DLL-Ausgabeordner: {destination.parent}",
+                f"Benötigte Exporte: {', '.join(sorted(required)) or '(keine)'}",
+            ]
+            if source_path is not None:
+                details.append(f"Pascal-Quelldatei: {source_path}")
+            if errors:
+                details.append("Gefundene, aber ungeeignete DLLs oder Kopierfehler:")
+                details.extend("  " + error for error in errors)
+            else:
+                details.append("Keine libd64_console.dll an den geprüften Orten gefunden.")
+            details.append("Geprüfte DLL-Pfade:")
+            details.extend("  " + str(path) for path in paths)
+            self._stage551_pascal_console_last_error = "\n".join(details)
+            self.log("PASCAL CONSOLE RUNTIME FEHLT/UNGÜLTIG:\n" +
+                     self._stage551_pascal_console_last_error)
             return False
+
 
         def assemble_generated_document(
             self,
@@ -133930,8 +135824,36 @@ border: 2px solid #2a69aa;
             """
             if not isinstance(document, DocumentEditor):
                 return False
+            # Stage 596: the selected project kind is authoritative for link
+            # output on project-owned source files.  Never silently produce an
+            # EXE when the user selected a library; the language compiler must
+            # have emitted matching DLL-aware source/entry/export semantics.
+            _named_language, _named_kind = self._project_named_current_scope()
+            _document_language = (
+                "basic" if document.is_basic_document else
+                "pascal" if document.is_pascal_document else
+                "dbase" if document.is_dbase_document else
+                "prolog" if document.is_prolog_document else
+                "lisp" if document.is_lisp_document else ""
+            )
+            if (_named_language == _document_language and _named_language
+                    and document.path is not None
+                    and self._project_named_matches_path(
+                        document.path, target=str(document.build_target or ""))):
+                _actual_kind = str(getattr(document, "generated_source_kind", "program") or "program").casefold()
+                _effective_kind = "program" if _actual_kind == "form" else _actual_kind
+                if _effective_kind in {"program", "library"} and _effective_kind != _named_kind:
+                    self.show_error(
+                        "Projektart passt nicht zur Quelle",
+                        f"Aktiv ist {'Bibliothek' if _named_kind == 'library' else 'Programm'}, "
+                        f"aber '{document.path.name}' erzeugt {_actual_kind.upper()}. "
+                        "Bitte Projektart und Quellkopf aufeinander abstimmen.",
+                    )
+                    return False
+            ces_for_build = None
             if document.build_target in {"pe32", "pe64"}:
-                self._stage549_sync_debug_options_for_build(document.build_target)
+                ces_for_build = self._stage549_sync_debug_options_for_build(
+                    document.build_target)
             # WFM uses a hidden DocumentEditor whose source/ASM widgets are
             # embedded in the form designer rather than in document_tabs.
             # setCurrentWidget() with that hidden page can disturb menu focus.
@@ -133948,6 +135870,19 @@ border: 2px solid #2a69aa;
             ):
                 return False
 
+            # Stage 609: assembling stale code after changing peephole flags
+            # would silently retain optimizations that are now disabled.
+            if (document.build_target in {"pe32", "pe64"}
+                    and (document.is_dbase_document or document.is_pascal_document)):
+                from windows_peephole import normalize_peephole_options
+                _now = normalize_peephole_options(
+                    self.project_windows_dbase_peephole.get(document.build_target, {}))
+                _at_compile = getattr(document, "peephole_compile_snapshot", None)
+                if _at_compile is not None and _at_compile != _now:
+                    self.show_error("Peephole-Einstellungen geaendert",
+                                    "Bitte dBASE-/Pascal-Quelle neu kompilieren, "
+                                    "bevor die Assemblerdatei gelinkt wird.")
+                    return False
             assembly_source = (
                 document.generated_assembly_editor.toPlainText()
             )
@@ -133993,8 +135928,30 @@ border: 2px solid #2a69aa;
                     and document.build_target in {"pe32", "pe64"}
                     and getattr(document, "generated_source_kind", "program") != "library"
                 ):
-                    if not self.project_windows_output_directories.get(document.build_target):
+                    if not self.project_windows_language_output_directories.get(
+                            document.build_target, {}).get("dbase"):
                         output_path = (self.current_directory / output_path.name).resolve()
+                # Stage 597: file name is chosen by the active EXE/DLL profile,
+                # not by a competing Pascal or dBASE source in the project.
+                if (document.build_target in {"pe32", "pe64"}
+                        and _named_language == _document_language
+                        and _named_language in {"pascal", "dbase"}
+                        and document.path is not None
+                        and self._project_named_matches_path(
+                            document.path, target=str(document.build_target))):
+                    _configured_name = named_project_profile_name(
+                        self._named_project_names, _named_language, _named_kind)
+                    if _configured_name:
+                        _stem = _configured_name.strip()
+                        if _stem.lower().endswith((".dll", ".exe")):
+                            _stem = _stem[:-4]
+                        if (not _stem or _stem in {".", ".."}
+                                or re.search(r'[<>:"/\\|?*\x00-\x1f]', _stem)):
+                            self.show_error("Projektname ungültig",
+                                            f"Ungültiger EXE-/DLL-Name: {_configured_name}")
+                            return False
+                        _suffix = ".dll" if _named_kind == "library" else ".exe"
+                        output_path = output_path.with_name(_stem + _suffix)
                 assembly_path = document.generated_assembly_path
                 if assembly_path is None:
                     if document.is_basic_document:
@@ -134011,6 +135968,22 @@ border: 2px solid #2a69aa;
                         assembly_path = self._dbase_assembly_output_path(document)
                     else:
                         assembly_path = self._c_assembly_output_path(document)
+                # Stage 609: run a final idempotent peephole pass on the exact
+                # assembler input which is about to become a linked COFF object.
+                if (document.build_target in {"pe32", "pe64"}
+                        and (document.is_dbase_document or document.is_pascal_document)
+                        and self.project_windows_assembler_syntax.get(
+                            document.build_target, "intel") != "att"):
+                    from windows_peephole import optimize_windows_assembly
+                    _link_result = optimize_windows_assembly(
+                        assembly_source, target=document.build_target,
+                        options=self.project_windows_dbase_peephole.get(
+                            document.build_target, {}))
+                    assembly_source = _link_result.assembly
+                    if _link_result.replacements:
+                        self.log(f"PEEPHOLE LINK {document.build_target.upper()}: "
+                                 f"{_link_result.replacements} Ersetzungen, "
+                                 f"{_link_result.byte_savings} Bytes gespart")
                 # Stage 480: the shared PE32/PE64 preprocessor handles AT&T
                 # source directly, including nested %include files.
                 if document.build_target == "amiga":
@@ -134078,7 +136051,8 @@ border: 2px solid #2a69aa;
                         source_path=document.path,
                         assembly_path=assembly_path,
                         output_directory=_project_output_directory,
-                        include_dirs=self._project_windows_asm_include_paths(document.build_target),
+                        include_dirs=self._project_windows_asm_include_paths(
+                            document.build_target, _project_document_compiler_language(document) or "dbase"),
                         progress_callback=(
                             getattr(self, "_dbase_form_asm_progress_callback", None)
                             if is_form_build_progress else None
@@ -134101,6 +136075,7 @@ border: 2px solid #2a69aa;
                             pragma_name,
                             source_path=document.path,
                             target=document.build_target,
+                            language=_project_document_compiler_language(document) or "dbase",
                         )
                         key = str(pragma_path).casefold()
                         if key in known_inputs:
@@ -134142,6 +136117,18 @@ border: 2px solid #2a69aa;
                     ).casefold()
                     is_library = source_kind == "library"
                     is_form = source_kind == "form"
+                    # Stage 608: obtain the live GUI value for dBASE class DLLs;
+                    # it is a different binary from c64_dbase_runtime.dll.
+                    _dbase_library_pack = (
+                        self._dbase_class_library_packing_enabled(document.build_target)
+                        if is_library and document.is_dbase_document else None
+                    )
+                    if _dbase_library_pack is not None:
+                        self.log(
+                            f"DBASE DLL PACK-OPTION ({document.build_target}): "
+                            f"{'ON' if _dbase_library_pack else 'OFF'}; "
+                            f"Projekt={output_path.name}"
+                        )
                     # Manifest resources are committed to the linked PE before
                     # Authenticode signing; the current internal COFF linker does
                     # not yet merge .rsrc$01/.rsrc$02 resource sections.
@@ -134163,6 +136150,8 @@ border: 2px solid #2a69aa;
 
                     if is_prolog_build:
                         document.set_prolog_build_progress(70, "PE-Linker ausführen")
+                    _set_pe_compact_enabled(document.build_target,
+                        self.project_windows_compact_enabled.get(document.build_target, False))
                     program = linker(
                         object_paths,
                         entry_symbol=entry_symbol,
@@ -134175,10 +136164,37 @@ border: 2px solid #2a69aa;
                         ),
                         dll=is_library,
                         dll_name=(
-                            document.path.with_suffix(".dll").name
-                            if is_library else None
+                            output_path.name if is_library else None
                         ),
+                        # Stage 608: dBASE RuntimeDB DLLs use the live PE checkbox.
+                        # Pascal LIBRARY retains its existing per-target policy.
+                        # EXE packing keeps its separate, unchanged path.
+                        pack_dll=(
+                            _dbase_library_pack
+                            if _dbase_library_pack is not None else
+                            bool(self.project_windows_pe_packing_enabled.get(
+                                document.build_target, PE_PACKING_DEFAULT
+                            )) if is_library else False
+                        ),
+                        **({"ces_enabled": bool(ces_for_build)} if not is64 else {}),
                     )
+                    if _dbase_library_pack is not None:
+                        from d64dbase.library_packing import validate_library_packing
+                        _pack_info = validate_library_packing(
+                            program.executable, document.build_target,
+                            requested=_dbase_library_pack,
+                        )
+                        self.log(
+                            f"DBASE DLL LINK ({document.build_target}): {output_path.name}; "
+                            + (f"D64Z/MSZIP .text {_pack_info['original_bytes']} -> "
+                               f"{_pack_info['compressed_bytes']} Bytes"
+                               if _pack_info['packed'] else "ungepackt (Option OFF)")
+                        )
+                    if not is64 and not is_library:
+                        self.log(
+                            "PE32 CES (Link-Snapshot): "
+                            + ("ON" if ces_for_build else "OFF")
+                        )
                 else:
                     program = assemble_mos6510_source(
                         assembly_source,
@@ -134241,14 +136257,16 @@ border: 2px solid #2a69aa;
                     from pascal_console_dependencies import required_console_exports
                     has_asm_console = _windows_asm_imports_dll(
                         assembly_source, assembly_path, "libd64_console.dll",
-                        self._project_windows_asm_include_paths(document.build_target),
+                        self._project_windows_asm_include_paths(
+                            document.build_target, _project_document_compiler_language(document) or "dbase"),
                     )
                     console_exports = required_console_exports(
                         output_path, getattr(program, "import_manifest", None),
                         source_includes_console=has_asm_console,
                     )
                     if console_exports and not self._stage551_deploy_pascal_console(
-                        output_path, document.build_target, console_exports
+                        output_path, document.build_target, console_exports,
+                        source_path=document.path,
                     ):
                         message = (
                             "Die erzeugte EXE/DLL benötigt libd64_console.dll, "
@@ -134257,7 +136275,11 @@ border: 2px solid #2a69aa;
                             "Bitte unter MSYS2 MINGW32/MINGW64 "
                             "runtime/compiler/build.console.win32.sh bzw. "
                             "build.console.win64.sh erstellen und erneut linken. "
-                            "Siehe Protokoll für Details."
+                            "Siehe Protokoll für Details.\n\n"
+                            + "\n".join(
+                                str(getattr(self, "_stage551_pascal_console_last_error", ""))
+                                .splitlines()[:10]
+                            )
                         )
                         document.show_generated_assembly_error(
                             message, status_text="Konsolenruntime fehlt"
@@ -134308,7 +136330,8 @@ border: 2px solid #2a69aa;
                     and (b'c64_dbase_runtime.dll' in program.executable.lower()
                          or _windows_asm_imports_dll(
                              assembly_source, assembly_path, 'c64_dbase_runtime.dll',
-                             self._project_windows_asm_include_paths(document.build_target)
+                             self._project_windows_asm_include_paths(
+                            document.build_target, _project_document_compiler_language(document) or "dbase")
                          ))):
                     if not self._prepare_dbase_console_runtime(output_path, document.build_target):
                         return False
@@ -134324,6 +136347,31 @@ border: 2px solid #2a69aa;
                         project_base,
                         dll=(str(getattr(document, "generated_source_kind", "program")).casefold() == "library"),
                     )
+                    if (document.is_dbase_document
+                            and str(getattr(document, "generated_source_kind", "")).casefold() == "library"):
+                        from d64dbase.library_packing import validate_library_packing
+                        _saved_pack_info = validate_library_packing(
+                            output_path, document.build_target,
+                            requested=_dbase_library_pack,
+                        )
+                        self.log(
+                            f"DBASE DLL DATEI ({document.build_target}): {output_path}; "
+                            + (f"D64Z/MSZIP .text {_saved_pack_info['original_bytes']} -> "
+                               f"{_saved_pack_info['compressed_bytes']} Bytes"
+                               if _saved_pack_info['packed'] else "ungepackt (Option OFF)")
+                        )
+                    # Stage 610: resources/manifest have already been written.
+                    # Compact the on-disk PE before Authenticode signing.
+                    _compact_enabled = bool(self.project_windows_compact_enabled.get(
+                        document.build_target, False))
+                    if _compact_enabled:
+                        from d64dbase.pe_image_compact import compact_pe_file
+                        _compact_report = compact_pe_file(output_path)
+                        self.log(
+                            f"PE COMPACT ({document.build_target}): {output_path.name}; "
+                            f"{_compact_report['before_size']} -> {_compact_report['after_size']} Bytes "
+                            f"(-{_compact_report['saved_bytes']} Bytes); "
+                            f"{_compact_report['reason']}")
                     if not self._sign_windows_output_if_enabled(output_path, document.build_target):
                         if is_prolog_build:
                             document.finish_prolog_build_progress(False, "Signieren fehlgeschlagen")
@@ -134332,7 +136380,7 @@ border: 2px solid #2a69aa;
                     # Stage 295: best-effort deployment of the direct Qt5 runtime.
                     # A missing runtime must not make console-only builds fail.
                     self._prepare_prolog_qt5_runtime(output_path, show_error=False)
-            except (OSError, ResourceCompilerError) as exc:
+            except (OSError, ResourceCompilerError, ValueError) as exc:
                 if is_prolog_build:
                     document.finish_prolog_build_progress(False, "Ausgabefehler")
                 message = (
@@ -134605,6 +136653,10 @@ border: 2px solid #2a69aa;
                     source_text = str(child.data(0, Qt.UserRole + 302) or "")
                     if not source_text:
                         continue
+                    _scope_language, _scope_kind = self._project_named_current_scope()
+                    if _scope_language and _scope_language == category_key:
+                        if not self._project_named_matches_item(child):
+                            continue
                     try:
                         source_path = Path(source_text).expanduser().resolve()
                     except OSError:
@@ -135197,6 +137249,18 @@ border: 2px solid #2a69aa;
                         project_base,
                         dll=(str(getattr(document, "generated_source_kind", "program")).casefold() == "library"),
                     )
+                    # Stage 610: resources/manifest have already been written.
+                    # Compact the on-disk PE before Authenticode signing.
+                    _compact_enabled = bool(self.project_windows_compact_enabled.get(
+                        document.build_target, False))
+                    if _compact_enabled:
+                        from d64dbase.pe_image_compact import compact_pe_file
+                        _compact_report = compact_pe_file(output_path)
+                        self.log(
+                            f"PE COMPACT ({document.build_target}): {output_path.name}; "
+                            f"{_compact_report['before_size']} -> {_compact_report['after_size']} Bytes "
+                            f"(-{_compact_report['saved_bytes']} Bytes); "
+                            f"{_compact_report['reason']}")
                     if not self._sign_windows_output_if_enabled(output_path, document.build_target):
                         return False
             except (AssemblerError, AmigaAssemblerError, PE32AssemblerError, PE64AssemblerError, LinuxELFError) as exc:
@@ -136120,18 +138184,25 @@ border: 2px solid #2a69aa;
             if document.build_target not in {"pe32", "pe64"}:
                 self.show_error("dBase-Start", "dBase unterstuetzt nur Windows PE32/PE32+.")
                 return False
-            executable = (self.current_directory / document.path.with_suffix(".exe").name).resolve()
+            # Stage 615: dBASE-Start sucht am gleichen Compiler-Ausgabeort wie
+            # Assemble/Link. Relative Pfade gelten ab dem Projektverzeichnis,
+            # nicht ab CWD bzw. dem Arbeitsverzeichnis des Python-Prozesses.
+            configured_output = self._document_windows_output_path(document)
+            executable_directory = (configured_output if configured_output is not None
+                                    else Path(self.current_directory))
+            executable = (executable_directory / document.path.with_suffix(".exe").name).resolve()
             if not executable.is_file():
                 self.show_error(
                     "dBase-EXE nicht gefunden",
                     "Der Start-Button baut nicht automatisch.\n\n"
                     "Kompiliere/assembliere/linke zuerst mit F2 oder Assemble.\n"
-                    f"Erwartete EXE im Arbeitsverzeichnis:\n{executable}",
+                    f"Erwartete EXE im dBASE-Ausgabeverzeichnis:\n{executable}",
                 )
                 self.statusBar().showMessage("dBase-Start: vorhandene EXE fehlt", 6000)
                 return False
             document.assembled_program_path = executable
             document.assembled_target = document.build_target
+            self.log(f"dBASE/DOS-DEBUG: Starte EXE aus Compiler-Ausgabeverzeichnis: {executable}")
             return self._launch_assembled_document(document)
 
         def start_assembled_document(self, document: DocumentEditor) -> bool:
@@ -136187,6 +138258,34 @@ border: 2px solid #2a69aa;
             # Der dBase-Compiler legt Stringliterale als Windows-1252 ab.
             return raw.decode("cp1252", errors="replace")
 
+        def _dbase_class_library_packing_enabled(self, target: str) -> bool:
+            """Stage 608: current visible PE packing checkbox wins over stale caches.
+
+            Applies to dBASE RuntimeDB/class-library DLLs, not just the
+            separate c64_dbase_runtime.dll console helper from Stage 607.
+            """
+            key = self._project_windows_target_key(target)
+            enabled = bool(self.project_windows_pe_packing_enabled.get(
+                key, PE_PACKING_DEFAULT
+            ))
+            # The separate "pack dll" switch also applies to named dBASE
+            # Runtime libraries (e.g. RuntimeDB.dll), not just the console DLL.
+            manual = bool(getattr(self, "project_windows_console_dll_pack", {}).get(
+                key, False
+            ))
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                page = panel.page_for_target(key)
+                if page is not None:
+                    enabled = bool(page.pe_packing_enabled())
+                    if self.project_windows_pe_packing_enabled.get(key) != enabled:
+                        self.project_windows_pe_packing_enabled[key] = enabled
+                        _set_pe_packing_enabled(key, enabled)
+                    manual = bool(page.console_runtime_pack_checkbox.isChecked())
+                    if getattr(self, "project_windows_console_dll_pack", {}).get(key) != manual:
+                        self.project_windows_console_dll_pack[key] = manual
+            return enabled or manual
+
         def _prepare_dbase_console_runtime(self, output_path: Path, target: str) -> bool:
             """Stage 446: PE32/PE32+ dBASE DLL, built and deployed without make.
 
@@ -136202,10 +138301,26 @@ border: 2px solid #2a69aa;
                     coff32=write_coff32_object, link32=link_coff32_objects,
                     assemble64=assemble_pe64_object_source,
                     coff64=write_coff64_object, link64=link_coff64_objects,
-                    pack_dll=bool(self.project_windows_console_dll_pack.get(
-                        self._project_windows_target_key(target), False)),
+                    pack_dll=self._dbase_console_runtime_pack_enabled(target),
                 )
-                self.log(f"DBASE CONSOLE DLL ({target}): {installed}")
+                from d64dbase.pe_dll_payload import is_payload_packed, packed_payload_info
+                packed = is_payload_packed(installed)
+                requested = self._dbase_console_runtime_pack_enabled(target)
+                if packed != requested:
+                    raise ValueError(
+                        "D64Z/MSZIP-Status der Konsolen-DLL stimmt nicht "
+                        "mit den Projekt-Einstellungen überein"
+                    )
+                info = packed_payload_info(installed) if packed else None
+                ratio = (
+                    f"; .text {info['original_bytes']} -> "
+                    f"{info['compressed_bytes']} Bytes (MSZIP)"
+                    if info else ""
+                )
+                self.log(
+                    f"DBASE CONSOLE DLL ({target}): {installed} "
+                    f"({'D64Z/MSZIP gepackt' if packed else 'ungepackt'}){ratio}"
+                )
                 return True
             except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError) as exc:
                 self.show_error(
@@ -137469,7 +139584,9 @@ border: 2px solid #2a69aa;
             return True
 
         def _confirm_close_document(self, document: DocumentEditor) -> bool:
-            if not document.is_modified and not getattr(document, "_is_new_c64_project_file", False):
+            if (not document.is_modified
+                    and not getattr(document, "_is_new_c64_project_file", False)
+                    and not getattr(document, "_dbase_module_needs_save_as", False)):
                 return True
 
             answer = self._show_message_box(
@@ -137533,6 +139650,15 @@ border: 2px solid #2a69aa;
                         document.dbase_process.waitForFinished(500)
                 except RuntimeError:
                     pass
+            if getattr(document, "_dbase_module_needs_save_as", False):
+                pending = getattr(document, "_dbase_project_tree_item", None)
+                parent = pending.parent() if pending is not None else None
+                if parent is not None:
+                    temp_key = self._project_named_leaf_key(pending)
+                    self._named_project_assignments.pop(temp_key, None)
+                    parent.takeChild(parent.indexOfChild(pending))
+                    self._project_named_schedule_refresh()
+                    self.set_project_modified(True)
             # Ein verworfenes, noch nie gespeichertes C64-Dokument darf kein
             # dauerhaftes Phantomblatt ohne Pfad im Projektbaum hinterlassen.
             if getattr(document, "_is_new_c64_project_file", False):
@@ -137918,10 +140044,32 @@ border: 2px solid #2a69aa;
             path_layout.addWidget(self.project_path_edit, 1)
             layout.addLayout(path_layout)
 
+            # Stage 596: active output type and named project above the TreeList.
+            project_choice_row = QHBoxLayout()
+            project_choice_row.setContentsMargins(0, 0, 0, 0)
+            label = QLabel("Projektname:", tab)
+            project_choice_row.addWidget(label)
+            self.project_name_combo = ProjectTargetMenuButton(tab)
+            self.project_name_combo.setObjectName("project_name_combo")
+            self.project_name_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.project_name_combo.setToolTip(
+                "Aktives Projekt und Buildart: Programm oder Bibliothek")
+            project_choice_row.addWidget(self.project_name_combo, 1)
+            layout.addLayout(project_choice_row)
+
             self.project_tree = QTreeWidget(tab)
             self.project_tree.setObjectName("project_tree")
-            self.project_tree.setHeaderHidden(True)
-            self.project_tree.setUniformRowHeights(True)
+            self.project_tree.setColumnCount(2)
+            self.project_tree.setHeaderLabels(["Datei", "Projekt"])
+            self.project_tree.setHeaderHidden(False)
+            self.project_tree.header().setSectionsMovable(False)
+            self.project_tree.header().setSectionResizeMode(0, QHeaderView.Interactive)
+            self.project_tree.header().setSectionResizeMode(1, QHeaderView.Interactive)
+            self.project_tree.header().setStretchLastSection(False)
+            self.project_tree.header().setMinimumSectionSize(75)
+            self.project_tree.setColumnWidth(0, 180)
+            self.project_tree.setColumnWidth(1, 155)
+            self.project_tree.setUniformRowHeights(False)
             self.project_tree.setAlternatingRowColors(True)
             self.project_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
             self.project_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -137932,8 +140080,65 @@ border: 2px solid #2a69aa;
             )
             self.project_tree.setStyleSheet(
                 self._project_tree_checkbox_stylesheet()
+                + self._project_named_tree_header_stylesheet()
             )
-            layout.addWidget(self.project_tree, 1)
+            # Stage 606: TreeList and the eight project-name rows have separate
+            # vertical resize areas. The lower part scrolls without squeezing
+            # the TreeList or growing the surrounding dock's minimum height.
+            self.project_tree_name_splitter = QSplitter(Qt.Vertical, tab)
+            self.project_tree_name_splitter.setObjectName("project_tree_name_splitter")
+            self.project_tree_name_splitter.setChildrenCollapsible(False)
+            self.project_tree_name_splitter.setHandleWidth(6)
+            self.project_tree_name_splitter.addWidget(self.project_tree)
+
+            self.project_names_scroll_area = QScrollArea(self.project_tree_name_splitter)
+            self.project_names_scroll_area.setObjectName("project_names_scroll_area")
+            self.project_names_scroll_area.setWidgetResizable(True)
+            self.project_names_scroll_area.setFrameShape(QFrame.NoFrame)
+            self.project_names_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.project_names_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.project_names_scroll_area.setMinimumHeight(64)
+            self.project_names_scroll_content = QWidget(self.project_names_scroll_area)
+            self.project_names_scroll_content.setObjectName("project_names_scroll_content")
+            self.project_names_scroll_area.setWidget(self.project_names_scroll_content)
+
+            # Project names are editable both directly and through the folder-icon
+            # text dialog. Cancel never touches the input field.
+            project_names_grid = QGridLayout(self.project_names_scroll_content)
+            project_names_grid.setContentsMargins(6, 5, 6, 5)
+            project_names_grid.setHorizontalSpacing(5)
+            project_names_grid.setVerticalSpacing(3)
+            self.project_name_edits = {}
+            for row, (language, title) in enumerate(NAMED_PROJECT_PROFILE_FIELDS):
+                name_label = QLabel(f"{title}:", self.project_names_scroll_content)
+                name_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+                name_edit = QLineEdit(self.project_names_scroll_content)
+                name_edit.setObjectName(f"project_name_{language}_edit")
+                name_edit.setPlaceholderText(f"{title}-Projektname")
+                name_edit.setMinimumWidth(0)
+                button = QToolButton(self.project_names_scroll_content)
+                button.setObjectName(f"project_name_{language}_dialog_button")
+                button.setProperty("projectNameButton", True)
+                button.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
+                button.setFixedWidth(29)
+                button.setToolTip(f"{title}-Projektname in Dialog bearbeiten")
+                self.project_name_edits[language] = name_edit
+                name_edit.textChanged.connect(
+                    lambda value, code=language: self._project_named_text_changed(code, value))
+                button.clicked.connect(
+                    lambda _checked=False, code=language: self._project_named_edit_dialog(code))
+                project_names_grid.addWidget(name_label, row, 0)
+                project_names_grid.addWidget(name_edit, row, 1)
+                project_names_grid.addWidget(button, row, 2)
+            project_names_grid.setColumnStretch(1, 1)
+            # Keep the eight rows compact at the top when the lower pane grows.
+            project_names_grid.setRowStretch(len(NAMED_PROJECT_PROFILE_FIELDS), 1)
+            self.project_tree_name_splitter.addWidget(self.project_names_scroll_area)
+            self.project_tree_name_splitter.setStretchFactor(0, 3)
+            self.project_tree_name_splitter.setStretchFactor(1, 1)
+            self.project_tree_name_splitter.setSizes([360, 190])
+            layout.addWidget(self.project_tree_name_splitter, 1)
+            tab.setStyleSheet(self._project_named_panel_stylesheet())
 
             button_layout = QHBoxLayout()
             self.project_new_button = QPushButton("Neu", tab)
@@ -137957,9 +140162,349 @@ border: 2px solid #2a69aa;
             self.project_tree.itemDoubleClicked.connect(self._on_project_item_double_clicked)
             self.project_tree.itemClicked.connect(self._on_project_c64_leaf_clicked)
             self.project_tree.itemChanged.connect(self._on_project_item_changed)
+            self.project_name_combo.currentIndexChanged.connect(
+                self._project_named_choice_changed)
+            self.project_tree.model().rowsInserted.connect(
+                self._project_named_schedule_refresh)
+            self.project_tree.model().rowsRemoved.connect(
+                self._project_named_schedule_refresh)
+            self._named_project_names = normalize_named_project_names(None)
+            self._named_project_selected = ("", "")
+            self._named_project_assignments = {}
+            self._named_project_loading = False
+            self._named_project_refresh_pending = False
 
             self.reset_project_tree()
             return tab
+
+        # ----- Stage 596: benannte Projekte und Dateizuordnungen ---------
+
+        def _project_named_current_scope(self) -> Tuple[str, str]:
+            from project_named_targets import profile_name as named_project_profile_name
+            selection = getattr(self, "_named_project_selected", ("", ""))
+            language, kind = normalize_named_project_selection(selection)
+            names = getattr(self, "_named_project_names", {})
+            if not named_project_profile_name(names, language, kind):
+                return "", ""
+            return language, kind
+
+        def _project_named_leaf_key(self, item: QTreeWidgetItem) -> str:
+            if (getattr(self, "_is_unsaved_dbase_module_leaf", lambda _item: False)(item)):
+                return f"@unsaved:dbase:{id(item)}"
+            path = str(item.data(0, Qt.UserRole + 302) or "").strip()
+            if not path:
+                # Folder-level selection is a default for its contained files.
+                # It survives .pro serialization without being mistaken for a path.
+                kind = self._project_item_kind(item)
+                if kind in {PROJECT_NODE_PASCAL_MODULE_ROOT,
+                            PROJECT_NODE_PASCAL_UNIT_ROOT,
+                            PROJECT_NODE_DBASE_GROUP}:
+                    language = self._project_named_item_language(item)
+                    target = str(item.data(0, Qt.UserRole + 305) or "").casefold()
+                    role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
+                    return f"@group:{language}:{target}:{role}"
+                return ""
+            ancestors = []
+            node = item.parent()
+            while node is not None:
+                # Parent labels are stable project-tree headings, not file paths.
+                ancestors.append(str(node.text(0)))
+                node = node.parent()
+            ancestors.reverse()
+            return named_project_leaf_key(
+                path, self._project_item_kind(item), ancestors)
+
+        def _project_named_is_file_leaf(self, item: QTreeWidgetItem) -> bool:
+            if item is None or item.childCount():
+                return False
+            if getattr(self, "_is_unsaved_dbase_module_leaf", lambda _item: False)(item):
+                return True
+            if self._project_item_kind(item) in {
+                PROJECT_NODE_MARKER_ROOT,
+                PROJECT_NODE_MARKER_FILE,
+                PROJECT_NODE_MARKER_LINE,
+            }:
+                return False
+            return bool(str(item.data(0, Qt.UserRole + 302) or "").strip())
+
+        def _project_named_is_assignable_item(self, item: QTreeWidgetItem) -> bool:
+            return (self._project_named_is_file_leaf(item)
+                    or self._project_item_kind(item) in {
+                        PROJECT_NODE_PASCAL_MODULE_ROOT,
+                        PROJECT_NODE_PASCAL_UNIT_ROOT,
+                        PROJECT_NODE_DBASE_GROUP,
+                    })
+
+        def _project_named_effective_assignment(self, item: QTreeWidgetItem) -> str:
+            # Explicit leaf choice takes precedence over a parent-folder choice.
+            while item is not None:
+                key = self._project_named_leaf_key(item)
+                value = str(self._named_project_assignments.get(key, ""))
+                if value:
+                    return value
+                item = item.parent() if hasattr(item, "parent") else None
+            return ""
+
+        def _project_named_schedule_refresh(self, *unused) -> None:
+            if not hasattr(self, "project_tree") or getattr(
+                self, "_named_project_refresh_pending", False
+            ):
+                return
+            self._named_project_refresh_pending = True
+            QTimer.singleShot(0, self._project_named_refresh_widgets)
+
+        def _project_named_refresh_selection(self) -> None:
+            from project_named_targets import profile_name as named_project_profile_name
+            chooser = getattr(self, "project_name_combo", None)
+            if chooser is None:
+                return
+            selected = normalize_named_project_selection(
+                getattr(self, "_named_project_selected", ("", "")))
+            if not named_project_profile_name(
+                getattr(self, "_named_project_names", {}), *selected):
+                selected = ("", "")
+            blocked = chooser.blockSignals(True)
+            try:
+                chooser.clear()
+                chooser.addItem("Projekt auswählen", "")
+                for language, title in NAMED_PROJECT_LANGUAGES:
+                    for kind, description in (("program", "Programm"),
+                                              ("library", "Bibliothek")):
+                        name = named_project_profile_name(
+                            self._named_project_names, language, kind)
+                        if not name:
+                            continue
+                        chooser.addItem(f"{description}: {name}", f"{language}|{kind}")
+                        chooser.setItemData(chooser.count() - 1,
+                                            f"{title} / {description}: {name}",
+                                            Qt.ToolTipRole)
+                index = chooser.findData(
+                    f"{selected[0]}|{selected[1]}" if selected[0] else "")
+                chooser.setCurrentIndex(index if index >= 0 else 0)
+                self._named_project_selected = selected
+            finally:
+                chooser.blockSignals(blocked)
+
+        @staticmethod
+        def _project_named_item_language(item: QTreeWidgetItem) -> str:
+            while item is not None:
+                language = str(item.data(0, Qt.UserRole + 301) or "").casefold()
+                if language == "c64":
+                    return "basic"
+                if language in NAMED_PROJECT_LANGUAGE_IDS:
+                    return language
+                item = item.parent()
+            return ""
+
+        def _project_named_refresh_widgets(self) -> None:
+            self._named_project_refresh_pending = False
+            tree = getattr(self, "project_tree", None)
+            if tree is None:
+                return
+            self._project_named_refresh_selection()
+            iterator = QTreeWidgetItemIterator(tree)
+            while iterator.value() is not None:
+                item = iterator.value()
+                iterator += 1
+                if not self._project_named_is_assignable_item(item):
+                    continue
+                key = self._project_named_leaf_key(item)
+                language = self._project_named_item_language(item)
+                combo = tree.itemWidget(item, 1)
+                if not isinstance(combo, ProjectTargetMenuButton):
+                    combo = ProjectTargetMenuButton(tree)
+                    combo.setObjectName("project_leaf_name_combo")
+                    combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                    combo.setToolTip("Projekt und Ausgabeart für diese Datei auswählen")
+                    combo.currentIndexChanged.connect(
+                        lambda _idx, leaf=item: self._project_named_file_changed(leaf))
+                    tree.setItemWidget(item, 1, combo)
+                blocked = combo.blockSignals(True)
+                try:
+                    combo.clear()
+                    combo.addItem("– nicht zugeordnet –", "")
+                    if language:
+                        for kind in ("program", "library"):
+                            name = named_project_profile_name(
+                                self._named_project_names, language, kind)
+                            if not name:
+                                continue
+                            title = dict(NAMED_PROJECT_LANGUAGES)[language]
+                            if language == "pascal":
+                                prefix = "Pascal: Programm" if kind == "program" else "Pascal: Bibliothek"
+                            elif language == "dbase":
+                                prefix = "dBASE: Programm" if kind == "program" else "dBASE: Runtime"
+                            else:
+                                prefix = title + (": Programm" if kind == "program" else ": Bibliothek")
+                            combo.addItem(f"{prefix} — {name}", f"{language}|{kind}")
+                    assigned = self._project_named_effective_assignment(item)
+                    index = combo.findData(assigned)
+                    if index < 0 and assigned == language:
+                        # Old .pro files assigned only a language. Keep the
+                        # original assignment until the user chooses a kind.
+                        index = combo.findData(f"{language}|program")
+                    combo.setCurrentIndex(index if index >= 0 else 0)
+                    combo.setEnabled(combo.count() > 1)
+                finally:
+                    combo.blockSignals(blocked)
+
+        def _project_named_file_changed(self, item: QTreeWidgetItem) -> None:
+            if getattr(self, "_named_project_loading", False):
+                return
+            combo = self.project_tree.itemWidget(item, 1)
+            if combo is None:
+                return
+            key = self._project_named_leaf_key(item)
+            if not key:
+                return
+            assignment = str(combo.currentData() or "")
+            previous = self._named_project_assignments.get(key, "")
+            if assignment == previous:
+                return
+            if assignment:
+                self._named_project_assignments[key] = assignment
+            else:
+                self._named_project_assignments.pop(key, None)
+            self.set_project_modified(True)
+            self._project_named_schedule_refresh()
+
+        def _project_named_choice_changed(self, index: int) -> None:
+            if getattr(self, "_named_project_loading", False):
+                return
+            value = self.project_name_combo.itemData(index)
+            chosen = normalize_named_project_selection(value)
+            if chosen != getattr(self, "_named_project_selected", ("", "")):
+                self._named_project_selected = chosen
+                self.set_project_modified(True)
+
+        def _project_named_text_changed(self, language: str, value: str) -> None:
+            if getattr(self, "_named_project_loading", False):
+                return
+            new_value = str(value or "").strip()
+            if self._named_project_names.get(language, "") == new_value:
+                return
+            self._named_project_names[language] = new_value
+            self._project_named_schedule_refresh()
+            self.set_project_modified(True)
+
+        def _project_named_edit_dialog(self, language: str) -> None:
+            from project_named_targets import PROFILE_FIELDS as NAMED_PROJECT_PROFILE_FIELDS
+            editor = self.project_name_edits[language]
+            display = dict(NAMED_PROJECT_PROFILE_FIELDS)[language]
+            value, accepted = QInputDialog.getText(
+                self, f"Projektname: {display}", "Projektname:",
+                QLineEdit.Normal, editor.text())
+            if accepted:
+                editor.setText(value)
+
+        def _project_named_restore(self, entries) -> None:
+            from project_named_targets import assignment_is_valid as named_project_assignment_is_valid
+            self._named_project_loading = True
+            try:
+                self._named_project_names = normalize_named_project_names({
+                    str(value.get("language", "")): str(value.get("name", ""))
+                    for value in entries.get(PROJECT_NAMED_NAMES_KEY, ())
+                })
+                self._named_project_selected = normalize_named_project_selection(
+                    (entries.get(PROJECT_NAMED_SELECTED_KEY) or [{}])[0])
+                self._named_project_assignments = {
+                    str(value.get("key", "")): str(value.get("language", ""))
+                    for value in entries.get(PROJECT_NAMED_ASSIGNMENTS_KEY, ())
+                    if named_project_assignment_is_valid(str(value.get("language", "")))
+                }
+                for language, editor in getattr(self, "project_name_edits", {}).items():
+                    editor.setText(self._named_project_names.get(language, ""))
+                self._project_named_refresh_selection()
+            finally:
+                self._named_project_loading = False
+            self._project_named_schedule_refresh()
+
+        def _project_named_entries(self, entries: dict) -> None:
+            from project_named_targets import assignment_is_valid as named_project_assignment_is_valid
+            entries[PROJECT_NAMED_NAMES_KEY] = [
+                {"language": language, "name": name}
+                for language, name in getattr(self, "_named_project_names", {}).items()
+                if name
+            ]
+            language, kind = self._project_named_current_scope()
+            entries[PROJECT_NAMED_SELECTED_KEY] = (
+                [{"language": language, "kind": kind}] if language else [])
+            # Remove references to files no longer present in the TreeList.
+            seen_keys = set()
+            it = QTreeWidgetItemIterator(self.project_tree)
+            while it.value() is not None:
+                item = it.value()
+                it += 1
+                if self._project_named_is_assignable_item(item):
+                    key = self._project_named_leaf_key(item)
+                    if not key.startswith("@unsaved:"):
+                        seen_keys.add(key)
+            # Nicht gespeicherte Blätter bleiben in der GUI zuordenbar, werden
+            # aber niemals als Phantompfade in die Projektdatei geschrieben.
+            self._named_project_assignments = {
+                key: value for key, value in self._named_project_assignments.items()
+                if (key in seen_keys or key.startswith("@unsaved:dbase:"))
+                and named_project_assignment_is_valid(value)
+            }
+            entries[PROJECT_NAMED_ASSIGNMENTS_KEY] = [
+                {"key": key, "language": value}
+                for key, value in sorted(self._named_project_assignments.items())
+                if key in seen_keys
+            ]
+
+        def _project_named_assign_new_leaf(self, item: QTreeWidgetItem) -> None:
+            language, kind = self._project_named_current_scope()
+            if getattr(self, "_named_project_loading", False):
+                return
+            # A group-level ComboBox sets the project type for new children.
+            parent = item.parent()
+            inherited = self._project_named_effective_assignment(parent) if parent else ""
+            if inherited:
+                assignment = inherited
+            elif language and kind and self._project_named_item_language(item) == language:
+                assignment = f"{language}|{kind}"
+            else:
+                return
+            key = self._project_named_leaf_key(item)
+            if key:
+                self._named_project_assignments[key] = assignment
+                self._project_named_schedule_refresh()
+
+        def _project_named_matches_item(self, item: QTreeWidgetItem) -> bool:
+            from project_named_targets import assignment_matches as named_project_assignment_matches
+            language, _kind = self._project_named_current_scope()
+            if not language:
+                return True  # legacy projects and unselected project keep old behaviour
+            return named_project_assignment_matches(
+                self._project_named_effective_assignment(item), language, _kind)
+
+        def _project_named_matches_path(self, path: Path, *, target: str = "") -> bool:
+            language, _kind = self._project_named_current_scope()
+            if not language:
+                return True
+            candidate = str(Path(path).expanduser()).replace("\\", "/").casefold()
+            iterator = QTreeWidgetItemIterator(self.project_tree)
+            while iterator.value() is not None:
+                item = iterator.value()
+                iterator += 1
+                if not self._project_named_is_file_leaf(item):
+                    continue
+                source = str(item.data(0, Qt.UserRole + 302) or "").replace("\\", "/").casefold()
+                if source != candidate:
+                    continue
+                if target:
+                    node = item
+                    targets = set()
+                    while node is not None:
+                        value = str(node.data(0, Qt.UserRole + 305) or "").casefold()
+                        if value in {"pe32", "pe64"}:
+                            targets.add(value)
+                        node = node.parent()
+                    if targets and target.casefold() not in targets:
+                        continue
+                if self._project_named_matches_item(item):
+                    return True
+            return False
 
         @staticmethod
         def _project_marker_path_key(path: Path | str) -> str:
@@ -138208,7 +140753,8 @@ border: 2px solid #2a69aa;
         ) -> None:
             if not hasattr(self, "project_tree"):
                 return
-            values = entries or empty_project_entries()
+            values = entries if entries is not None else empty_project_entries()
+            self._project_named_restore(values)
             for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
                 _input_relative = _project_bool_entry(
                     values, _settings["input_relative_key"], True
@@ -138276,6 +140822,12 @@ border: 2px solid #2a69aa;
                     _project_bool_entry(values, _settings["dbase_dynamic_typed_variables_key"], False),
                     mark_modified=False,
                 )
+                self.set_project_windows_dbase_peephole_settings(
+                    _target,
+                    {name: _project_bool_entry(values, _settings[f"dbase_peephole_{name}_key"], False)
+                     for name in ("register_width", "processor_flags", "stack_state")},
+                    mark_modified=False,
+                )
                 self.set_project_windows_prolog_with_descriptors(
                     _target,
                     _project_bool_entry(
@@ -138289,6 +140841,26 @@ border: 2px solid #2a69aa;
                     if _output_entries else "",
                     mark_modified=False,
                 )
+                for _language in PROJECT_WINDOWS_COMPILER_LANGUAGES:
+                    _ls = _project_compiler_directory_settings(_target, _language)
+                    _language_modes = {
+                        _kind: _project_bool_entry(values, _ls[f"{_kind}_relative_key"], True)
+                        for _kind in ("input", "output")}
+                    for _kind, _enabled in _language_modes.items():
+                        self.set_project_windows_language_relative_paths(
+                            _target, _language, _kind, _enabled, mark_modified=False)
+                    self.set_project_windows_language_search_paths(
+                        _target, _language,
+                        [item.get("path", "") for item in values.get(_ls["input_key"], ())],
+                        mark_modified=False)
+                    _items = values.get(_ls["output_key"], ())
+                    self.set_project_windows_language_output_directory(
+                        _target, _language, _items[0].get("path", "") if _items else "",
+                        mark_modified=False)
+                    _items = values.get(_ls["cache_key"], ())
+                    self.set_project_windows_language_assembler_cache(
+                        _target, _language, _items[0].get("path", "") if _items else "",
+                        mark_modified=False)
                 _cache_entries = values.get(_settings["asm_cache_key"], ())
                 self.set_project_windows_assembler_cache(
                     _target, _cache_entries[0].get("path", "") if _cache_entries else "",
@@ -138320,6 +140892,11 @@ border: 2px solid #2a69aa;
                         _settings["pe_packing_enabled_key"],
                         PE_PACKING_DEFAULT,
                     ),
+                    mark_modified=False,
+                )
+                self.set_project_windows_compact(
+                    _target,
+                    _project_bool_entry(values, _settings["compact_enabled_key"], False),
                     mark_modified=False,
                 )
                 # Stage 228: reset_project_tree() is also called without an
@@ -138700,25 +141277,19 @@ border: 2px solid #2a69aa;
                         _group.setExpanded(True)
 
                 if key == "pascal":
+                    # Stage 601: PE32/PE32+ category nodes live directly
+                    # beneath Pascal-Programme, saving one indentation level
+                    # for the project-assignment dropdown column.
                     for _target, _target_title in (
                         ("pe32", "Windows PE32"),
                         ("pe64", "Windows PE32+"),
                     ):
-                        _target_item = QTreeWidgetItem(root, [_target_title])
-                        _target_item.setData(0, Qt.UserRole + 301, "pascal")
-                        _target_item.setData(0, Qt.UserRole + 303, PROJECT_NODE_PASCAL_TARGET)
-                        _target_item.setData(0, Qt.UserRole + 305, _target)
-                        _target_item.setIcon(0, folder_icon)
-                        _target_item.setToolTip(
-                            0, _target_title + "-Buildziel; Rechtsklick für Programm/DLL/Starten"
-                        )
-                        self.project_pascal_target_nodes[_target] = _target_item
-
                         for _role, _role_title, _role_kind in (
                             ("modules", "Module", PROJECT_NODE_PASCAL_MODULE_ROOT),
-                            ("units", "Unit", PROJECT_NODE_PASCAL_UNIT_ROOT),
+                            ("units", "Units", PROJECT_NODE_PASCAL_UNIT_ROOT),
                         ):
-                            _group = QTreeWidgetItem(_target_item, [_role_title])
+                            _group = QTreeWidgetItem(
+                                root, [f"{_target_title} {_role_title}"])
                             _group.setData(0, Qt.UserRole + 301, "pascal")
                             _group.setData(0, Qt.UserRole + 303, _role_kind)
                             _group.setData(0, Qt.UserRole + 305, _target)
@@ -138742,9 +141313,8 @@ border: 2px solid #2a69aa;
                                     )
                             _group.setExpanded(True)
 
-                        # Stage 236: DBF-Tabellen liegen als eigener geschützter
-                        # Ressourcen-Zweig direkt unter dem jeweiligen Windows-Ziel.
-                        _table_group = QTreeWidgetItem(_target_item, ["Tabellen"])
+                        _table_group = QTreeWidgetItem(
+                            root, [f"{_target_title} Tabellen"])
                         _table_group.setData(0, Qt.UserRole + 301, "pascal")
                         _table_group.setData(0, Qt.UserRole + 303, PROJECT_NODE_PASCAL_TABLE_ROOT)
                         _table_group.setData(0, Qt.UserRole + 305, _target)
@@ -138753,7 +141323,7 @@ border: 2px solid #2a69aa;
                         _table_group.setToolTip(
                             0,
                             "DBF-Tabellen für " + _target_title
-                            + "; Rechtsklick zum Hinzufügen, Doppelklick auf eine Datei öffnet Designer/Editor",
+                            + "; Rechtsklick zum Hinzufügen, Doppelklick öffnet Designer/Editor",
                         )
                         self.project_pascal_table_nodes[_target] = _table_group
                         _table_key = PROJECT_PASCAL_TABLE_ENTRY_KEYS[_target]
@@ -138767,31 +141337,52 @@ border: 2px solid #2a69aa;
                                     mark_modified=False,
                                 )
                         _table_group.setExpanded(True)
-                        _target_item.setExpanded(True)
+
+                        # The fourth sibling is the matching resource branch.
+                        # Resource entries keep their original project keys.
+                        _resource_root = QTreeWidgetItem(
+                            root, [f"{_target_title} Ressourcen"])
+                        _resource_root.setData(0, Qt.UserRole + 301, "pascal")
+                        _resource_root.setData(0, Qt.UserRole + 303, PROJECT_NODE_RESOURCE_ROOT)
+                        _resource_root.setData(0, Qt.UserRole + 305, _target)
+                        _resource_root.setData(0, Qt.UserRole + 306, "resources")
+                        _resource_root.setIcon(0, folder_icon)
+                        _resource_root.setToolTip(
+                            0, "Windows Resource Compiler: *.rc / *.res; "
+                               "Doppelklick öffnet den Ressourcen-Editor")
+                        self.project_resource_nodes[("pascal", _target)] = _resource_root
+                        self.project_windows_target_nodes[("pascal", _target)] = _resource_root
+                        _entry_key = PROJECT_WINDOWS_RESOURCE_ENTRY_KEYS[("pascal", _target)]
+                        for _entry in values.get(_entry_key, ()):
+                            _path_text = str(_entry.get("path", "")).strip()
+                            if _path_text:
+                                self._add_project_resource_entry(
+                                    "pascal", _target, Path(_path_text),
+                                    title=str(_entry.get("title", "")),
+                                    mark_modified=False,
+                                )
+                        _resource_root.setExpanded(True)
 
                 # Stage 150: Windows PE32/PE32+ -> Resourcen fuer BASIC,
                 # Assembler, Pascal, C, LISP, PROLOG und dBase. Pascal besitzt
                 # seine Zielknoten bereits; die anderen Sprachen bekommen hier
                 # dieselbe geschuetzte Zielhierarchie.
-                if key in PROJECT_WINDOWS_RESOURCE_LANGUAGES:
+                if key in PROJECT_WINDOWS_RESOURCE_LANGUAGES and key != "pascal":
                     for _resource_target, _resource_target_title in (
                         ("pe32", "Windows PE32"),
                         ("pe64", "Windows PE32+"),
                     ):
-                        if key == "pascal":
-                            _resource_target_item = self.project_pascal_target_nodes[_resource_target]
-                        else:
-                            _resource_target_item = QTreeWidgetItem(root, [_resource_target_title])
-                            _resource_target_item.setData(0, Qt.UserRole + 301, key)
-                            _resource_target_item.setData(0, Qt.UserRole + 303, PROJECT_NODE_WINDOWS_TARGET)
-                            _resource_target_item.setData(0, Qt.UserRole + 305, _resource_target)
-                            _resource_target_item.setIcon(0, folder_icon)
-                            _resource_target_item.setToolTip(
-                                0, _resource_target_title + "-Ressourcen fuer " + title
-                            )
+                        _resource_target_item = QTreeWidgetItem(root, [_resource_target_title])
+                        _resource_target_item.setData(0, Qt.UserRole + 301, key)
+                        _resource_target_item.setData(0, Qt.UserRole + 303, PROJECT_NODE_WINDOWS_TARGET)
+                        _resource_target_item.setData(0, Qt.UserRole + 305, _resource_target)
+                        _resource_target_item.setIcon(0, folder_icon)
+                        _resource_target_item.setToolTip(
+                            0, _resource_target_title + "-Ressourcen fuer " + title
+                        )
+                        _resource_root = QTreeWidgetItem(_resource_target_item, ["Resourcen"])
                         self.project_windows_target_nodes[(key, _resource_target)] = _resource_target_item
 
-                        _resource_root = QTreeWidgetItem(_resource_target_item, ["Resourcen"])
                         _resource_root.setData(0, Qt.UserRole + 301, key)
                         _resource_root.setData(0, Qt.UserRole + 303, PROJECT_NODE_RESOURCE_ROOT)
                         _resource_root.setData(0, Qt.UserRole + 305, _resource_target)
@@ -138886,6 +141477,7 @@ border: 2px solid #2a69aa;
             if self.project_archive_root is not None:
                 self.project_archive_root.setExpanded(True)
             self.project_tree.blockSignals(False)
+            self._project_named_schedule_refresh()
             self._restore_project_markers_for_open_documents()
 
         def _add_project_c64_sprite_entry(
@@ -139248,6 +141840,7 @@ border: 2px solid #2a69aa;
             child.setIcon(0, self.icon_provider.icon(QFileInfo(path_text)))
             group.setExpanded(True)
             if mark_modified:
+                self._project_named_assign_new_leaf(child)
                 self.set_project_modified(True)
             return child
 
@@ -139610,6 +142203,22 @@ border: 2px solid #2a69aa;
                 entries[_settings["output_key"]] = (
                     [{"path": _output_value}] if _output_value else []
                 )
+                for _language in PROJECT_WINDOWS_COMPILER_LANGUAGES:
+                    _ls = _project_compiler_directory_settings(_target, _language)
+                    entries[_ls["input_key"]] = [
+                        {"path": str(path)} for path in
+                        self.project_windows_language_search_paths[_target][_language]
+                        if str(path).strip()
+                    ]
+                    _output = str(self.project_windows_language_output_directories[_target][_language] or "").strip()
+                    entries[_ls["output_key"]] = [{"path": _output}] if _output else []
+                    _cache_path = str(self.project_windows_language_assembler_cache[_target][_language] or "").strip()
+                    entries[_ls["cache_key"]] = [{"path": _cache_path}] if _cache_path else []
+                    _modes_language = self.project_windows_language_relative_paths[_target][_language]
+                    for _kind in ("input", "output"):
+                        entries[_ls[f"{_kind}_relative_key"]] = [{
+                            "value": "true" if _modes_language.get(_kind, True) else "false"
+                        }]
                 _cache = str(self.project_windows_assembler_cache.get(_target, "") or "").strip()
                 entries[_settings["asm_cache_key"]] = [{"path": _cache}] if _cache else []
                 _unit_out = str(self.project_windows_pascal_unit_output_directories.get(_target, "") or "").strip()
@@ -139671,6 +142280,9 @@ border: 2px solid #2a69aa;
                         else "false"
                     )
                 }]
+                entries[_settings["compact_enabled_key"]] = [{
+                    "value": "true" if self.project_windows_compact_enabled.get(_target, False) else "false"
+                }]
                 _ui_settings = self.project_windows_dbase_visual.get(_target, {})
                 for _key, _name in (("dbase_external_ui_key", "external_ui_components"),
                                     ("dbase_compress_json_key", "compress_json"),
@@ -139682,6 +142294,12 @@ border: 2px solid #2a69aa;
                     ("dbase_dynamic_typed_variables_key", "dynamic_typed_variables"),
                 ):
                     entries[_settings[_key]] = [{"value": "true" if _slot_settings.get(_name, False) else "false"}]
+                from windows_peephole import normalize_peephole_options
+                _peephole = normalize_peephole_options(
+                    self.project_windows_dbase_peephole.get(_target, {}))
+                for _field in ("register_width", "processor_flags", "stack_state"):
+                    entries[_settings[f"dbase_peephole_{_field}_key"]] = [
+                        {"value": "true" if _peephole[_field] else "false"}]
                 entries[_settings["prolog_with_descriptors_key"]] = [{
                     "value": (
                         "true"
@@ -140132,6 +142750,7 @@ border: 2px solid #2a69aa;
             }
             for target, options in self.project_windows_pascal_parallel_options.items():
                 entries[PROJECT_WINDOWS_COMPILER_PARALLEL_KEYS[target]] = [dict(options)]
+            self._project_named_entries(entries)
             return entries
 
         def project_has_entries(self) -> bool:
@@ -140296,6 +142915,9 @@ border: 2px solid #2a69aa;
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
             self.project_windows_pascal_optimization_options = stage537_default_pascal_optimization_options()
             self.project_windows_pascal_import_options = stage541_default_pascal_import_options()
+            self.project_windows_dbase_peephole = {
+                _target: {"register_width": False, "processor_flags": False,
+                          "stack_state": False} for _target in ("pe32", "pe64")}
             for _target, _opts in self.project_debug_options.items():
                 stage527_set_debug_options(_opts, target=_target)
             _panel = getattr(self, "project_settings_panel", None)
@@ -140305,6 +142927,9 @@ border: 2px solid #2a69aa;
                 _panel.set_parallel_options(self.project_windows_pascal_parallel_options)
                 _panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
                 _panel.set_pascal_import_options(self.project_windows_pascal_import_options)
+                for _target in ("pe32", "pe64"):
+                    _panel.set_dbase_peephole_settings(
+                        _target, self.project_windows_dbase_peephole[_target])
             self.current_project_kind = "generic"
             if hasattr(self, "project_path_edit"):
                 self.project_path_edit.clear()
@@ -140450,6 +143075,9 @@ border: 2px solid #2a69aa;
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
             self.project_windows_pascal_optimization_options = stage537_default_pascal_optimization_options()
             self.project_windows_pascal_import_options = stage541_default_pascal_import_options()
+            self.project_windows_dbase_peephole = {
+                _target: {"register_width": False, "processor_flags": False,
+                          "stack_state": False} for _target in ("pe32", "pe64")}
             for _target, _opts in self.project_debug_options.items():
                 stage527_set_debug_options(_opts, target=_target)
             _panel = getattr(self, "project_settings_panel", None)
@@ -140459,6 +143087,9 @@ border: 2px solid #2a69aa;
                 _panel.set_parallel_options(self.project_windows_pascal_parallel_options)
                 _panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
                 _panel.set_pascal_import_options(self.project_windows_pascal_import_options)
+                for _target in ("pe32", "pe64"):
+                    _panel.set_dbase_peephole_settings(
+                        _target, self.project_windows_dbase_peephole[_target])
             self.project_path_edit.clear()
             # reset_project_tree() baut ausschließlich die geschützten
             # Hauptknoten aus PROJECT_CATEGORIES wieder auf.
@@ -141613,6 +144244,7 @@ border: 2px solid #2a69aa;
             if parent is not None:
                 parent.setExpanded(True)
             if mark_modified:
+                self._project_named_assign_new_leaf(child)
                 self.set_project_modified(True)
             return child
 
@@ -141723,9 +144355,12 @@ border: 2px solid #2a69aa;
             menu.addSeparator()
             clear_action = menu.addAction("Einträge löschen")
             clear_action.setEnabled(item.childCount() > 0)
+            build_actions = self._project_pascal_flat_build_actions(menu, item)
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
+            if self._project_pascal_flat_build_chosen(selected, build_actions):
+                return
             if selected is add_action:
                 self.add_project_pascal_tables(item)
             elif selected is clear_action:
@@ -141761,6 +144396,8 @@ border: 2px solid #2a69aa;
             result = []
             seen = set()
             for child in self._project_pascal_source_items_ordered(group):
+                if self._project_named_current_scope()[0] == "pascal" and not self._project_named_matches_item(child):
+                    continue
                 path_text = str(child.data(0, Qt.UserRole + 302) or "").strip()
                 if not path_text:
                     continue
@@ -142111,7 +144748,7 @@ border: 2px solid #2a69aa;
 
             try:
                 from c64pascal import preprocess_pascal_source
-                from c64pascal.compiler import _unit_program_source
+                from c64pascal.compiler import _unit_program_source, _pascal_target_macros
                 jobs = []
                 for path in all_units:
                     document = self._project_pascal_document(path, target)
@@ -142129,7 +144766,8 @@ border: 2px solid #2a69aa;
                     macros = windows_application_predefined_macros(
                         document.windows_application_mode, target)
                     preprocessed = preprocess_pascal_source(
-                        source, filename=str(path), predefined_macros=macros)
+                        source, filename=str(path),
+                        predefined_macros=macros, target=target)
                     (_, declared, interface_uses, implementation_uses,
                      _, _) = _unit_program_source(preprocessed.source, filename=str(path))
                     output_dir = self._document_windows_pascal_unit_output_path(document)
@@ -142160,7 +144798,7 @@ border: 2px solid #2a69aa;
                         "output_directory": str(output_dir) if output_dir else None,
                         "include_paths": list(dict.fromkeys(str(x) for x in include_paths)),
                         "asm_include_paths": [str(x) for x in
-                            self._project_windows_asm_include_paths(target)],
+                            self._project_windows_asm_include_paths(target, "pascal")],
                         "link_search_paths": [str(x) for x in
                             self._project_windows_pascal_library_search_paths(document)],
                         "graphics_backend": document.windows_graphics_backend,
@@ -142274,6 +144912,19 @@ border: 2px solid #2a69aa;
         def build_project_pascal_target(
             self, target: str, *, build_kind: str,
         ) -> bool:
+            # Stage 596: selecting "Bibliothek: Foo" builds the assigned
+            # Pascal LIBRARY, regardless of which legacy context action launched
+            # the build. PROGRAM/LIBRARY in the Pascal source is still validated.
+            _project_language, _project_kind = self._project_named_current_scope()
+            if _project_language and _project_language != "pascal":
+                self.show_error(
+                    "Anderes Projekt aktiv",
+                    "Bitte oben ein Pascal-Projekt auswählen, bevor du ein "
+                    "Pascal-Programm oder eine Pascal-Bibliothek erstellst.",
+                )
+                return False
+            if _project_language == "pascal":
+                build_kind = _project_kind
             if getattr(self, "_pascal_project_build_active", False):
                 self.log("PASCAL PROJECT: Build laeuft bereits")
                 return False
@@ -142472,6 +145123,37 @@ border: 2px solid #2a69aa;
             elif selected is start_action:
                 self.start_project_pascal_target(target)
 
+        def _project_pascal_flat_build_actions(self, menu, item):
+            """Stage 601: preserve the former PE32/PE64 target menu.
+
+            Each flattened Pascal category exposes the build commands using
+            its own architecture metadata. The other language menus do not
+            receive Pascal actions.
+            """
+            if str(item.data(0, Qt.UserRole + 301) or "").casefold() != "pascal":
+                return {}
+            target = str(item.data(0, Qt.UserRole + 305) or "").casefold()
+            if target not in {"pe32", "pe64"}:
+                return {}
+            menu.addSeparator()
+            submenu = menu.addMenu("Pascal: Kompilieren / Linken")
+            return {
+                submenu.addAction("Programm erstellen"): (target, "program"),
+                submenu.addAction("DLL erstellen"): (target, "library"),
+                submenu.addAction("Starten"): (target, "start"),
+            }
+
+        def _project_pascal_flat_build_chosen(self, selection, actions) -> bool:
+            choice = actions.get(selection)
+            if choice is None:
+                return False
+            target, mode = choice
+            if mode == "start":
+                self.start_project_pascal_target(target)
+            else:
+                self.build_project_pascal_target(target, build_kind=mode)
+            return True
+
         def sort_project_pascal_unit_entries(
             self,
             group_item: QTreeWidgetItem,
@@ -142526,12 +145208,57 @@ border: 2px solid #2a69aa;
                     f"Pascal-Units {direction} sortiert und Projekt gespeichert"
                 )
 
+        def _new_project_pascal_source(self, group_item: QTreeWidgetItem) -> None:
+            """Create an actual Module/Unit leaf, never an extra folder."""
+            kind = self._project_item_kind(group_item)
+            role = ("units" if kind == PROJECT_NODE_PASCAL_UNIT_ROOT
+                    else "modules" if kind == PROJECT_NODE_PASCAL_MODULE_ROOT else "")
+            if not role:
+                return
+            self._ensure_project_for_new_document()
+            directory = self._project_new_file_directory()
+            selected_language, selected_kind = self._project_named_current_scope()
+            is_library = selected_language == "pascal" and selected_kind == "library"
+            prefix = "Unit" if role == "units" else "Bibliothek" if is_library else "Programm"
+            for number in range(1, 10000):
+                basename = f"{prefix}{number}"
+                path = directory / f"{basename}.pas"
+                if not path.exists():
+                    break
+            else:
+                self.show_error("Pascal-Datei", "Kein freier Modulname gefunden")
+                return
+            if role == "units":
+                content = f"unit {basename};\ninterface\n\nimplementation\n\nend.\n"
+            elif is_library:
+                content = f"library {basename};\n\nbegin\nend.\n"
+            else:
+                content = f"program {basename};\n\nbegin\nend.\n"
+            try:
+                with path.open("x", encoding="utf-8", newline="\n") as stream:
+                    stream.write(content)
+            except OSError as exc:
+                self.show_error("Pascal-Datei konnte nicht erzeugt werden", str(exc))
+                return
+            child = self._add_project_pascal_target_entry(group_item, path, title=path.name)
+            if child is None:
+                return
+            self.project_tree.setCurrentItem(child)
+            child.setSelected(True)
+            group_item.setExpanded(True)
+            if self.current_project_path is not None:
+                self.save_project()
+            self.open_project_item(child)
+
         def _show_project_pascal_group_menu(
             self,
             item: QTreeWidgetItem,
             position,
         ) -> None:
             menu = self._project_popup_menu()
+            label = ("Neu: Unit" if self._project_item_kind(item) == PROJECT_NODE_PASCAL_UNIT_ROOT
+                     else "Neu: Modul")
+            new_action = menu.addAction(label)
             add_action = menu.addAction("Hinzufügen …")
             clear_action = menu.addAction("Einträge löschen")
             clear_action.setEnabled(item.childCount() > 0)
@@ -142544,10 +145271,15 @@ border: 2px solid #2a69aa;
                 has_units = any(self._project_pascal_source_items(item))
                 descending_action.setEnabled(has_units)
                 ascending_action.setEnabled(has_units)
+            build_actions = self._project_pascal_flat_build_actions(menu, item)
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
-            if selected is add_action:
+            if self._project_pascal_flat_build_chosen(selected, build_actions):
+                return
+            if selected is new_action:
+                self._new_project_pascal_source(item)
+            elif selected is add_action:
                 self.add_project_pascal_target_entries(item)
             elif selected is clear_action:
                 self.clear_project_pascal_target_entries(item)
@@ -142630,10 +145362,16 @@ border: 2px solid #2a69aa;
             preferred_item: Optional[QTreeWidgetItem] = None,
         ) -> bool:
             """Kompiliert markierte Projektblätter ohne EXE-Start."""
+            if not self._confirm_pending_dbase_module_before_other_action():
+                return False
             items = self._project_compilable_selection(preferred_item)
+            # Never compile another named project's leaves as part of F2.
+            _named_language, _named_kind = self._project_named_current_scope()
+            if _named_language:
+                items = [item for item in items if self._project_named_matches_item(item)]
             if not items:
                 self.statusBar().showMessage(
-                    "F2: Kein kompilierbares Modul/Unit-Blatt markiert", 5000
+                    "F2: Keine dem aktiven Projekt zugeordneten Quellblätter markiert", 5000
                 )
                 return False
 
@@ -142748,7 +145486,7 @@ border: 2px solid #2a69aa;
             )
             added = 0
             for filename in filenames:
-                if role == "programs" and not is_dbase_program_text(Path(filename)):
+                if role in {"programs", "modules"} and not is_dbase_program_text(Path(filename)):
                     self.show_error("Ungültige Programm-Datei",
                                     "Datei ist keine gültige Programm-Datei")
                     continue
@@ -142766,6 +145504,19 @@ border: 2px solid #2a69aa;
                 )
 
         def clear_project_dbase_group(self, group_item: QTreeWidgetItem) -> None:
+            count = group_item.childCount()
+            if count <= 0:
+                return
+            for index in range(group_item.childCount() - 1, -1, -1):
+                leaf = group_item.child(index)
+                if not self._is_unsaved_dbase_module_leaf(leaf):
+                    continue
+                for tab_index in range(self.document_tabs.count()):
+                    document = self.document_tabs.widget(tab_index)
+                    if getattr(document, "_dbase_project_tree_item", None) is leaf:
+                        if not self.close_document(document):
+                            return
+                        break
             count = group_item.childCount()
             if count <= 0:
                 return
@@ -142855,7 +145606,7 @@ border: 2px solid #2a69aa;
             if path.exists() and not path.is_file():
                 self.show_error("Dateiauswahl", "Die Auswahl ist keine Datei.")
                 return
-            if role == "programs" and path.is_file() and not is_dbase_program_text(path):
+            if role in {"programs", "modules"} and path.is_file() and not is_dbase_program_text(path):
                 self.show_error("Ungültige Programm-Datei",
                                 "Datei ist keine gültige Programm-Datei")
                 return
@@ -142904,6 +145655,7 @@ border: 2px solid #2a69aa;
 
         def _show_project_dbase_root_menu(self, item: QTreeWidgetItem, position) -> None:
             menu = self._project_popup_menu()
+            new_module_action = menu.addAction("Neu:  Module")
             actions = {}
             for caption, role, _extensions, _default, target in DBASE_NEW_MENU:
                 actions[menu.addAction(caption)] = (role, target)
@@ -142912,7 +145664,9 @@ border: 2px solid #2a69aa;
                 "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
             )
             selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
-            if selected in actions:
+            if selected is new_module_action:
+                self._new_unsaved_dbase_module()
+            elif selected in actions:
                 role, target = actions[selected]
                 self._new_dbase_project_file(role, target)
             elif selected is toggle_action:
@@ -142920,7 +145674,35 @@ border: 2px solid #2a69aa;
 
         def _show_project_dbase_group_menu(self, item: QTreeWidgetItem, position) -> None:
             role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
+            if role == "modules":
+                # Same creation options as the dBASE root; Neu: Modul first.
+                menu = self._project_popup_menu()
+                new_module_action = menu.addAction("Neu:  Module")
+                actions = {}
+                for caption, new_role, _ext, _default, target in DBASE_NEW_MENU:
+                    actions[menu.addAction(caption)] = (new_role, target)
+                menu.addSeparator()
+                add_action = menu.addAction("Hinzufügen …")
+                clear_action = menu.addAction("Einträge löschen")
+                clear_action.setEnabled(item.childCount() > 0)
+                menu.addSeparator()
+                toggle_action = menu.addAction(
+                    "Knoten schließen" if item.isExpanded() else "Knoten öffnen")
+                selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+                if selected is new_module_action:
+                    self._new_unsaved_dbase_module()
+                elif selected in actions:
+                    new_role, target = actions[selected]
+                    self._new_dbase_project_file(new_role, target)
+                elif selected is add_action:
+                    self.add_project_dbase_entries(item)
+                elif selected is clear_action:
+                    self.clear_project_dbase_group(item)
+                elif selected is toggle_action:
+                    item.setExpanded(not item.isExpanded())
+                return
             menu = self._project_popup_menu()
+            new_module_action = menu.addAction("Neu:  Module")
             # Stage 433: Neue Datei muss jeweils die erste Kontextmenüaktion
             # sein; die bestehenden Hinzufügen-/Löschen-Aktionen bleiben.
             new_file_action = None
@@ -142950,7 +145732,9 @@ border: 2px solid #2a69aa;
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
-            if new_file_action is not None and selected is new_file_action:
+            if selected is new_module_action:
+                self._new_unsaved_dbase_module()
+            elif new_file_action is not None and selected is new_file_action:
                 self._new_dbase_project_file(role, caption_override=new_file_spec[0])
             elif new_program_action is not None and selected is new_program_action:
                 self._create_new_dbase_program_item(use_template=False)
@@ -143269,6 +146053,9 @@ border: 2px solid #2a69aa;
         def _show_project_dbase_file_menu(self, item: QTreeWidgetItem, position) -> None:
             role = str(item.data(0, Qt.UserRole + 306) or "").casefold()
             menu = self._project_popup_menu()
+            new_module_action = menu.addAction("Neu:  Module")
+            save_action = (menu.addAction("Speichern unter ...")
+                           if self._is_unsaved_dbase_module_leaf(item) else None)
             open_action = menu.addAction("Öffnen")
             rename_action = menu.addAction("Umbenennen") if role in {"programs", "tables"} else None
             add_action = None
@@ -143282,7 +146069,12 @@ border: 2px solid #2a69aa;
             selected = menu.exec_(
                 self.project_tree.viewport().mapToGlobal(position)
             )
-            if selected is open_action:
+            if selected is new_module_action:
+                self._new_unsaved_dbase_module()
+            elif save_action is not None and selected is save_action:
+                if self._activate_unsaved_dbase_module_leaf(item):
+                    self.save_current_document_as()
+            elif selected is open_action:
                 self.open_project_item(item)
             elif rename_action is not None and selected is rename_action:
                 self._begin_dbase_program_rename(item)
@@ -143291,7 +146083,14 @@ border: 2px solid #2a69aa;
                 if parent is not None:
                     self.add_project_dbase_entries(parent)
             elif selected is remove_action:
-                self.delete_selected_project_leaves(preferred_item=item)
+                if self._is_unsaved_dbase_module_leaf(item):
+                    for index in range(self.document_tabs.count()):
+                        document = self.document_tabs.widget(index)
+                        if getattr(document, "_dbase_project_tree_item", None) is item:
+                            self.close_document(document)
+                            break
+                else:
+                    self.delete_selected_project_leaves(preferred_item=item)
 
         def _restore_windows_resource_editor_workspace(self) -> None:
             if not getattr(self, "_windows_resource_editor_workspace_active", False):
@@ -143715,13 +146514,22 @@ QFileDialog QComboBox QAbstractItemView {
             self, item: QTreeWidgetItem, position
         ) -> None:
             menu = self._project_popup_menu()
+            new_module_action = (menu.addAction("Neu:  Module")
+                if str(item.data(0, Qt.UserRole + 301) or "").casefold() == "dbase"
+                else None)
             open_action = menu.addAction("Resourcen-Editor öffnen")
             menu.addSeparator()
             new_action = menu.addAction("Neue RC-Datei …")
             add_action = menu.addAction("Hinzufügen …")
             clear_action = menu.addAction("Alle Referenzen entfernen")
             clear_action.setEnabled(item.childCount() > 0)
+            build_actions = self._project_pascal_flat_build_actions(menu, item)
             selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+            if new_module_action is not None and selected is new_module_action:
+                self._new_unsaved_dbase_module()
+                return
+            if self._project_pascal_flat_build_chosen(selected, build_actions):
+                return
             if selected is open_action:
                 _language, target, _root = self._project_resource_context(item)
                 self.show_windows_resource_editor(target=target)
@@ -143736,6 +146544,9 @@ QFileDialog QComboBox QAbstractItemView {
             self, item: QTreeWidgetItem, position
         ) -> None:
             menu = self._project_popup_menu()
+            new_module_action = (menu.addAction("Neu:  Module")
+                if str(item.data(0, Qt.UserRole + 301) or "").casefold() == "dbase"
+                else None)
             open_action = menu.addAction("Im Resourcen-Editor öffnen")
             res_action = menu.addAction("RC → RES kompilieren")
             obj_action = menu.addAction("COFF-Objekt für Projektziel schreiben")
@@ -143744,7 +146555,9 @@ QFileDialog QComboBox QAbstractItemView {
             if Path(str(item.data(0, Qt.UserRole + 302) or "")).suffix.casefold() == ".res":
                 res_action.setEnabled(False)
             selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
-            if selected is open_action:
+            if new_module_action is not None and selected is new_module_action:
+                self._new_unsaved_dbase_module()
+            elif selected is open_action:
                 self.open_project_item(item)
             elif selected is res_action:
                 self.compile_project_resource_file(item, output_kind="res")
@@ -143916,7 +146729,11 @@ QFileDialog QComboBox QAbstractItemView {
             if self._is_unsaved_c64_project_leaf(item):
                 self._activate_unsaved_c64_leaf(item)
                 return
-                
+            if self._is_unsaved_dbase_module_leaf(item):
+                if self._confirm_pending_dbase_module_before_other_action(item):
+                    self._activate_unsaved_dbase_module_leaf(item)
+                return
+
             kind = self._project_item_kind(item)
             if kind in {PROJECT_NODE_PASCAL_TARGET_SOURCE, PROJECT_NODE_PASCAL_TABLE_FILE} or (
                 kind == PROJECT_NODE_RESOURCE_FILE
@@ -144227,6 +147044,9 @@ QFileDialog QComboBox QAbstractItemView {
                 self.project_tree.clearSelection()
                 item.setSelected(True)
             kind = self._project_item_kind(item)
+            if (not self._is_unsaved_dbase_module_leaf(item)
+                    and not self._confirm_pending_dbase_module_before_other_action(item)):
+                return
             if (item.parent() is None
                     and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "pascal"):
                 self._show_project_pascal_root_menu(item, position)
@@ -144301,6 +147121,8 @@ QFileDialog QComboBox QAbstractItemView {
             if kind == PROJECT_NODE_WINDOWS_TARGET:
                 menu = self._project_popup_menu()
                 language = str(item.data(0, Qt.UserRole + 301) or "").casefold()
+                new_module_action = (menu.addAction("Neu:  Module")
+                                     if language == "dbase" else None)
                 target = str(item.data(0, Qt.UserRole + 305) or "").casefold()
                 # Nur die Windows-Zielknoten unter dBASE bekommen die neue
                 # Ressourcendatei-Aktion, immer an erster Stelle.
@@ -144318,7 +147140,9 @@ QFileDialog QComboBox QAbstractItemView {
                     "Knoten schließen" if item.isExpanded() else "Knoten öffnen"
                 )
                 selected = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
-                if new_resource_action is not None and selected is new_resource_action:
+                if new_module_action is not None and selected is new_module_action:
+                    self._new_unsaved_dbase_module()
+                elif new_resource_action is not None and selected is new_resource_action:
                     self._new_dbase_project_file(
                         "resources", target, caption_override=new_resource_spec[0]
                     )
@@ -144410,6 +147234,8 @@ QFileDialog QComboBox QAbstractItemView {
                     PROJECT_NODE_ARCHIVE_ROOT,
                     PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
                     PROJECT_NODE_PASCAL_TARGET,
+                    PROJECT_NODE_PASCAL_MODULE_ROOT,
+                    PROJECT_NODE_PASCAL_UNIT_ROOT,
                     PROJECT_NODE_PASCAL_TABLE_ROOT,
                     PROJECT_NODE_WINDOWS_TARGET,
                     PROJECT_NODE_RESOURCE_ROOT,
@@ -145115,6 +147941,8 @@ QFileDialog QComboBox QAbstractItemView {
                     PROJECT_NODE_ARCHIVE_ROOT,
                     PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT,
                     PROJECT_NODE_PASCAL_TARGET,
+                    PROJECT_NODE_PASCAL_MODULE_ROOT,
+                    PROJECT_NODE_PASCAL_UNIT_ROOT,
                     PROJECT_NODE_C64_TARGET,
                     PROJECT_NODE_C64_RESOURCE_ROOT,
                     PROJECT_NODE_WINDOWS_TARGET,
@@ -145251,6 +148079,8 @@ QFileDialog QComboBox QAbstractItemView {
             *,
             preferred_item: Optional[QTreeWidgetItem] = None,
         ) -> bool:
+            if not self._confirm_pending_dbase_module_before_other_action(preferred_item):
+                return False
             leaves = self._project_removable_leaf_selection(preferred_item)
             if not leaves:
                 self.statusBar().showMessage(
@@ -145351,6 +148181,12 @@ QFileDialog QComboBox QAbstractItemView {
             _column: int = 0,
         ) -> None:
             kind = self._project_item_kind(item)
+            if self._is_unsaved_dbase_module_leaf(item):
+                if self._confirm_pending_dbase_module_before_other_action(item):
+                    self._activate_unsaved_dbase_module_leaf(item)
+                return
+            if not self._confirm_pending_dbase_module_before_other_action(item):
+                return
             if not getattr(self, "_project_skip_pascal_save_question", False) and (
                 kind in {PROJECT_NODE_PASCAL_TARGET_SOURCE, PROJECT_NODE_PASCAL_TABLE_FILE}
                 or (kind == PROJECT_NODE_RESOURCE_FILE
@@ -145455,7 +148291,7 @@ QFileDialog QComboBox QAbstractItemView {
                         f"Datei nicht gefunden:\n{path}",
                     )
                     return
-                if role == "programs":
+                if role in {"programs", "modules"}:
                     if self.open_document(path, language_override="dbase"):
                         self._project_activate_document_tab(
                             self._find_open_document(path)
@@ -149925,6 +152761,7 @@ def _compile_cli(args: argparse.Namespace) -> int:
             source,
             filename=str(source_path),
             predefined_macros=kwargs.get("predefined_macros", {}),
+            target=target,
         )
         kwargs["predefined_macros"] = dict(pascal_preprocessed.macros)
         if "linked_object_files" in params:

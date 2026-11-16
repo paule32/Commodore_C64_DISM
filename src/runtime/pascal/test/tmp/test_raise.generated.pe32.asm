@@ -6,7 +6,7 @@ bits 32
 global _start
 entry _start
 %include "test_raise.generated.pe32.asm.imports.inc"
-%line 88
+%line 85
 _start:
     call __pas_console_init
     mov eax, __pas_string_0
@@ -15,16 +15,16 @@ _start:
     push __pas_vmt_tfoo
     call _jit_object_instance_new
     add esp, 4
-    mov ecx, __pas_ctor_result__ctor_tfoo_0_7_7
+    mov ecx, __pas_ctor_result__ctor_tfoo_0_3_3
     mov dword ptr [ecx], eax
     mov eax, 42
-    mov ecx, __pas_param_tfoo_create_avalue_6
+    mov ecx, __pas_param_tfoo_create_avalue_2
     mov dword ptr [ecx], eax
-    mov ecx, __pas_ctor_result__ctor_tfoo_0_7_7
+    mov ecx, __pas_ctor_result__ctor_tfoo_0_3_3
     mov eax, dword ptr [ecx]
     mov esi, eax
     call __pas_method_tfoo_create
-    mov ecx, __pas_ctor_result__ctor_tfoo_0_7_7
+    mov ecx, __pas_ctor_result__ctor_tfoo_0_3_3
     mov eax, dword ptr [ecx]
     mov ecx, __pas_var_foo_0
     mov dword ptr [ecx], eax
@@ -90,89 +90,6 @@ __pas_try_end_2:
     push 0
     call ExitProcess
 
-; function IntToStr
-__pas_global_inttostr:
-    push ebp
-    mov ebp, esp
-    sub esp, 4
-    call __pas_cookie_initialize
-    mov edx, dword ptr [__pas_cookie_secret]
-    xor edx, ebp
-    mov dword ptr [ebp-4], edx
-    push ebx
-    push esi
-    push edi
-    sub esp, 4
-    xor eax, eax
-    push eax
-    lea ecx, [ebp-20]
-    pop eax
-    mov dword ptr [ecx], eax
-    lea ecx, [ebp+8]
-    mov eax, dword ptr [ecx]
-    push eax
-    call __IntToStr
-    add esp, 4
-    push eax
-    call _jit_dynstring_from_cstr
-    add esp, 4
-    push eax
-    lea ecx, [ebp-20]
-    pop eax
-    mov dword ptr [ecx], eax
-    lea ecx, [ebp-20]
-    mov eax, dword ptr [ecx]
-    mov edx, dword ptr [ebp-4]
-    xor edx, ebp
-    cmp edx, dword ptr [__pas_cookie_secret]
-    jne __pas_cookie_failure
-    mov ebx, dword ptr [ebp-8]
-    mov esi, dword ptr [ebp-12]
-    mov edi, dword ptr [ebp-16]
-    mov esp, ebp
-    pop ebp
-    ret
-
-; function StrToInt
-__pas_global_strtoint:
-    push ebp
-    mov ebp, esp
-    sub esp, 4
-    call __pas_cookie_initialize
-    mov edx, dword ptr [__pas_cookie_secret]
-    xor edx, ebp
-    mov dword ptr [ebp-4], edx
-    push ebx
-    push esi
-    push edi
-    sub esp, 4
-    xor eax, eax
-    push eax
-    lea ecx, [ebp-20]
-    pop eax
-    mov dword ptr [ecx], eax
-    lea ecx, [ebp+8]
-    mov eax, dword ptr [ecx]
-    push eax
-    call __StrToInt
-    add esp, 4
-    push eax
-    lea ecx, [ebp-20]
-    pop eax
-    mov dword ptr [ecx], eax
-    lea ecx, [ebp-20]
-    mov eax, dword ptr [ecx]
-    mov edx, dword ptr [ebp-4]
-    xor edx, ebp
-    cmp edx, dword ptr [__pas_cookie_secret]
-    jne __pas_cookie_failure
-    mov ebx, dword ptr [ebp-8]
-    mov esi, dword ptr [ebp-12]
-    mov edi, dword ptr [ebp-16]
-    mov esp, ebp
-    pop ebp
-    ret
-
 ; constructor TFaz.Create
 __pas_method_tfaz_create:
     push ebp
@@ -190,6 +107,9 @@ __pas_method_tfaz_create:
     call __pas_method_tobject_create
     add esp, 4
     pop esi
+    mov eax, __pas_string_1
+    call __pas_print_string
+    call __pas_print_newline
     mov edx, dword ptr [ebp-4]
     xor edx, ebp
     cmp edx, dword ptr [__pas_cookie_secret]
@@ -213,6 +133,11 @@ __pas_method_tfaz_destroy:
     push ebx
     push esi
     push edi
+    mov eax, __pas_string_2
+    call __pas_print_string
+    mov eax, __pas_string_3
+    call __pas_print_string
+    call __pas_print_newline
     push esi
     push esi
     call __pas_method_tobject_destroy
@@ -241,7 +166,12 @@ __pas_method_tfaz_show:
     push ebx
     push esi
     push edi
-    mov eax, __pas_string_1
+    mov eax, __pas_string_4
+    call __pas_print_string
+    mov eax, __pas_string_3
+    call __pas_print_string
+    call __pas_print_newline
+    mov eax, __pas_string_5
     call __pas_print_string
     push esi
     push esi
@@ -250,12 +180,12 @@ __pas_method_tfaz_show:
     pop esi
     call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_2
+    mov eax, __pas_string_6
     call __pas_print_string
-    mov eax, __pas_string_3
+    mov eax, __pas_string_7
     call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_4
+    mov eax, __pas_string_8
     call __pas_print_string
     push esi
     push esi
@@ -263,7 +193,7 @@ __pas_method_tfaz_show:
     add esp, 4
     pop esi
     push eax
-    call __pas_global_inttostr
+    call __pas_System_Strings_IntToStr
     add esp, 4
     call __pas_print_string
     call __pas_print_newline
@@ -293,14 +223,14 @@ __pas_method_tfoo_create:
     push esi
     call __pas_method_tfaz_create
     pop esi
-    mov ecx, __pas_param_tfoo_create_avalue_6
+    mov ecx, __pas_param_tfoo_create_avalue_2
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, esi
     add ecx, 4
     pop eax
     mov dword ptr [ecx], eax
-    mov eax, __pas_string_5
+    mov eax, __pas_string_9
     push eax
     mov ecx, esi
     add ecx, 8
@@ -310,7 +240,7 @@ __pas_method_tfoo_create:
     mov ecx, esi
     add ecx, 12
     fstp qword ptr [ecx]
-    mov eax, __pas_string_6
+    mov eax, __pas_string_10
     push eax
     mov ecx, esi
     add ecx, 20
@@ -339,6 +269,11 @@ __pas_method_tfoo_destroy:
     push ebx
     push esi
     push edi
+    mov eax, __pas_string_11
+    call __pas_print_string
+    mov eax, __pas_string_3
+    call __pas_print_string
+    call __pas_print_newline
     push esi
     call __pas_method_tfaz_destroy
     pop esi
@@ -365,7 +300,12 @@ __pas_method_tfoo_show:
     push ebx
     push esi
     push edi
-    mov eax, __pas_string_1
+    mov eax, __pas_string_12
+    call __pas_print_string
+    mov eax, __pas_string_3
+    call __pas_print_string
+    call __pas_print_newline
+    mov eax, __pas_string_5
     call __pas_print_string
     push esi
     push esi
@@ -374,12 +314,12 @@ __pas_method_tfoo_show:
     pop esi
     call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_2
+    mov eax, __pas_string_6
     call __pas_print_string
-    mov eax, __pas_string_7
+    mov eax, __pas_string_13
     call __pas_print_string
     call __pas_print_newline
-    mov eax, __pas_string_4
+    mov eax, __pas_string_8
     call __pas_print_string
     push esi
     push esi
@@ -387,7 +327,7 @@ __pas_method_tfoo_show:
     add esp, 4
     pop esi
     push eax
-    call __pas_global_inttostr
+    call __pas_System_Strings_IntToStr
     add esp, 4
     call __pas_print_string
     call __pas_print_newline
@@ -499,39 +439,14 @@ __pas_vmt_destroy_twindow:
     pop ebp
     ret
 
-; Stage 532: PE32 stack cookie (CSPRNG + atomic first writer)
+; Stage 583: PE32 stack cookie services in libd64_runtime.dll
 __pas_cookie_initialize:
-    push ebp
-    mov ebp, esp
-    sub esp, 4
-    mov eax, dword ptr [__pas_cookie_secret]
-    test eax, eax
-    jne __pas_cookie_initialized
-    lea eax, [ebp-4]
-    push 2
-    push 4
-    push eax
-    push 0
-    call __d64_cookie_BCryptGenRandom
-    test eax, eax
-    js __pas_cookie_failure
-    mov edx, dword ptr [ebp-4]
-    or edx, 1
-    push 0
-    push edx
     push __pas_cookie_secret
-    call __d64_cookie_InterlockedCompareExchange
-__pas_cookie_initialized:
-    mov esp, ebp
-    pop ebp
+    call __d64_pas_cookie_initialize32
+    add esp, 4
     ret
 __pas_cookie_failure:
-    push 0
-    push 0
-    push 0
-    call __d64_cookie_RaiseFailFastException
-    push 3221226505
-    call __d64_cookie_ExitProcess
+    jmp __d64_pas_cookie_failure32
 
 __pas_console_init:
     call _d64_console_init
@@ -561,9 +476,9 @@ __pas_double_0: dd 2061584302, 1074376212
 ; Stage 240: Pascal class runtime metadata / JitVmt (PE32)
 __pas_classname_exception: db 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
 __pas_classname_tapplication: db 84, 65, 112, 112, 108, 105, 99, 97, 116, 105, 111, 110, 0
-__pas_string_3:
-__pas_classname_tfaz: db 84, 70, 97, 122, 0
 __pas_string_7:
+__pas_classname_tfaz: db 84, 70, 97, 122, 0
+__pas_string_13:
 __pas_classname_tfoo: db 84, 70, 111, 111, 0
 __pas_classname_tform: db 84, 70, 111, 114, 109, 0
 __pas_classname_tobject: db 84, 79, 98, 106, 101, 99, 116, 0
@@ -620,21 +535,24 @@ __pas_vmt_twindow:
     dd __pas_vmt_destroy_twindow
 
 ; Nullterminierte Windows-Latin-1-Zeichenketten
-__pas_string_0: db 120, 120, 120, 120, 120, 0
-__pas_string_1: db 32, 32, 82, 117, 110, 116, 105, 109, 101, 32, 99, 108, 97, 115, 115, 58, 32, 0
-__pas_string_2: db 32, 32, 77, 101, 116, 104, 111, 100, 32, 32, 111, 119, 110, 101, 114, 58, 32, 0
-__pas_string_4: db 32, 32, 83, 105, 122, 101, 32, 32, 32, 32, 32, 32, 32, 32, 32, 58, 32, 0
-__pas_string_5: db 72, 101, 108, 108, 111, 0
-__pas_string_6: db 87, 111, 114, 108, 100, 32, 33, 0
+__pas_string_0: db 120, 120, 120, 120, 120, 120, 120, 0
+__pas_string_1: db 84, 70, 97, 122, 32, 67, 114, 101, 97, 116, 101, 0
+__pas_string_2: db 84, 70, 97, 122, 32, 68, 101, 115, 116, 114, 111, 121, 0
+__pas_string_3: db 0
+__pas_string_4: db 84, 70, 97, 122, 32, 83, 104, 111, 119, 0
+__pas_string_5: db 32, 32, 82, 117, 110, 116, 105, 109, 101, 32, 99, 108, 97, 115, 115, 58, 32, 0
+__pas_string_6: db 32, 32, 77, 101, 116, 104, 111, 100, 32, 32, 111, 119, 110, 101, 114, 58, 32, 0
+__pas_string_8: db 32, 32, 83, 105, 122, 101, 32, 32, 32, 32, 32, 32, 32, 32, 32, 58, 32, 0
+__pas_string_9: db 72, 101, 108, 108, 111, 0
+__pas_string_10: db 87, 111, 114, 108, 100, 32, 33, 0
+__pas_string_11: db 84, 70, 111, 111, 32, 68, 101, 115, 116, 114, 111, 121, 0
+__pas_string_12: db 84, 70, 111, 111, 32, 83, 104, 111, 119, 0
 
 section .bss
 align 4
 ; Stage 535: nichtinitialisierte Pascal-Variablen (BSS)
 __pas_var_foo_0: resb 4 ; Foo: TFoo
 __pas_var_application_1: resb 4 ; Application: TApplication
-__pas_param_tfoo_create_avalue_6: resb 4 ; intern: integer
-__pas_ctor_result__ctor_tfoo_0_7_7: resb 4 ; intern: TFoo
+__pas_param_tfoo_create_avalue_2: resb 4 ; intern: integer
+__pas_ctor_result__ctor_tfoo_0_3_3: resb 4 ; intern: TFoo
 __pas_cookie_secret: resd 1
-__pas_double_scratch: resq 1
-__pas_double_int_scratch: resd 1
-__pas_double_buffer: resb 64

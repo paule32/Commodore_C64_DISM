@@ -140,11 +140,11 @@ def build_dll(target: str, destination: Path, *, assemble32, coff32, link32,
     if target == "pe32":
         obj = coff32(assemble32(source, filename=str(destination.with_suffix('.asm'))))
         result = link32((obj,), entry_symbol="__dbase_console_dll_entry",
-                        dll=True, dll_name=DLL_NAME)
+                        dll=True, dll_name=DLL_NAME, pack_dll=False)
     elif target == "pe64":
         obj = coff64(assemble64(source, filename=str(destination.with_suffix('.asm'))))
         result = link64((obj,), entry_symbol="__dbase_console_dll_entry",
-                        dll=True, dll_name=DLL_NAME)
+                        dll=True, dll_name=DLL_NAME, pack_dll=False)
     else:
         raise ValueError(target)
     image = result.executable
@@ -161,10 +161,10 @@ def deploy_runtime(output_path: Path, target: str, *, get_exports,
                    package_root: Path = None, pack_dll: bool = False) -> Path:
     """Place the right-architecture DLL next to the generated executable.
 
-    Existing DLLs are only accepted if machine and all exports match. A staged
-    binary shipped with the project has priority so old runtime versions do
-    not silently survive a compiler update. Without a staged binary the
-    built-in assembler+linker are used (no external make/gcc invocation).
+    Existing DLLs must match architecture, exports *and requested packing*.
+    A staged, unpacked binary has priority when packing is disabled. When
+    enabled the image is rebuilt with a genuine D64Z/MSZIP DLL-entry loader.
+    Neither path relies on NTFS compression or external make/gcc tools.
 
     ``get_exports(path, expected_machine)`` is the IDE's existing PE export
     parser and checks the real PE machine type, not just the file name.
@@ -208,7 +208,10 @@ def deploy_runtime(output_path: Path, target: str, *, get_exports,
             replace_verified_runtime(candidate, destination, pack_dll=False)
         return destination
 
-    if packaged.is_file() and valid(packaged):
+    # When the project switches from packed to unpacked, a previously
+    # deployed D64Z image must not survive solely because its exports are
+    # valid. Prefer the shipped *unpacked* DLL, or rebuild an unpacked image.
+    if packaged.is_file() and valid(packaged) and not is_payload_packed(packaged):
         packaged_is_destination = packaged.resolve() == destination.resolve()
         same = packaged_is_destination
         if not same and destination.is_file() and valid(destination):
@@ -222,7 +225,7 @@ def deploy_runtime(output_path: Path, target: str, *, get_exports,
                 if not valid(candidate):
                     raise ValueError("New dBASE runtime has invalid PE exports")
                 replace_verified_runtime(candidate, destination, pack_dll=False)
-    elif not valid(destination):
+    elif not valid(destination) or is_payload_packed(destination):
         if not all(callable(fn) for fn in (assemble32, coff32, link32,
                                             assemble64, coff64, link64)):
             raise FileNotFoundError("No valid dBASE runtime DLL and no internal linker available")

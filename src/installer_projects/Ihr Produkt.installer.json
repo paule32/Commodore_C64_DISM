@@ -1,0 +1,23 @@
+{
+  "format": "d64-software-installer",
+  "version": 1,
+  "archive": [],
+  "external": [],
+  "sections": {},
+  "general": {
+    "company": "Ihre Firma",
+    "product": "Ihr Produkt",
+    "version": "1.0",
+    "website": "https://www.firma.de",
+    "platform": "32",
+    "source_directory": "C:/Users/admin/Music",
+    "include_subdirectories": "true",
+    "window_mode": "wizard",
+    "appearance_style": "static",
+    "static_color": "#0000ff",
+    "gradient_start": "#20385f",
+    "gradient_end": "#ffffff",
+    "background_image": ""
+  },
+  "name": "Ihr Produkt"
+}

@@ -1,0 +1,195 @@
+{
+  "imports": [
+    {
+      "dll": "cabinet.dll",
+      "member": "CloseDecompressor",
+      "symbol": "__d64_dll_CloseDecompressor"
+    },
+    {
+      "dll": "cabinet.dll",
+      "member": "CreateDecompressor",
+      "symbol": "__d64_dll_CreateDecompressor"
+    },
+    {
+      "dll": "cabinet.dll",
+      "member": "Decompress",
+      "symbol": "__d64_dll_Decompress"
+    },
+    {
+      "dll": "kernel32.dll",
+      "member": "FlushInstructionCache",
+      "symbol": "__d64_dll_FlushInstructionCache"
+    },
+    {
+      "dll": "kernel32.dll",
+      "member": "VirtualProtect",
+      "symbol": "__d64_dll_VirtualProtect"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_pas_cookie_failure32",
+      "symbol": "__d64_pas_cookie_failure32"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_pas_cookie_initialize32",
+      "symbol": "__d64_pas_cookie_initialize32"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "CreateWindowExA",
+      "symbol": "_createwindowexa@48"
+    },
+    {
+      "dll": "libd64_console.dll",
+      "member": "d64_console_newline",
+      "symbol": "_d64_console_newline"
+    },
+    {
+      "dll": "libd64_console.dll",
+      "member": "d64_console_write_text",
+      "symbol": "_d64_console_write_text"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "DefWindowProcA",
+      "symbol": "_defwindowproca@16"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "DispatchMessageA",
+      "symbol": "_dispatchmessagea@4"
+    },
+    {
+      "dll": "kernel32.dll",
+      "member": "ExitProcess",
+      "symbol": "_exitprocess@4"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "GetMessageA",
+      "symbol": "_getmessagea@16"
+    },
+    {
+      "dll": "kernel32.dll",
+      "member": "GetModuleHandleA",
+      "symbol": "_getmodulehandlea@4"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "GetWindowLongA",
+      "symbol": "_getwindowlonga@8"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_class_instance_size",
+      "symbol": "_jit_class_instance_size"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_class_name",
+      "symbol": "_jit_class_name"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_class_parent",
+      "symbol": "_jit_class_parent"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_dynstring_from_cstr",
+      "symbol": "_jit_dynstring_from_cstr"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_inherits_from_object",
+      "symbol": "_jit_inherits_from_object"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_object_class_type",
+      "symbol": "_jit_object_class_type"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_object_free",
+      "symbol": "_jit_object_free"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_object_instance_free",
+      "symbol": "_jit_object_instance_free"
+    },
+    {
+      "dll": "libd64_runtime.dll",
+      "member": "jit_object_instance_new",
+      "symbol": "_jit_object_instance_new"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "LoadCursorA",
+      "symbol": "_loadcursora@8"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "LoadIconA",
+      "symbol": "_loadicona@8"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "MessageBoxA",
+      "symbol": "_messageboxa@16"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "PostQuitMessage",
+      "symbol": "_postquitmessage@4"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "RegisterClassA",
+      "symbol": "_registerclassa@4"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "SetWindowLongA",
+      "symbol": "_setwindowlonga@12"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "ShowWindow",
+      "symbol": "_showwindow@8"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "TranslateMessage",
+      "symbol": "_translatemessage@4"
+    },
+    {
+      "dll": "user32.dll",
+      "member": "UpdateWindow",
+      "symbol": "_updatewindow@4"
+    }
+  ],
+  "output": null,
+  "schema": 1,
+  "target": "pe32",
+  "unused_declared": [
+    "_d64_console_clear",
+    "_d64_console_read_int",
+    "_d64_console_read_string",
+    "_d64_console_write_char",
+    "_d64_console_write_double",
+    "_d64_console_write_int",
+    "_destroywindow@4",
+    "_enablewindow@8",
+    "_gcvt",
+    "_iswindow@4",
+    "_jit_free",
+    "_jit_inherits_from_class",
+    "_movewindow@24",
+    "_setwindowtexta@8"
+  ],
+  "used": 34,
+  "version": "541.1"
+}

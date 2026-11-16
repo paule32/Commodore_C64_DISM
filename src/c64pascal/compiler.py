@@ -1719,6 +1719,43 @@ def _evaluate_pascal_condition(
         ) from exc
 
 
+def _pascal_target_macros(
+    predefined_macros: Optional[Dict[str, Union[str, int, bool]]],
+    target: str,
+) -> Dict[str, Union[str, int, bool]]:
+    """Expose read-only backend flags to UNIT and PROGRAM preprocessing.
+
+    Target flags are installed after user macros, so callers cannot accidentally
+    select the PE32-specific DLL ABI while generating PE64/C64 output.
+    """
+    reserved = {
+        "__d64_target_pe32__", "__d64_target_pe64__",
+        "windows", "win32", "win64", "linux",
+    }
+    result = {
+        str(name): value
+        for name, value in (predefined_macros or {}).items()
+        if str(name).casefold() not in reserved
+    }
+    normalized = str(target).strip().casefold()
+    if normalized in {"pe32", "win32", "windows", "windows-pe32", "windows32", "nt32"}:
+        result["__D64_TARGET_PE32__"] = True
+        result["WINDOWS"] = 1
+        result["WIN32"] = 1
+    elif normalized in {
+        "pe64", "pe32+", "win64", "windows64", "windows-pe64", "windows-pe32+", "amd64", "x64"
+    }:
+        result["__D64_TARGET_PE64__"] = True
+        result["WINDOWS"] = 1
+        result["WIN32"] = 1
+        result["WIN64"] = 1
+    elif normalized.startswith(("linux", "elf")):
+        result["LINUX"] = 1
+    # Eine inaktive Plattform darf nicht mit Wert 0 definiert werden:
+    # {$IFDEF LINUX} waere sonst auch bei WINDOWS wahr.
+    return result
+
+
 class PascalPreprocessor:
     """Bedingte Pascal-Direktiven und objektartige Makros."""
 
@@ -2057,8 +2094,13 @@ def preprocess_pascal_source(
     *,
     filename: str = "<Pascal-Editor>",
     predefined_macros: Optional[Dict[str, Union[str, int, bool]]] = None,
+    target: Optional[str] = None,
 ) -> PascalPreprocessResult:
-    return PascalPreprocessor(predefined_macros).process(
+    # Ohne explizites Ziel die alte API beibehalten. Bei Zielvorgabe
+    # dieselben Plattformmakros wie im eigentlichen Compiler benutzen.
+    macros = (_pascal_target_macros(predefined_macros, target)
+              if target is not None else predefined_macros)
+    return PascalPreprocessor(macros).process(
         source,
         filename=filename,
     )
@@ -5428,7 +5470,7 @@ def write_pascal_unit_interface(
     except (OSError, UnicodeError) as exc:
         raise C64PascalError(f"Unit kann nicht gelesen werden: {source_path}: {exc}") from exc
     preprocessor = PascalPreprocessor(
-        predefined_macros,
+        _pascal_target_macros(predefined_macros, target),
         link_search_paths=link_search_paths,
     )
     processed = preprocessor.process(source, filename=str(source_path))
@@ -5657,6 +5699,11 @@ class _PascalUnitResolver:
             source_text = ""
             processed: Optional[PascalPreprocessResult] = None
             source_full_program: Optional[PascalProgram] = None
+            # A cached PUI+COFF object is usable only when its interface
+            # contract still matches the authoritative source.  Rewriting a
+            # stale PUI must also invalidate the corresponding object, even
+            # when the object file has a newer filesystem timestamp.
+            source_contract_changed = False
 
             unit_added_link_files: Tuple[str, ...] = ()
             unit_added_link_dlls: Tuple[str, ...] = ()
@@ -5814,6 +5861,7 @@ class _PascalUnitResolver:
                     not _pui_source_matches(pui_document, source_path)
                     or pui_document != fresh_document
                 ):
+                    source_contract_changed = True
                     _write_pui_document(pui_path, fresh_document)
                 pui_document = fresh_document
 
@@ -5920,7 +5968,8 @@ class _PascalUnitResolver:
                     for name in pui_document['exported_classes']:
                         self.class_import_libraries[str(name)] = Path(self.preprocessor.link_dlls[0]).name
             use_metadata_program = dll_class_import or (
-                not _pui_is_legacy(pui_document)
+                not source_contract_changed
+                and not _pui_is_legacy(pui_document)
                 and (
                     source_path is None
                     or _pui_object_is_fresh_for_source(primary_object, source_path)
@@ -6101,7 +6150,8 @@ def _parse_pascal_frontend(
     progress_callback: Optional[Callable[[str, int], None]] = None,
 ) -> Tuple[PascalProgram, PascalPreprocessResult]:
     preprocessor = PascalPreprocessor(
-        predefined_macros, link_search_paths=link_search_paths
+        _pascal_target_macros(predefined_macros, target),
+        link_search_paths=link_search_paths,
     )
     # The IDE may preprocess {$L library} before invoking the compiler.
     # Preserve its DLL dependencies just like linked .o files.
@@ -9729,49 +9779,26 @@ class _PE32CodeGenerator(_CodeGenerator):
             return
         p = self.symbol_prefix
         self.emitter.emit()
-        self.emitter.emit("; Stage 532: PE32 stack cookie (CSPRNG + atomic first writer)")
+        self.emitter.emit("; Stage 583: PE32 stack cookie services in libd64_runtime.dll")
+        # Keep the per-module guard secret.  Only the platform-specific CSPRNG,
+        # atomic initialization and fail-fast path live in the runtime DLL.
+        # Local trampolines retain the established generator calling convention.
         self.emitter.emit(f"{p}_cookie_initialize:")
-        self.emitter.emit("    push ebp")
-        self.emitter.emit("    mov ebp, esp")
-        self.emitter.emit("    sub esp, 4")
-        done = f"{p}_cookie_initialized"
-        self.emitter.emit(f"    mov eax, dword ptr [{p}_cookie_secret]")
-        self.emitter.emit("    test eax, eax")
-        self.emitter.emit(f"    jne {done}")
-        self.emitter.emit("    lea eax, [ebp-4]")
-        self.emitter.emit("    push 2")  # BCRYPT_USE_SYSTEM_PREFERRED_RNG
-        self.emitter.emit("    push 4")
-        self.emitter.emit("    push eax")
-        self.emitter.emit("    push 0")
-        self.emitter.emit("    call __d64_cookie_BCryptGenRandom")
-        self.emitter.emit("    test eax, eax")
-        self.emitter.emit(f"    js {p}_cookie_failure")
-        self.emitter.emit("    mov edx, dword ptr [ebp-4]")
-        self.emitter.emit("    or edx, 1")  # zero is uninitialized
-        self.emitter.emit("    push 0")
-        self.emitter.emit("    push edx")
         self.emitter.emit(f"    push {p}_cookie_secret")
-        self.emitter.emit("    call __d64_cookie_InterlockedCompareExchange")
-        self.emitter.emit(f"{done}:")
-        self.emitter.emit("    mov esp, ebp")
-        self.emitter.emit("    pop ebp")
+        self.emitter.emit("    call __d64_pas_cookie_initialize32")
+        self.emitter.emit("    add esp, 4")
         self.emitter.emit("    ret")
         self.emitter.emit(f"{p}_cookie_failure:")
-        self.emitter.emit("    push 0")
-        self.emitter.emit("    push 0")
-        self.emitter.emit("    push 0")
-        self.emitter.emit("    call __d64_cookie_RaiseFailFastException")
-        self.emitter.emit("    push 3221226505")  # STATUS_STACK_BUFFER_OVERRUN
-        self.emitter.emit("    call __d64_cookie_ExitProcess")
+        self.emitter.emit("    jmp __d64_pas_cookie_failure32")
 
     def _emit_cookie_imports(self) -> None:
         if not self.stack_protector:
             return
+        # Stage 583: These imports are added only for explicitly protected PE32
+        # modules.  PE64 still uses the existing architecture-specific helpers.
         for symbol, dll, exported in (
-            ("__d64_cookie_BCryptGenRandom", "bcrypt.dll", "BCryptGenRandom"),
-            ("__d64_cookie_InterlockedCompareExchange", "kernel32.dll", "InterlockedCompareExchange"),
-            ("__d64_cookie_RaiseFailFastException", "kernel32.dll", "RaiseFailFastException"),
-            ("__d64_cookie_ExitProcess", "kernel32.dll", "ExitProcess"),
+            ("__d64_pas_cookie_initialize32", "libd64_runtime.dll", "jit_pas_cookie_initialize32"),
+            ("__d64_pas_cookie_failure32", "libd64_runtime.dll", "jit_pas_cookie_failure32"),
         ):
             self.emitter.emit(f'import {symbol}, "{dll}", "{exported}"')
 
@@ -10163,25 +10190,37 @@ class _PE32CodeGenerator(_CodeGenerator):
                     self.emitter.emit(f'global {sym}')
                     self.emitter.emit(f'{sym}:')
                     if pe64:
-                        # rdx points to caller-owned buffer, rcx is Self.
-                        for index in range(0, size, 1):
-                            source = f'[rcx+{info.offset+index}]' if direction == 'get' else f'[rdx+{index}]'
-                            target = f'[rdx+{index}]' if direction == 'get' else f'[rcx+{info.offset+index}]'
-                            self.emitter.emit(f'    mov r8b, byte ptr {source}')
-                            self.emitter.emit(f'    mov byte ptr {target}, r8b')
+                        # Win64: Self=RCX, destination/source address=RDX.
+                        if size == 4:
+                            src = f'[rcx+{info.offset}]' if direction == 'get' else '[rdx+0]'
+                            dst = '[rdx+0]' if direction == 'get' else f'[rcx+{info.offset}]'
+                            self.emitter.emit(f'    mov r8d, dword ptr {src}')
+                            self.emitter.emit(f'    mov dword ptr {dst}, r8d')
+                        else:
+                            for index in range(size):
+                                source = f'[rcx+{info.offset+index}]' if direction == 'get' else f'[rdx+{index}]'
+                                target = f'[rdx+{index}]' if direction == 'get' else f'[rcx+{info.offset+index}]'
+                                self.emitter.emit(f'    mov r8b, byte ptr {source}')
+                                self.emitter.emit(f'    mov byte ptr {target}, r8b')
                         self.emitter.emit('    ret')
                     else:
-                        self.emitter.emit('    push ebp')
-                        self.emitter.emit('    mov ebp, esp')
-                        self.emitter.emit('    mov eax, dword ptr [ebp+8]')
-                        self.emitter.emit('    mov edx, dword ptr [ebp+12]')
-                        for index in range(size):
-                            src = f'[eax+{info.offset+index}]' if direction == 'get' else f'[edx+{index}]'
-                            dst = f'[edx+{index}]' if direction == 'get' else f'[eax+{info.offset+index}]'
-                            self.emitter.emit(f'    mov cl, byte ptr {src}')
-                            self.emitter.emit(f'    mov byte ptr {dst}, cl')
-                        self.emitter.emit('    mov esp, ebp')
-                        self.emitter.emit('    pop ebp')
+                        # PE32 cdecl: Self=[ESP+4], buffer=[ESP+8]. A copy
+                        # bridge needs no EBP frame, regardless of the option.
+                        self.emitter.emit('    mov eax, dword ptr [esp+4]')
+                        self.emitter.emit('    mov edx, dword ptr [esp+8]')
+                        if size == 4:
+                            src = f'[eax+{info.offset}]' if direction == 'get' else '[edx+0]'
+                            dst = '[edx+0]' if direction == 'get' else f'[eax+{info.offset}]'
+                            self.emitter.emit(f'    mov ecx, dword ptr {src}')
+                            self.emitter.emit(f'    mov dword ptr {dst}, ecx')
+                        else:
+                            # Preserve previous byte-wise behavior for
+                            # potentially overlapping aggregate buffers.
+                            for index in range(size):
+                                src = f'[eax+{info.offset+index}]' if direction == 'get' else f'[edx+{index}]'
+                                dst = f'[edx+{index}]' if direction == 'get' else f'[eax+{info.offset+index}]'
+                                self.emitter.emit(f'    mov cl, byte ptr {src}')
+                                self.emitter.emit(f'    mov byte ptr {dst}, cl')
                         self.emitter.emit('    ret')
 
     def _emit_library_unit_routine_exports(self) -> None:
@@ -10430,14 +10469,12 @@ class _PE32CodeGenerator(_CodeGenerator):
                 expression.position,
             )
         self.uses_double_runtime = True
-        self.emitter.emit(
-            f"    mov dword ptr [{self.symbol_prefix}_double_int_scratch], eax",
-            expression.position.line,
-        )
-        self.emitter.emit(
-            f"    fild dword ptr [{self.symbol_prefix}_double_int_scratch]",
-            expression.position.line,
-        )
+        # Stage 579: Integer -> x87 Double via a temporary stack slot.
+        # Avoid a process-global scratch dword: this is re-entrant and removes
+        # 4 bytes of permanent .bss storage (plus the other unused buffers).
+        self.emitter.emit("    push eax", expression.position.line)
+        self.emitter.emit("    fild dword ptr [esp]", expression.position.line)
+        self.emitter.emit("    add esp, 4", expression.position.line)
         return self.types.get("double", DOUBLE_TYPE)
 
     def _compile_double_binary(
@@ -11862,7 +11899,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                     continue
                 values = ", ".join(str(value) for value in data + b"\x00")
                 self.emitter.emit(f"{label}: db {values}")
-        if bss_variables or self.console_mode or self._needs_console_output_storage() or self.exception_frames or self.uses_double_runtime or self.stack_protector:
+        if bss_variables or self.console_mode or self._needs_console_output_storage() or self.exception_frames or self.stack_protector:
             self.emitter.emit()
             self.emitter.emit("section .bss")
             self.emitter.emit("align 4")
@@ -11874,10 +11911,6 @@ class _PE32CodeGenerator(_CodeGenerator):
                 self.emitter.emit(f"{variable.label}: resb {size} ; {comment}: {variable.type_info.name}")
         if self.stack_protector:
             self.emitter.emit(f"{self.symbol_prefix}_cookie_secret: resd 1")
-        if self.uses_double_runtime:
-            self.emitter.emit(f"{self.symbol_prefix}_double_scratch: resq 1")
-            self.emitter.emit(f"{self.symbol_prefix}_double_int_scratch: resd 1")
-            self.emitter.emit(f"{self.symbol_prefix}_double_buffer: resb 64")
         if self.exception_frames:
             self.emitter.emit()
             self.emitter.emit("; Pascal TRY/EXCEPT exception frames (PE32, BSS)")
@@ -12073,35 +12106,40 @@ class _PE32CodeGenerator(_CodeGenerator):
                 self.emitter.emit(f"extern {symbol}")
             self._emit_external_declarations()
             self.emitter.emit("__d64_dll_entry:", source_line)
-            self.emitter.emit("    push ebp", source_line)
-            self.emitter.emit("    mov ebp, esp", source_line)
-            attach_done = self._new_label("dll_attach_done")
-            self.emitter.emit("    cmp dword ptr [ebp+12], 1", source_line)
-            self.emitter.emit(f"    jne {attach_done}", source_line)
-            for variable, initializer in self.initializers:
-                result_type = self._compile_expr(initializer)
-                if result_type == STRING_TYPE:
-                    raise self._error(
-                        "String-Variablen werden im PE32-Backend noch nicht unterstützt.",
-                        initializer.position,
-                    )
-                if not self._value_is_scalar(variable.type_info):
-                    raise self._error(
-                        "Aggregate können nicht direkt initialisiert werden.",
-                        initializer.position,
-                    )
-                if not self._types_compatible(variable.type_info, result_type):
-                    raise self._error(
-                        f"Initialisierung von {variable.name} besitzt den falschen Typ.",
-                        initializer.position,
-                    )
-                self._store_variable(variable, initializer.position.line)
-            self._compile_statement(self.program.body)
-            self.emitter.emit(f"{attach_done}:", source_line)
-            self.emitter.emit("    mov eax, 1", source_line)
-            self.emitter.emit("    mov esp, ebp", source_line)
-            self.emitter.emit("    pop ebp", source_line)
-            self.emitter.emit("    ret 12", source_line)
+            # Stage 591: Empty LIBRARY has no DLL_PROCESS_ATTACH work.
+            if not self.initializers and isinstance(self.program.body, CompoundStatement) and not self.program.body.statements:
+                self.emitter.emit("    mov eax, 1", source_line)
+                self.emitter.emit("    ret 12", source_line)
+            else:
+                self.emitter.emit("    push ebp", source_line)
+                self.emitter.emit("    mov ebp, esp", source_line)
+                attach_done = self._new_label("dll_attach_done")
+                self.emitter.emit("    cmp dword ptr [ebp+12], 1", source_line)
+                self.emitter.emit(f"    jne {attach_done}", source_line)
+                for variable, initializer in self.initializers:
+                    result_type = self._compile_expr(initializer)
+                    if result_type == STRING_TYPE:
+                        raise self._error(
+                            "String-Variablen werden im PE32-Backend noch nicht unterstützt.",
+                            initializer.position,
+                        )
+                    if not self._value_is_scalar(variable.type_info):
+                        raise self._error(
+                            "Aggregate können nicht direkt initialisiert werden.",
+                            initializer.position,
+                        )
+                    if not self._types_compatible(variable.type_info, result_type):
+                        raise self._error(
+                            f"Initialisierung von {variable.name} besitzt den falschen Typ.",
+                            initializer.position,
+                        )
+                    self._store_variable(variable, initializer.position.line)
+                self._compile_statement(self.program.body)
+                self.emitter.emit(f"{attach_done}:", source_line)
+                self.emitter.emit("    mov eax, 1", source_line)
+                self.emitter.emit("    mov esp, ebp", source_line)
+                self.emitter.emit("    pop ebp", source_line)
+                self.emitter.emit("    ret 12", source_line)
             self._emit_global_routines()
             self._emit_methods()
             self._emit_class_export_bridges()
@@ -13496,7 +13534,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                     continue
                 values = ", ".join(str(value) for value in data + b"\x00")
                 self.emitter.emit(f"{label}: db {values}")
-        if bss_variables or self.console_mode or self._needs_console_output_storage() or self.call_temporaries or self.uses_double_runtime or self.stack_protector:
+        if bss_variables or self.console_mode or self._needs_console_output_storage() or self.call_temporaries or self.stack_protector:
             self.emitter.emit()
             self.emitter.emit("section .bss")
             self.emitter.emit("align 8")
@@ -13508,10 +13546,6 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 self.emitter.emit(f"{variable.label}: resb {size} ; {comment}: {variable.type_info.name}")
         if self.stack_protector:
             self.emitter.emit(f"{self.symbol_prefix}_cookie_secret: resq 1")
-        if self.uses_double_runtime:
-            self.emitter.emit(f"{self.symbol_prefix}_double_scratch: resq 1")
-            self.emitter.emit(f"{self.symbol_prefix}_double_int_scratch: resd 1")
-            self.emitter.emit(f"{self.symbol_prefix}_double_buffer: resb 64")
         if self.call_temporaries:
             self.emitter.emit()
             self.emitter.emit("; PE64 Win64-call temporaries (BSS)")
@@ -13590,10 +13624,6 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)
-        if self.uses_double_runtime:
-            self.emitter.emit(f"{self.symbol_prefix}_double_scratch: resq 1")
-            self.emitter.emit(f"{self.symbol_prefix}_double_int_scratch: resd 1")
-            self.emitter.emit(f"{self.symbol_prefix}_double_buffer: resb 64")
         # DLL constructors are factories in the owning module.  They allocate
         # objects with the DLL's VMT, not with a synthetic client-side VMT.
         from pascal_class_exports import export_name, bridge_symbol
@@ -13695,29 +13725,34 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
                 self.emitter.emit(f"extern {symbol}")
             self._emit_external_declarations()
             self.emitter.emit("__d64_dll_entry:", source_line)
-            self.emitter.emit("    push rbp", source_line)
-            self.emitter.emit("    mov rbp, rsp", source_line)
-            attach_done = self._new_label("dll_attach_done")
-            self.emitter.emit("    cmp edx, 1", source_line)
-            self.emitter.emit(f"    jne {attach_done}", source_line)
-            for variable, initializer in self.initializers:
-                result_type = self._compile_expr(initializer)
-                if not variable.type_info.scalar:
-                    raise self._error(
-                        "Aggregate können nicht direkt initialisiert werden.",
-                        initializer.position,
-                    )
-                if not self._types_compatible(variable.type_info, result_type):
-                    raise self._error(
-                        f"Initialisierung von {variable.name} besitzt den falschen Typ.",
-                        initializer.position,
-                    )
-                self._store_variable(variable, initializer.position.line)
-            self._compile_statement(self.program.body)
-            self.emitter.emit(f"{attach_done}:", source_line)
-            self.emitter.emit("    mov eax, 1", source_line)
-            self.emitter.emit("    pop rbp", source_line)
-            self.emitter.emit("    ret", source_line)
+            # Stage 591: Empty LIBRARY has no DLL_PROCESS_ATTACH work.
+            if not self.initializers and isinstance(self.program.body, CompoundStatement) and not self.program.body.statements:
+                self.emitter.emit("    mov eax, 1", source_line)
+                self.emitter.emit("    ret", source_line)
+            else:
+                self.emitter.emit("    push rbp", source_line)
+                self.emitter.emit("    mov rbp, rsp", source_line)
+                attach_done = self._new_label("dll_attach_done")
+                self.emitter.emit("    cmp edx, 1", source_line)
+                self.emitter.emit(f"    jne {attach_done}", source_line)
+                for variable, initializer in self.initializers:
+                    result_type = self._compile_expr(initializer)
+                    if not variable.type_info.scalar:
+                        raise self._error(
+                            "Aggregate können nicht direkt initialisiert werden.",
+                            initializer.position,
+                        )
+                    if not self._types_compatible(variable.type_info, result_type):
+                        raise self._error(
+                            f"Initialisierung von {variable.name} besitzt den falschen Typ.",
+                            initializer.position,
+                        )
+                    self._store_variable(variable, initializer.position.line)
+                self._compile_statement(self.program.body)
+                self.emitter.emit(f"{attach_done}:", source_line)
+                self.emitter.emit("    mov eax, 1", source_line)
+                self.emitter.emit("    pop rbp", source_line)
+                self.emitter.emit("    ret", source_line)
             self._emit_global_routines()
             self._emit_methods()
             self._emit_class_export_bridges()
@@ -14868,7 +14903,8 @@ def _compile_pascal_unit_interface(
     geschrieben und ein separates Unit-ASM-Modul erzeugt.
     """
     preprocessor = PascalPreprocessor(
-        predefined_macros, link_search_paths=link_search_paths
+        _pascal_target_macros(predefined_macros, target),
+        link_search_paths=link_search_paths,
     )
     for dll in linked_dll_files:
         if str(dll).casefold() not in {str(x).casefold() for x in preprocessor.link_dlls}:
@@ -15454,6 +15490,14 @@ def _stage541_process_pascal_imports(generated: GeneratedAssembly, *,
     return replace(generated, assembly=assembly, import_manifest=manifest)
 
 
+def _stage609_pascal_peephole(generated: GeneratedAssembly, *, target: str, options):
+    from windows_peephole import optimize_windows_assembly
+    result = optimize_windows_assembly(
+        generated.assembly, target=target, options=options,
+        source_map=generated.source_map)
+    return replace(generated, assembly=result.assembly, source_map=result.source_map)
+
+
 def compile_pascal_to_assembly(
     source: str,
     *,
@@ -15477,6 +15521,7 @@ def compile_pascal_to_assembly(
     import_prune_unused: bool = True,
     import_cache_directory: Optional[str] = None,
     import_runtime_version: str = "libd64_runtime",
+    peephole_options=None,
 ) -> GeneratedAssembly:
     """Parst PROGRAM-, UNIT- oder PE32-LIBRARY-Quellen und erzeugt Assembler.
 
@@ -15512,7 +15557,7 @@ def compile_pascal_to_assembly(
             optimization_level=optimization_level,
             no_stack_frames=no_stack_frames,
         )
-        return _stage541_process_pascal_imports(
+        return _stage609_pascal_peephole(_stage541_process_pascal_imports(
             unit_result, source=source, filename=filename, target=target,
             output_directory=output_directory,
             import_cache_enabled=import_cache_enabled,
@@ -15522,7 +15567,7 @@ def compile_pascal_to_assembly(
             optimization_level=optimization_level,
             stack_protector=stack_protector,
             no_stack_frames=no_stack_frames,
-        )
+        ), target=target, options=peephole_options)
 
     library_name: Optional[str] = None
     library_exports: Dict[str, str] = {}
@@ -15636,7 +15681,7 @@ def compile_pascal_to_assembly(
             )
         ),
     )
-    return _stage541_process_pascal_imports(
+    return _stage609_pascal_peephole(_stage541_process_pascal_imports(
         generated, source=source, filename=filename, target=target,
         output_directory=output_directory,
         import_cache_enabled=import_cache_enabled,
@@ -15646,4 +15691,4 @@ def compile_pascal_to_assembly(
         optimization_level=optimization_level,
         stack_protector=stack_protector,
         no_stack_frames=no_stack_frames,
-    )
+    ), target=target, options=peephole_options)

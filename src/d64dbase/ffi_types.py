@@ -26,6 +26,12 @@ class WinAPIType:
         return self.category in ('ansi_string', 'wide_string')
 
     @property
+    def is_ansi_string_result(self) -> bool:
+        # LPSTR is a writable *parameter* pointer, but an LPSTR/LPCSTR
+        # *return* is an ANSI C string. PVOID remains a raw numeric pointer.
+        return self.category == 'ansi_string' or self.name in ('LPSTR', 'PSTR', 'PCHAR')
+
+    @property
     def is_pointer(self) -> bool:
         return self.category in ('pointer', 'ansi_string', 'wide_string')
 

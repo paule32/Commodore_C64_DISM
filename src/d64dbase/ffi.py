@@ -5,6 +5,13 @@ Prototype syntax::
         LPCSTR, CINT) shell32 ;
         from "ShellExecuteA"
 
+A native C procedure with no result may be declared in any of these forms::
+    extern CVOID log_message(LPCSTR) cdecl "example.dll" from "log_message"
+    extern PROCEDURE log_message(LPCSTR) cdecl "example.dll" from "log_message"
+    extern log_message(LPCSTR) cdecl "example.dll" from "log_message"
+
+All three have return_type CVOID, and can only be called as statements.
+
 The preprocessor has already expanded ``#define shell32 "shell32.dll"``.
 No DLL is loaded during compilation; imports are emitted into the PE image.
 """
@@ -25,6 +32,9 @@ class DBaseFFIPrototype:
     dll: str
     entry: str
     line: int
+    # PE32: stdcall = callee cleans; cdecl = caller cleans.
+    # PE64: both use the unified Microsoft x64 calling convention.
+    calling_convention: str = 'stdcall'
 
     @property
     def label(self) -> str:
@@ -33,6 +43,18 @@ class DBaseFFIPrototype:
     @property
     def import_line(self) -> str:
         return f'import {self.label}, "{self.dll}", "{self.entry}"'
+
+
+def ffi_stack_argument_bytes(argument_types: Tuple[str, ...], *, target: str = 'pe32') -> int:
+    """PE32 stack space consumed by FFI arguments (64-bit values use two slots).
+
+    The number of pushed bytes is independent of the calling convention;
+    only cdecl requires the caller to restore ESP by this amount.
+    """
+    if str(target).casefold() != 'pe32':
+        return 0
+    return sum(8 if ffi_type_info(name).bits('pe32') == 64 else 4
+               for name in argument_types)
 
 
 def extract_ffi_prototypes(source: str, *, filename: str = '<dBase>', allow_so: bool = False):
@@ -62,14 +84,19 @@ def extract_ffi_prototypes(source: str, *, filename: str = '<dBase>', allow_so: 
         # continuation marker, not part of an argument or a DLL filename.
         text = re.sub(r';\s*', ' ', text).strip()
         match = re.fullmatch(
-            r'extern\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*'
-            r'\(([^()]*)\)\s+("[^"\r\n]+"|[A-Za-z_]\w*)\s+'
+            # Existing typed declarations stay valid. PROCEDURE/PROC are
+            # readable CVOID aliases; omitting the result type also means CVOID.
+            r'extern\s+(?:([A-Za-z_]\w*)\s+)?([A-Za-z_]\w*)\s*'
+            r'\(([^()]*)\)\s+(?:(cdecl|stdcall)\s+)?'
+            r'("[^"\r\n]+"|[A-Za-z_]\w*)\s+'
             r'from\s+"([^"\r\n]+)"\s*\.?\s*', text, re.I,
         )
         if match is None:
             raise ValueError(f'{filename}:{start + 1}: Ungueltige extern-DLL-Deklaration: {text}')
-        result_type, name, raw_args, raw_dll, entry = match.groups()
-        result_type = result_type.upper()
+        result_type, name, raw_args, convention, raw_dll, entry = match.groups()
+        result_type = (result_type or 'CVOID').upper()
+        if result_type in ('PROCEDURE', 'PROC', 'VOID'):
+            result_type = 'CVOID'
         argument_types = tuple(s.strip().upper() for s in raw_args.split(',') if s.strip())
         if argument_types in (('CVOID',), ('VOID',)):
             argument_types = ()  # f(void): nullary function
@@ -86,7 +113,8 @@ def extract_ffi_prototypes(source: str, *, filename: str = '<dBase>', allow_so: 
         if name.casefold() in seen:
             raise ValueError(f'{filename}:{start + 1}: DLL-Prototyp {name} mehrfach deklariert.')
         seen.add(name.casefold())
-        prototypes.append(DBaseFFIPrototype(name, result_type, argument_types, dll, entry, start + 1))
+        prototypes.append(DBaseFFIPrototype(name, result_type, argument_types, dll, entry, start + 1,
+                                            (convention or 'stdcall').lower()))
         for line_idx in range(start, i + 1):
             eol = '\r\n' if lines[line_idx].endswith('\r\n') else '\n' if lines[line_idx].endswith('\n') else ''
             lines[line_idx] = eol

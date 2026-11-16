@@ -17,3 +17,11 @@ _jit_vprintf                   @183
 _jit_vsnprintf                 @184
 
 strlen                         @185
+
+; Stage 578: native Pascal integer/string routines
+jit_pas_inttostr               @186
+jit_pas_strtoint               @187
+
+    ; Stage 583: Pascal PE32 shared stack-cookie services
+    jit_pas_cookie_initialize32 @188
+    jit_pas_cookie_failure32 @189

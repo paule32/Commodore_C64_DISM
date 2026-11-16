@@ -1,0 +1,9 @@
+{
+  "format": "d64-software-installer",
+  "version": 1,
+  "archive": [],
+  "external": [],
+  "sections": {},
+  "general": {},
+  "name": "Testprojekt"
+}

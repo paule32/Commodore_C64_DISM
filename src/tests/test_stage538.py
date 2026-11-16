@@ -59,7 +59,7 @@ class Stage538Tests(unittest.TestCase):
             self.assertIn(f'mov {reg},', section)
             self.assertIn('__pas_cookie_secret', section)
 
-    def test_parameter_frame_preserved_pe32(self):
+    def test_parameter_frame_rebased_pe32(self):
         c, p = self.c, self.p
         param = c.ParameterDeclaration(('Value',), 'integer', 'value', p)
         generated = c._PE32CodeGenerator(self.make_program(parameters=(param,), body=c.CompoundStatement(p, (
@@ -68,8 +68,9 @@ class Stage538Tests(unittest.TestCase):
                                         optimization_level=2,
                                         no_stack_frames=True).generate().assembly
         section = generated.split('__pas_global_tick:', 1)[1].split('\n__pas_console_init:', 1)[0]
-        self.assertIn('mov ebp, esp', section)
-        self.assertIn('[ebp+8]', section)
+        self.assertNotIn('mov ebp, esp', section)
+        self.assertNotIn('[ebp+8]', section)
+        self.assertIn('[esp+16]', section)
 
     def test_local_frame_preserved_at_O2(self):
         c, p = self.c, self.p
@@ -88,7 +89,13 @@ class Stage538Tests(unittest.TestCase):
                         'mov esi, dword ptr [ebp-8]', 'mov edi, dword ptr [ebp-12]',
                         'mov esp, ebp', 'pop ebp', 'ret 8']
         out, _ = omit_safe_pascal_stack_frames(instructions, {}, ['__pas_global_a'])
-        self.assertEqual(out, instructions)
+        self.assertNotIn('mov ebp, esp', '\n'.join(out))
+        self.assertIn('mov eax, [esp+16]', out)
+        self.assertEqual(out[-4:], ['    pop edi', '    pop esi', '    pop ebx', 'ret 8'])
+        unsafe = [*instructions]
+        unsafe[6] = 'mov eax, [ebp-16]'
+        rejected, _ = omit_safe_pascal_stack_frames(unsafe, {}, ['__pas_global_a'])
+        self.assertEqual(rejected, unsafe)
         ins64 = ['__pas_method_test:', 'push rbp', 'mov rbp, rsp', 'push rsi',
                  'sub rsp, 8', 'mov rsi, rcx', 'xor eax, eax',
                  'lea rsp, [rbp-16]', 'pop rsi', 'pop rbp', 'ret']

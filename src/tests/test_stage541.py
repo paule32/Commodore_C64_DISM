@@ -205,7 +205,8 @@ class Stage541Tests(unittest.TestCase):
                 import_runtime_version='libd64_runtime', optimization_level=0,
                 stack_protector=True, no_stack_frames=False)
             self.assertGreater(processed.import_manifest['used'], 0)
-            self.assertIn('BCryptGenRandom', processed.assembly)
+            self.assertIn('jit_pas_cookie_initialize32' if target == 'pe32'
+                          else 'BCryptGenRandom', processed.assembly)
             self.assertIn('call __pas_print_string', processed.assembly)
             self.assertEqual(len(processed.assembly.splitlines()),
                              len(raw.assembly.splitlines()))

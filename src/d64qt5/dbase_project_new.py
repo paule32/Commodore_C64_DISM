@@ -11,6 +11,7 @@ from pathlib import Path
 
 # Beschriftung, Ziel-Unterknoten, erlaubte Endungen, Standardname, Buildziel.
 DBASE_NEW_MENU = (
+    ("Neu: Modul", "modules", (".prg",), "Modul1.prg", ""),
     ("Neu:  Formular", "forms", (".wfm",), "Form1.wfm", ""),
     ("Neu:  Programm", "programs", (".prg",), "Programm1.prg", ""),
     ("Neu:  Tabelle", "tables", (".dbf",), "Tabelle1.dbf", ""),
@@ -27,6 +28,7 @@ DBASE_NEW_MENU = (
 # den bereits implementierten, themenfähigen Workflow wiederverwenden.
 # Der bisherige Hauptknoten (DBASE_NEW_MENU) bleibt unverändert.
 DBASE_GROUP_NEW_MENU = {
+    ("modules", ""): ("Neu: Modul", "modules", (".prg",), "Modul1.prg", ""),
     ("forms", ""): ("Neu:  Formular-Datei", "forms", (".wfm",), "Form1.wfm", ""),
     ("tables", ""): ("Neu:  Tabelle", "tables", (".dbf",), "Tabelle1.dbf", ""),
     ("queries", ""): ("Neu:  Abfrage Datei", "queries", (".d64sql",), "Abfrage1.d64sql", ""),
@@ -67,7 +69,7 @@ def is_dbase_program_text(path: Path) -> bool:
 def new_dbase_file_content(role: str, path: Path) -> str:
     """Startinhalt für textbasierte Designer; `.dbf` wird separat geschrieben."""
     name = Path(path).stem
-    if role == "programs":
+    if role in {"programs", "modules"}:
         return ""  # Ein neues, bewusst leeres dBASE-Quellprogramm.
     if role == "forms":
         class_name = re.sub(r"\W", "_", name)

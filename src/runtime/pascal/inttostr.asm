@@ -19,17 +19,25 @@ section .text
 
 ; Die Runtime-Funktion erzeugt aus dem temporären C-String
 ; einen dynamischen Pascal-String.
-extern _jit_dynstring_from_cstr
+%ifdef JIT_PASCAL_RUNTIME_INTERNAL
+    extern __jit_dynstring_from_cstr
+    %define DYNS_FROM_CSTR __jit_dynstring_from_cstr
+%else
+    extern _jit_dynstring_from_cstr
+    %define DYNS_FROM_CSTR _jit_dynstring_from_cstr
+%endif
 
 ; Beide Namen zeigen auf dieselbe Funktion.
 ; Damit funktionieren sowohl unverzierte als auch typische
 ; C/COFF-Symbolnamen.
 global IntToStr
 global _IntToStr
+global _jit_pas_inttostr
 
 
 IntToStr:
 _IntToStr:
+_jit_pas_inttostr:
     push ebp
     mov  ebp, esp
 
@@ -109,7 +117,7 @@ _IntToStr:
     ; Die Funktion kopiert den Stackpuffer in einen
     ; dynamischen Pascal-String.
     push edi
-    call _jit_dynstring_from_cstr
+    call DYNS_FROM_CSTR
     add  esp, 4
 
     ; EAX enthält jetzt den dynamischen String-Datenzeiger.

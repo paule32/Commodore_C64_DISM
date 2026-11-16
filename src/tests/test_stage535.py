@@ -72,7 +72,8 @@ class TestStage535Sections(unittest.TestCase):
                 bss = asm.split("section .bss", 1)[1]
                 self.assertIn("_cookie_secret: res", bss)
                 self.assertIn("winclass_1: resb 40", bss)
-                self.assertIn("BCryptGenRandom", asm)
+                self.assertIn("jit_pas_cookie_initialize32" if bits == 32
+                              else "BCryptGenRandom", asm)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,19 @@
+{
+  "gesamt": 1366,
+  "verschiedene_wortformen": 1348,
+  "wortarten": {
+    "Adjektiv": 345,
+    "Adverb": 11,
+    "Artikel": 11,
+    "Fragewort": 11,
+    "Konjunktion": 6,
+    "Pronomen": 12,
+    "Präposition": 14,
+    "Substantiv": 692,
+    "Verb": 264
+  },
+  "mehrdeutige_woerter": 18,
+  "mit_kasus": 722,
+  "mit_genus": 692,
+  "anzahl_felder": 19
+}

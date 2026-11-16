@@ -177,7 +177,8 @@ def compile_unit_in_worker(job: dict) -> dict:
     input_path = Path(job["path"])
     macros = dict(job.get("predefined_macros") or {})
     prepared = preprocess_pascal_source(
-        source, filename=str(input_path), predefined_macros=macros)
+        source, filename=str(input_path), predefined_macros=macros,
+        target=target)
     # Support a project-level plugin compiler that has not yet adopted the
     # Stage-537 keyword, while always passing it to the bundled compiler.
     import inspect

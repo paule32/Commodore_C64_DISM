@@ -9,6 +9,7 @@ import os
 import re
 import struct
 from typing import Dict, Mapping, Optional, Tuple, Union
+from .procedure_files import DBaseProcedureFileManager
 
 
 class DBaseCompilerError(Exception):
@@ -67,6 +68,35 @@ class DBaseMacro:
 
 
 @dataclass(frozen=True)
+class DBaseSourceLocation:
+    """Physical origin for one expanded line; never emits target instructions."""
+    filename: str
+    line: int
+    # Filename + #include line of the parents, outermost first.
+    include_chain: Tuple[Tuple[str, int], ...] = ()
+
+
+class DBaseIncludeLineManager:
+    """Python-only LIFO source manager for nested #include files."""
+    def __init__(self, filename: str):
+        self.stack: list[Tuple[str, int]] = [(str(filename), 0)]
+        self.locations: list[DBaseSourceLocation] = []
+
+    def push(self, filename: str, at_line: int):
+        self.stack[-1] = (self.stack[-1][0], int(at_line))
+        self.stack.append((str(filename), 0))
+
+    def pop(self):
+        if len(self.stack) <= 1:
+            raise IndexError('Kein Include-Kontext vorhanden')
+        self.stack.pop()
+
+    def mark(self, line: int):
+        self.locations.append(DBaseSourceLocation(
+            self.stack[-1][0], int(line), tuple(self.stack[:-1])))
+
+
+@dataclass(frozen=True)
 class DBasePragmaLink:
     path: str
     raw_path: str
@@ -87,6 +117,7 @@ class DBaseFrontendResult:
     preprocessor_warnings: Tuple[str, ...] = ()
     preprocessor_infos: Tuple[str, ...] = ()
     ffi_prototypes: Tuple[object, ...] = ()
+    source_locations: Tuple[DBaseSourceLocation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -276,6 +307,30 @@ class DBaseRoutineDefinition:
     @property
     def is_procedure(self) -> bool:
         return self.kind == "procedure"
+
+
+@dataclass(frozen=True)
+class DBaseClassDefinition:
+    """Deklaration einer dBASE-Klasse mit optionalen nativen Methoden."""
+    name: str
+    parent: str
+    custom: bool
+    line: int
+    column: int
+    methods: Tuple[object, ...] = ()
+    properties: Tuple[object, ...] = ()
+
+
+@dataclass(frozen=True)
+class DBaseNativeMethodStatement:
+    """Single native VMT call: obj.Method(), STORE, assignment or ? output."""
+    target: object
+    method_name: str
+    argument_name: str
+    result_name: str
+    print_result: bool
+    line: int
+    column: int
 
 
 @dataclass(frozen=True)
@@ -1148,12 +1203,13 @@ class _DBaseConditionalFrame:
     else_seen: bool = False
 
 
-def _resolve_include_path(raw: str, *, filename: str, line: int, include_paths=()) -> Path:
+def _resolve_include_path(raw: str, *, filename: str, line: int, include_paths=(),
+                          directive: str = "#include") -> Path:
     value = str(raw or "").strip()
     match = re.fullmatch(r'"([^"]+)"', value)
     if match is None:
         raise DBaseCompilerError(
-            '#include erwartet einen Pfad in doppelten Anfuehrungszeichen, z. B. #include "lib/common.prg".',
+            f'{directive} erwartet einen Pfad in doppelten Anfuehrungszeichen.',
             line=line,
             column=1,
             filename=filename,
@@ -1164,6 +1220,9 @@ def _resolve_include_path(raw: str, *, filename: str, line: int, include_paths=(
     roots = ([origin.parent] if filename and not str(filename).startswith("<") else [Path.cwd()])
     roots.extend(Path(entry).expanduser() for entry in (include_paths or ()) if str(entry).strip())
     candidates = [requested] if requested.is_absolute() else [root / requested for root in roots]
+    # dBASE system units commonly omit the .prg extension in #include.
+    if requested.suffix.casefold() not in ('.prg', '.dbase', '.h', '.inc'):
+        candidates += [Path(str(candidate) + '.prg') for candidate in candidates]
     checked = []
     for candidate in candidates:
         try:
@@ -1174,34 +1233,85 @@ def _resolve_include_path(raw: str, *, filename: str, line: int, include_paths=(
         if resolved.is_file():
             return resolved
     raise DBaseCompilerError(
-        "#include-Datei nicht gefunden: " + include_name +
+        f"{directive}-Datei nicht gefunden: " + include_name +
         "\nGepruefte Pfade: " + "; ".join(checked),
         line=line, column=1, filename=filename,
     )
 
 
-def _read_dbase_include(path: Path, *, filename: str, line: int) -> str:
+def _read_dbase_include(path: Path, *, filename: str, line: int,
+                        manager: Optional[DBaseProcedureFileManager] = None,
+                        mode: str = 'include') -> str:
+    directive = '#include' if mode == 'include' else 'SET PROCEDURE'
     try:
-        data = path.read_bytes()
+        data = manager.read(path, mode=mode) if manager is not None else path.read_bytes()
     except OSError as exc:
         raise DBaseCompilerError(
-            f'#include-Datei konnte nicht gelesen werden: {path}: {exc}',
-            line=line,
-            column=1,
-            filename=filename,
+            f'{directive}-Datei konnte nicht gelesen werden: {path}: {exc}',
+            line=line, column=1, filename=filename,
         ) from None
     try:
-        return data.decode("utf-8-sig")
+        return data.decode('utf-8-sig')
     except UnicodeDecodeError:
         try:
-            return data.decode("cp1252")
+            return data.decode('cp1252')
         except UnicodeDecodeError as exc:
             raise DBaseCompilerError(
-                f'#include-Datei ist weder UTF-8 noch Windows-1252: {path}',
-                line=line,
-                column=1,
-                filename=filename,
+                f'{directive}-Datei ist weder UTF-8 noch Windows-1252: {path}',
+                line=line, column=1, filename=filename,
             ) from exc
+
+
+_SET_PROCEDURE_PREFIX = re.compile(r'^\s*SET\s+PROCEDURE\b', re.I)
+_SET_PROCEDURE_LINE = re.compile(
+    r'^\s*SET\s+PROCEDURE(?:\s+TO)?\s+("[^"\r\n]+")\s+(EXCLUSIVE|ADDITIVE)\s*$',
+    re.I,
+)
+
+
+def _dbase_include_guard(source: str, *, filename: str) -> Optional[str]:
+    """Find a conventional file-covering #ifndef NAME / #define NAME guard.
+
+    Only a guard around the *entire* file is accepted. This permits a
+    recursive include to be skipped when its guard is already defined, while
+    genuinely unguarded include cycles still raise a useful diagnostic.
+    """
+    cleaned = strip_dbase_comments(source, filename=filename)
+    logical = [(line.strip(), n) for n, line in enumerate(cleaned.splitlines(), 1)
+               if line.strip()]
+    if len(logical) < 3:
+        return None
+    first = re.fullmatch(r'#ifndef\s+([A-Za-z_]\w*)', logical[0][0], re.I)
+    if not first or not re.fullmatch(r'#define\s+' + re.escape(first.group(1)) +
+                                      r'(?:\s+[^\r\n]+)?', logical[1][0], re.I):
+        return None
+    depth = 0
+    for index, (line, _) in enumerate(logical):
+        directive = re.match(r'#\s*(if|ifdef|ifndef|endif)\b', line, re.I)
+        if directive:
+            if directive.group(1).casefold() == 'endif':
+                depth -= 1
+                if depth == 0 and index != len(logical) - 1:
+                    return None
+                if depth < 0:
+                    return None
+            else:
+                depth += 1
+    return first.group(1) if depth == 0 else None
+
+
+def remap_dbase_source_error(error: DBaseCompilerError,
+                             locations: Tuple[DBaseSourceLocation, ...]) -> DBaseCompilerError:
+    """Translate flattened preprocessor lines back to physical include lines."""
+    if not (error.line and 1 <= error.line <= len(locations)):
+        return error
+    origin = locations[error.line - 1]
+    if origin.filename == error.filename and origin.line == error.line:
+        return error
+    chain = ' -> '.join(f'{name}:{at_line}' for name, at_line in origin.include_chain)
+    suffix = f' (eingebunden ueber {chain})' if chain else ''
+    return DBaseCompilerError(error.message + suffix, line=origin.line,
+                              column=error.column, filename=origin.filename)
 
 
 def _resolve_pragma_link_path(raw: str, *, filename: str, line: int) -> DBasePragmaLink:
@@ -1234,6 +1344,10 @@ def _preprocess_dbase_macros(
     _warnings: Optional[list[str]] = None,
     _infos: Optional[list[str]] = None,
     _include_stack: Optional[Tuple[Path, ...]] = None,
+    _source_locations: Optional[list[DBaseSourceLocation]] = None,
+    _include_chain: Tuple[Tuple[str, int], ...] = (),
+    _line_manager: Optional[DBaseIncludeLineManager] = None,
+    _procedure_manager: Optional[DBaseProcedureFileManager] = None,
     _compile_date: str = "",
     _compile_time: str = "",
     target: str = "pe32",
@@ -1249,12 +1363,23 @@ def _preprocess_dbase_macros(
         # Platform macros are a per-compilation state, shared with nested includes.
         # Explicit #undef/#define in user source remains possible.
         selected = str(target).casefold().strip()
-        platform_macro = 'LINUX' if selected.startswith(('linux', 'elf')) else 'WINDOWS'
-        macros[platform_macro.casefold()] = DBaseMacro(platform_macro, None, '1', 0, 0)
+        if selected.startswith(('linux', 'elf')):
+            # Nur die aktive Plattform definieren: #ifdef prueft die
+            # Existenz des Symbols, nicht dessen numerischen Wert.
+            platform_macros = ('LINUX',)
+        elif selected in {'pe32', 'pe64'}:
+            # WIN32 ist wie _WIN32 bei MSVC auf PE32 und PE64 definiert.
+            # Fuer die Bitness kann WIN64 separat geprueft werden.
+            platform_macros = ('WINDOWS', 'WIN32') + (('WIN64',) if selected == 'pe64' else ())
+        else:
+            platform_macros = ()
+        for platform_macro in platform_macros:
+            macros[platform_macro.casefold()] = DBaseMacro(platform_macro, None, '1', 0, 0)
     links = _links if _links is not None else []
     warnings = _warnings if _warnings is not None else []
     infos = _infos if _infos is not None else []
     include_stack = tuple(_include_stack or ())
+    procedure_manager = _procedure_manager
 
     if not _compile_date or not _compile_time:
         compile_now = datetime.now()
@@ -1275,6 +1400,8 @@ def _preprocess_dbase_macros(
 
     stack: list[_DBaseConditionalFrame] = []
     output: list[str] = []
+    locations = _source_locations if _source_locations is not None else []
+    line_manager = _line_manager if _line_manager is not None else DBaseIncludeLineManager(filename)
     active = True
     block_state = False
 
@@ -1287,6 +1414,63 @@ def _preprocess_dbase_macros(
             compile_date=compile_date,
             compile_time=compile_time,
         )
+
+    def _append_dbase_file_source(path: Path, *, mode: str, directive: str,
+                                  line_no: int, orig_line: str):
+        # Both directives use the same LIFO source map / macro namespace.
+        # Source bytes are cached: guarded cycles never re-open an EXCLUSIVE
+        # Windows handle, and repeated files use one consistent snapshot.
+        if len(include_stack) >= 64:
+            raise DBaseCompilerError(
+                f'Maximale {directive}-Verschachtelung (64) ueberschritten.',
+                line=line_no, column=1, filename=filename)
+        # A previously loaded *guarded* file is a true no-op, even if the
+        # caller selects a different Windows sharing mode this time.
+        # In particular, do not try to re-open an EXCLUSIVE handle merely
+        # to discover the guard that is already known to the compiler.
+        if procedure_manager is not None and procedure_manager.has_snapshot(path):
+            snapshot = _read_dbase_include(
+                path, filename=filename, line=line_no,
+                manager=procedure_manager, mode='include')
+            old_guard = _dbase_include_guard(snapshot, filename=str(path))
+            if old_guard and _is_dbase_macro_defined(old_guard, macros):
+                output.append(_blank_directive_line(orig_line))
+                locations.append(DBaseSourceLocation(filename, line_no, _include_chain))
+                return
+        child_source = _read_dbase_include(
+            path, filename=filename, line=line_no,
+            manager=procedure_manager, mode=mode)
+        guard = _dbase_include_guard(child_source, filename=str(path))
+        guarded = bool(guard and _is_dbase_macro_defined(guard, macros))
+        if path in include_stack and not guarded:
+            chain = ' -> '.join(str(p) for p in include_stack + (path,))
+            raise DBaseCompilerError(
+                f'Rekursives {directive} ohne wirksamen Include-Guard: {chain}',
+                line=line_no, column=1, filename=filename)
+        output.append(_blank_directive_line(orig_line))
+        locations.append(DBaseSourceLocation(filename, line_no, _include_chain))
+        if guarded:
+            return
+        child_locations: list[DBaseSourceLocation] = []
+        line_manager.push(str(path), line_no)
+        try:
+            child_text, _, _, _, _ = _preprocess_dbase_macros(
+                child_source, filename=str(path),
+                _macros=macros, _links=links, _warnings=warnings, _infos=infos,
+                _include_stack=include_stack + (path,),
+                _source_locations=child_locations,
+                _include_chain=_include_chain + ((filename, line_no),),
+                _line_manager=line_manager,
+                _procedure_manager=procedure_manager,
+                _compile_date=compile_date, _compile_time=compile_time,
+                target=target, include_paths=include_paths,
+            )
+        finally:
+            line_manager.pop()
+        output.append(child_text)
+        locations.extend(child_locations)
+        if child_text and not child_text.endswith(('\n', '\r')) and orig_line.endswith(('\n', '\r')):
+            output.append('\n')
 
     for line_no, (orig_line, masked_line) in enumerate(zip(original_lines, masked_lines), 1):
         body = masked_line.rstrip("\r\n")
@@ -1398,38 +1582,12 @@ def _preprocess_dbase_macros(
                 macros.pop(rest.casefold(), None)
 
             elif keyword == "include":
-                include_path = _resolve_include_path(rest, filename=filename, line=line_no, include_paths=include_paths)
-                if len(include_stack) >= 64:
-                    raise DBaseCompilerError(
-                        "Maximale #include-Verschachtelung (64) ueberschritten.",
-                        line=line_no, column=1, filename=filename,
-                    )
-                if include_path in include_stack:
-                    chain = " -> ".join(str(p) for p in include_stack + (include_path,))
-                    raise DBaseCompilerError(
-                        f"Rekursives #include erkannt: {chain}",
-                        line=line_no, column=1, filename=filename,
-                    )
-                include_source = _read_dbase_include(include_path, filename=filename, line=line_no)
-                included, _, _, _, _ = _preprocess_dbase_macros(
-                    include_source,
-                    filename=str(include_path),
-                    _macros=macros,
-                    _links=links,
-                    _warnings=warnings,
-                    _infos=infos,
-                    _include_stack=include_stack + (include_path,),
-                    _compile_date=compile_date,
-                    _compile_time=compile_time,
-                    target=target,
-                    include_paths=include_paths,
+                include_path = _resolve_include_path(
+                    rest, filename=filename, line=line_no, include_paths=include_paths)
+                _append_dbase_file_source(
+                    include_path, mode='include', directive='#include',
+                    line_no=line_no, orig_line=orig_line,
                 )
-                # Direktivenzeile selbst bleibt als Leerzeile fuer moeglichst
-                # stabile Zeilennummern; danach folgt der eingebundene Text.
-                output.append(_blank_directive_line(orig_line))
-                output.append(included)
-                if included and not included.endswith(("\n", "\r")) and orig_line.endswith(("\n", "\r")):
-                    output.append("\n")
                 continue
 
             elif keyword in {"error", "warning", "warn", "info"}:
@@ -1474,10 +1632,28 @@ def _preprocess_dbase_macros(
                 )
 
             output.append(_blank_directive_line(orig_line))
+            locations.append(DBaseSourceLocation(filename, line_no, _include_chain))
             continue
 
         if not active:
             output.append(_blank_directive_line(orig_line))
+            locations.append(DBaseSourceLocation(filename, line_no, _include_chain))
+            continue
+
+        if _SET_PROCEDURE_PREFIX.match(masked_line):
+            proc_match = _SET_PROCEDURE_LINE.fullmatch(masked_line.rstrip('\r\n'))
+            if proc_match is None:
+                raise DBaseCompilerError(
+                    'SET PROCEDURE erwartet "Datei.prg" EXCLUSIVE oder ADDITIVE.',
+                    line=line_no, column=1, filename=filename)
+            proc_path = _resolve_include_path(
+                proc_match.group(1), filename=filename, line=line_no,
+                include_paths=include_paths, directive='SET PROCEDURE')
+            mode = proc_match.group(2).casefold()
+            _append_dbase_file_source(
+                proc_path, mode=mode, directive='SET PROCEDURE',
+                line_no=line_no, orig_line=orig_line)
+            infos.append(f'{filename}:{line_no}: SET PROCEDURE {mode.upper()}: {proc_path}')
             continue
 
         active_line = re.sub(r"(?<![\w])#(?=__(?:FILE|LINE|DATE|TIME)__\b)", "", orig_line, flags=re.I)
@@ -1491,6 +1667,7 @@ def _preprocess_dbase_macros(
             compile_time=compile_time,
         )
         output.append(expanded)
+        locations.append(DBaseSourceLocation(filename, line_no, _include_chain))
 
     if stack:
         raise DBaseCompilerError(
@@ -1513,7 +1690,12 @@ def preprocess_dbase_source(
     normalized_target = normalize_dbase_target(target)
     comments = scan_dbase_comments(text, filename=filename)
     cleaned = strip_dbase_comments(text, filename=filename)
-    preprocessed, macros, pragma_links, preprocessor_warnings, preprocessor_infos = _preprocess_dbase_macros(text, filename=filename, include_paths=include_paths, target=normalized_target)
+    source_locations: list[DBaseSourceLocation] = []
+    with DBaseProcedureFileManager() as procedure_manager:
+        preprocessed, macros, pragma_links, preprocessor_warnings, preprocessor_infos = _preprocess_dbase_macros(
+            text, filename=filename, include_paths=include_paths, target=normalized_target,
+            _source_locations=source_locations, _procedure_manager=procedure_manager,
+        )
     from .ffi import extract_ffi_prototypes
     try:
         preprocessed, ffi_prototypes = extract_ffi_prototypes(preprocessed, filename=filename)
@@ -1531,6 +1713,7 @@ def preprocess_dbase_source(
         preprocessor_warnings=preprocessor_warnings,
         preprocessor_infos=preprocessor_infos,
         ffi_prototypes=ffi_prototypes,
+        source_locations=tuple(source_locations),
     )
 
 
@@ -2396,6 +2579,12 @@ class _DBaseExpressionParser:
             )
         if self.take("IDENT") is not None:
             name = str(token.value)
+            # Stage 602: dBASE NULL is the zero/null pointer literal. NIL is
+            # intentionally *not* a synonym (it belongs to Pascal).
+            if name.casefold() == "null":
+                return DBaseLiteralExpression(
+                    line=token.line, column=token.column, value_type="number",
+                    value=Decimal(0), text=token.text)
             if self.take("LPAREN") is not None:
                 arguments: list[DBaseExpression] = []
                 if self.current.kind != "RPAREN":
@@ -3321,12 +3510,17 @@ class _DBaseProgramAnalyzer:
                         f"DLL-Funktion {ffi.name} liefert CVOID und kann nicht als Wert verwendet werden.",
                         line=expression.line, column=expression.column, filename=self.filename)
                 slots = self._new_call_slots(len(expression.arguments))
+                ffi_result_kind = ('void' if ffi.return_type == 'CVOID' else
+                                   'string' if ffi_type_info(ffi.return_type).is_ansi_string_result
+                                   else 'number')
+                ffi_result = ''
+                if ffi_result_kind == 'string':
+                    ffi_result = f'__dbase_call_{self.call_counter}_ffi_result'
+                    self.storage_slots.append(ffi_result)
                 call_bindings[expression] = _DBaseCallBinding(
-                    kind='ffi', target_label=ffi.label, result_label='',
-                    argument_slots=slots, parameter_slots=(),
-                    return_kind='void' if ffi.return_type == 'CVOID' else 'number')
-                info = _DBaseExpressionInfo(
-                    'void' if ffi.return_type == 'CVOID' else 'number', None, True)
+                    kind='ffi', target_label=ffi.label, result_label=ffi_result,
+                    argument_slots=slots, parameter_slots=(), return_kind=ffi_result_kind)
+                info = _DBaseExpressionInfo(ffi_result_kind, None, True)
                 expression_info[expression] = info
                 return info
             definition = self.routines.get(expression.name.casefold())
@@ -6207,6 +6401,12 @@ class _DBaseCodeGenerator:
             self.emit(f"extern {function}")
         for ffi in self.ffi_prototypes.values():
             self.emit(ffi.import_line)
+        # Only typed ANSI string returns need lstrlenA. The existing C-CRT
+        # malloc/memcpy imports above provide independent dBASE-owned storage.
+        from .ffi_string_result import returns_ansi_string
+        if any(returns_ansi_string(ffi.return_type)
+               for ffi in self.ffi_prototypes.values()):
+            self.emit('import __dbase_ffi_lstrlenA, "kernel32.dll", "lstrlenA"')
         self.emit("global _start")
         self.emit("entry _start")
         self.emit()
@@ -6565,6 +6765,9 @@ __all__ = [
     "DBaseComment",
     "DBaseMacro",
     "DBasePragmaLink",
+    "DBaseSourceLocation",
+    "DBaseIncludeLineManager",
+    "remap_dbase_source_error",
     "DBaseCompilerError",
     "DBaseFrontendResult",
     "DBaseCompileResult",
@@ -6590,6 +6793,7 @@ __all__ = [
     "DBaseIfBranch",
     "DBaseIfStatement",
     "DBaseRoutineDefinition",
+    "DBaseClassDefinition",
     "DBaseVariableInfo",
     "DBaseValue",
     "normalize_dbase_target",
@@ -6641,6 +6845,19 @@ class DBaseNewObjectStatement:
     target: DBaseObjectPath
     class_name: str
     owner: DBaseObjectPath
+    line: int
+    column: int
+    constructor_arguments: Tuple[DBaseExpression, ...] = ()
+
+
+@dataclass(frozen=True)
+class DBaseNativePropertyStatement:
+    target: DBaseObjectPath
+    property_name: str
+    declaring_class: str
+    value_type: str
+    expression: Optional[DBaseExpression]
+    print_result: bool
     line: int
     column: int
 
@@ -6774,6 +6991,30 @@ _DBASE_SESSION_LOGIN_RE = re.compile(
 _DBASE_LOCAL_DATABASE_RE = re.compile(
     r"(?i)^\s*local\s+([A-Za-z_][A-Za-z0-9_]*)\s+as\s+DATABASE\s*$"
 )
+# Stage 600: native classes reuse the real runtime/jitObject.h VMT layout.
+_DBASE_NEW_CLASS_RE = re.compile(
+    rf"(?i)^\s*({_DBASE_OBJECT_PATH_TEXT})\s*=\s*new\s+([A-Za-z_]\w*)\s*\(\s*(.*?)\s*\)\s*$"
+)
+_DBASE_LOCAL_CLASS_RE = re.compile(
+    r"(?i)^\s*LOCAL\s+([A-Za-z_]\w*)\s+AS\s+([A-Za-z_]\w*)\s*$"
+)
+_DBASE_NATIVE_METHOD_RE = re.compile(
+    rf"(?i)^\s*(?:(\?)\s*|STORE\s+)?"
+    rf"({_DBASE_OBJECT_PATH_TEXT})\.([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)?\s*\)"
+    rf"\s*(?:TO\s+([A-Za-z_]\w*))?\s*$"
+)
+_DBASE_NATIVE_ASSIGN_RE = re.compile(
+    rf"(?i)^\s*([A-Za-z_]\w*)\s*=\s*({_DBASE_OBJECT_PATH_TEXT})\."
+    rf"([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)?\s*\)\s*$"
+)
+
+_DBASE_NATIVE_PROPERTY_READ_RE = re.compile(
+    rf"(?i)^\s*\?\s*({_DBASE_OBJECT_PATH_TEXT})\.([A-Za-z_]\w*)\s*$"
+)
+_DBASE_NATIVE_PROPERTY_WRITE_RE = re.compile(
+    rf"(?i)^\s*({_DBASE_OBJECT_PATH_TEXT})\.([A-Za-z_]\w*)\s*=\s*(.*?)\s*$"
+)
+
 _DBASE_NEW_DATABASE_RE = re.compile(
     rf"(?i)^\s*({_DBASE_OBJECT_PATH_TEXT})\s*=\s*new\s+DATABASE\s*\(\s*\)\s*$"
 )
@@ -7223,6 +7464,158 @@ def _dbase_mask_line(line_text: str) -> str:
     return "".join("\t" if ch == "\t" else " " for ch in line_text)
 
 
+# Stage 602: Deklarationen und ausfuehrbare Methoden aus dem PRG-Quellstrom
+# extrahieren; Zeilenpositionen, Funktionskoerper und Klassen-VMT beibehalten.
+# Die native Methoden-Codegenerierung steht in d64dbase/object_abi.py.
+_DBASE_CLASS_HEAD = re.compile(
+    r"^\s*CLASS\s+([A-Za-z_]\w*)(?:\s+OF\s+([A-Za-z_]\w*))?"
+    r"\s*(ENDCLASS)?\s*$", re.I
+)
+_DBASE_CLASS_END = re.compile(r"^\s*ENDCLASS\s*$", re.I)
+_DBASE_CLASS_COMMENT = re.compile(r"^\s*(?://|&&|\*\*)")
+
+
+def _extract_dbase_class_definitions(source: str, *, filename: str):
+    """Extract CLASS members, including executable dBASE method bodies.
+
+    Methods terminate at their top-level RETURN; IF/ELSE/ENDIF may appear
+    before it. The source is masked only after its original positions have
+    been retained. FFI prototypes are checked during native code generation.
+    """
+    from .class_model import DBaseClassError, DBaseClassRegistry
+    from .object_abi import NativeClassMethod, NativeClassProperty, validate_methods
+    from dataclasses import replace
+
+    cleaned_source = strip_dbase_comments(source, filename=filename)
+    lines = source.splitlines(keepends=True)
+    cleaned_lines = cleaned_source.splitlines(keepends=True)
+    masked = list(lines)
+    classes = []
+    registry = DBaseClassRegistry()
+    current = None
+    active = None
+    signatures = re.compile(
+        r"^\s*(procedure|function)\s+([A-Za-z_]\w*)"
+        r"(?:\s*\(\s*([A-Za-z_]\w*)?\s*\))?\s*$", re.I)
+    legacy_type = re.compile(r"^\s*RETURN\s+(PVOID|LPCSTR|CINT|BOOL|CBOOL|VOID)\s*$", re.I)
+    for index, raw in enumerate(lines):
+        lineno = index + 1
+        code = cleaned_lines[index].rstrip("\r\n").strip()
+        if current is None:
+            if not re.match(r"^(?:CLASS|ENDCLASS)\b", code, re.I):
+                continue
+            if _DBASE_CLASS_END.fullmatch(code):
+                raise DBaseCompilerError("ENDCLASS ohne passende CLASS-Deklaration.", line=lineno, column=1, filename=filename)
+            header = _DBASE_CLASS_HEAD.fullmatch(code)
+            if header is None:
+                raise DBaseCompilerError("Erwartet: CLASS <Name> [OF <Basisklasse>|OF CUSTOM] [ENDCLASS].", line=lineno, column=1, filename=filename)
+            name, parent = header.group(1), header.group(2) or "TObject"
+            custom = parent.casefold() == "custom"
+            try:
+                info = registry.register(name, parent, custom=custom)
+            except DBaseClassError as exc:
+                raise DBaseCompilerError(str(exc), line=lineno, column=1, filename=filename) from exc
+            classes.append(DBaseClassDefinition(info.name, info.parent, custom, lineno, 1))
+            if not header.group(3):
+                current = {'name': name, 'line': lineno, 'methods': [],
+                           'properties': [], 'visibility': 'public'}
+        elif _DBASE_CLASS_END.fullmatch(code):
+            if active is not None:
+                raise DBaseCompilerError(f"RETURN fehlt in {current['name']}.{active['name']}.", line=lineno, column=1, filename=filename)
+            try:
+                validate_methods(current['name'], tuple(current['methods']))
+            except ValueError as exc:
+                raise DBaseCompilerError(str(exc), line=lineno, column=1, filename=filename) from exc
+            classes[-1] = replace(classes[-1], methods=tuple(current['methods']),
+                                  properties=tuple(current['properties']))
+            current = None
+        elif not code:
+            pass
+        elif re.match(r"^CLASS\b", code, re.I):
+            raise DBaseCompilerError("CLASS darf nicht verschachtelt werden.", line=lineno, column=1, filename=filename)
+        elif active is None:
+            visibility_line = re.fullmatch(r'(PUBLIC|PRIVATE)\s*', code, re.I)
+            if visibility_line:
+                current['visibility'] = visibility_line.group(1).casefold()
+            else:
+                property_line = re.fullmatch(
+                    r'(?:(PUBLIC|PRIVATE)\s+)?(?:PROPERTY\s+)?'
+                    r'([A-Za-z_]\w*)\s*(?:=\s*(.+))?', code, re.I)
+                signature = signatures.fullmatch(code)
+                if signature is not None:
+                    kind, name, param = signature.groups()
+                    active = {'kind': kind.casefold(), 'name': name,
+                              'parameters': (param,) if param else (), 'line': lineno,
+                              'body': [], 'if_depth': 0, 'pending': '', 'pending_line': lineno}
+                elif property_line is not None and (
+                    '=' in code or re.match(r'^(?:PUBLIC|PRIVATE|PROPERTY)\b', code, re.I)
+                ):
+                    declared_visibility, prop_name, prop_value = property_line.groups()
+                    visibility = (declared_visibility or current['visibility']).casefold()
+                    if any(prop.name.casefold() == prop_name.casefold() for prop in current['properties']):
+                        raise DBaseCompilerError('Klassen-Property mehrfach deklariert: ' + prop_name,
+                                                 line=lineno, column=1, filename=filename)
+                    current['properties'].append(NativeClassProperty(
+                        prop_name, visibility, (prop_value or '').strip(), lineno))
+                else:
+                    raise DBaseCompilerError(
+                        'Klassenmember: PUBLIC/PRIVATE, PROPERTY, PROCEDURE oder FUNCTION erwartet.',
+                        line=lineno, column=1, filename=filename)
+        else:
+            # Continuations of nested FFI calls, including multiline arguments.
+            if active['pending']:
+                active['pending'] += ' ' + code
+            else:
+                active['pending'] = code
+                active['pending_line'] = lineno
+            pending = active['pending']
+            if pending.count('(') > pending.count(')'):
+                pass
+            elif pending.count('(') < pending.count(')'):
+                raise DBaseCompilerError("Ueberzaehlige schliessende Klammer in Klassenmethode.",
+                                         line=lineno, column=1, filename=filename)
+            else:
+                line_start = active['pending_line']
+                active['pending'] = ''
+                keyword = pending.split(None, 1)[0].casefold()
+                if keyword == 'if':
+                    active['if_depth'] += 1
+                elif keyword == 'endif':
+                    active['if_depth'] -= 1
+                    if active['if_depth'] < 0:
+                        raise DBaseCompilerError("ENDIF ohne IF in Klassenmethode.", line=lineno, column=1, filename=filename)
+                elif keyword == 'else' and active['if_depth'] <= 0:
+                    raise DBaseCompilerError("ELSE ohne IF in Klassenmethode.", line=lineno, column=1, filename=filename)
+                elif keyword in ('procedure', 'function') and signatures.fullmatch(pending):
+                    raise DBaseCompilerError(f"RETURN fehlt in {current['name']}.{active['name']}.", line=lineno, column=1, filename=filename)
+                active['body'].append((line_start, pending))
+                if keyword == 'return' and active['if_depth'] == 0:
+                    content = tuple(active['body'])
+                    type_hint = ''
+                    # Backward compatibility: Stage 600 used RETURN PVOID as
+                    # a signature-only placeholder, not a real expression.
+                    if len(content) == 1 and (legacy := legacy_type.fullmatch(pending)):
+                        type_hint = legacy.group(1).upper()
+                        content = ()
+                    elif len(content) == 1 and pending.casefold() == 'return' and active['kind'] == 'procedure':
+                        # Legacy stubs without code retain their Stage-600 ABI.
+                        content = ()
+                    method = NativeClassMethod(active['kind'], active['name'],
+                        active['parameters'], type_hint, active['line'], content)
+                    current['methods'].append(method)
+                    active = None
+        if current is not None or re.match(r"^(?:CLASS|ENDCLASS)\b", code, re.I):
+            eol = raw[len(raw.rstrip("\r\n")):]
+            masked[index] = _dbase_mask_line(raw.rstrip("\r\n")) + eol
+    if current is not None:
+        raise DBaseCompilerError(f"ENDCLASS fehlt fuer CLASS {current['name']}.", line=current['line'], column=1, filename=filename)
+    try:
+        registry.validate()
+    except DBaseClassError as exc:
+        raise DBaseCompilerError(str(exc), filename=filename) from exc
+    return "".join(masked), tuple(classes)
+
+
 def parse_dbase_statements(
     source: str,
     *,
@@ -7239,10 +7632,15 @@ def parse_dbase_statements(
     # Präprozessor zuerst, damit auch Makros in Menuedateien funktionieren.
     frontend = preprocess_dbase_source(source, filename=filename, target=target)
     parse_source = frontend.preprocessed_source or frontend.source
+    parse_source, class_definitions = _extract_dbase_class_definitions(parse_source, filename=filename)
     lines = parse_source.splitlines(keepends=True)
     masked = list(lines)
     events: list[tuple[int, int, object, Tuple[object, ...]]] = []
     event_serial = 0
+    native_object_type_map = {}
+    for declaration in class_definitions:
+        events.append((declaration.line, event_serial, declaration, ()))
+        event_serial += 1
 
     i = 0
     while i < len(lines):
@@ -7275,6 +7673,104 @@ def parse_dbase_statements(
             event_serial += 1
             i += 1
             continue
+
+        from .object_abi import native_class_definitions
+        native_classes = {obj.name.casefold(): obj.name for obj in native_class_definitions(class_definitions)}
+        # A class referenced by NEW must exist as an explicit declaration;
+        # built-in MENU/SESSION/DATABASE retain their independent paths.
+        local_class = _DBASE_LOCAL_CLASS_RE.fullmatch(raw)
+        if local_class and local_class.group(2).casefold() in native_classes:
+            statement = DBaseLocalObjectDeclaration(local_class.group(1),
+                native_classes[local_class.group(2).casefold()], line_no,
+                max(1, raw.lower().find('local') + 1))
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            events.append((line_no, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
+        new_class = _DBASE_NEW_CLASS_RE.fullmatch(raw)
+        if new_class and new_class.group(2).casefold() in native_classes:
+            target_path = _dbase_object_path(new_class.group(1), line_no)
+            raw_args = new_class.group(3).strip()
+            constructor_args = ()
+            if raw_args:
+                # One typed dBASE expression, e.g. new Exception("file not found")
+                expr = _dbase_parse_property_expression(
+                    raw_args, raw_line=raw, parse_source=parse_source,
+                    line_start_offset=sum(len(piece) for piece in lines[:i]),
+                    line=line_no, filename=filename)
+                constructor_args = (expr,)
+            statement = DBaseNewObjectStatement(
+                target_path, native_classes[new_class.group(2).casefold()],
+                _dbase_parent_path(target_path), line_no, 1, constructor_args)
+            native_object_type_map[target_path.canonical_parts] = statement.class_name
+            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+            events.append((line_no, event_serial, statement, ()))
+            event_serial += 1
+            i += 1
+            continue
+
+        native_method = _DBASE_NATIVE_METHOD_RE.fullmatch(raw)
+        native_assign = _DBASE_NATIVE_ASSIGN_RE.fullmatch(raw)
+        if native_method or native_assign:
+            if native_assign:
+                result_name, object_name, method_name, argument_name = native_assign.groups()
+                printable = False
+            else:
+                printable, object_name, method_name, argument_name, result_name = native_method.groups()
+                printable = bool(printable)
+            from .object_abi import METHOD_BY_NAME
+            if method_name.casefold() in METHOD_BY_NAME:
+                statement = DBaseNativeMethodStatement(
+                    _dbase_object_path(object_name, line_no), method_name,
+                    argument_name or '', result_name or '', printable, line_no, 1)
+                masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+                events.append((line_no, event_serial, statement, ()))
+                event_serial += 1
+                i += 1
+                continue
+
+        read_property = _DBASE_NATIVE_PROPERTY_READ_RE.fullmatch(raw)
+        write_property = _DBASE_NATIVE_PROPERTY_WRITE_RE.fullmatch(raw)
+        match_property = read_property or write_property
+        if match_property:
+            object_path = _dbase_object_path(match_property.group(1), line_no)
+            class_name = native_object_type_map.get(object_path.canonical_parts)
+            if class_name:
+                from .derived_class_abi import field_layout
+                from types import SimpleNamespace
+                known_classes = {item.name.casefold(): item for item in class_definitions}
+                known_classes.setdefault('tobject', SimpleNamespace(
+                    name='TObject', parent='', properties=()))
+                try:
+                    slots = field_layout(class_name, known_classes, 8 if target == 'pe64' else 4)
+                except ValueError as exc:
+                    raise DBaseCompilerError(str(exc), line=line_no, filename=filename) from None
+                prop_entry = next(((p, owner, typ) for p, owner, _offset, typ in slots
+                                   if p.name.casefold() == match_property.group(2).casefold()), None)
+                if prop_entry is None:
+                    raise DBaseCompilerError('Unbekannte Klassen-Property: ' + match_property.group(2),
+                                             line=line_no, filename=filename)
+                prop, owner, typ = prop_entry
+                if prop.visibility == 'private':
+                    raise DBaseCompilerError('PRIVATE PROPERTY darf nicht von ausserhalb gelesen/geschrieben werden: '
+                                             + owner + '.' + prop.name,
+                                             line=line_no, filename=filename)
+                expression = None
+                if write_property:
+                    expression = _dbase_parse_property_expression(
+                        write_property.group(3), raw_line=raw, parse_source=parse_source,
+                        line_start_offset=sum(len(piece) for piece in lines[:i]),
+                        line=line_no, filename=filename)
+                statement = DBaseNativePropertyStatement(
+                    object_path, prop.name, owner, typ, expression,
+                    bool(read_property), line_no, 1)
+                masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
+                events.append((line_no, event_serial, statement, ()))
+                event_serial += 1
+                i += 1
+                continue
 
         local_database = _DBASE_LOCAL_DATABASE_RE.fullmatch(raw)
         if local_database:
@@ -7567,6 +8063,7 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.object_classes: Dict[Tuple[str, ...], str] = {}
+        self.native_pointer_results: set[str] = set()
         self.declared_object_classes: Dict[str, str] = {}
         # Stage 25: globaler, read-only Loginstatus. Der Wert wird bei jeder
         # Verwendung zur Laufzeit aus der Qt5-Bridge gelesen und besitzt
@@ -7823,7 +8320,7 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
     def _without_menu(sequence: Tuple[object, ...]) -> Tuple[object, ...]:
         return tuple(
             statement for statement in sequence
-            if not isinstance(statement, (DBaseLocalObjectDeclaration, DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseObjectPropertyStatement, DBaseObjectMethodStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
+            if not isinstance(statement, (DBaseClassDefinition, DBaseNativeMethodStatement, DBaseLocalObjectDeclaration, DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseNativePropertyStatement, DBaseObjectPropertyStatement, DBaseObjectMethodStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
         )
 
     def _analyze_top_sequence(self, sequence, globals_work):
@@ -7845,6 +8342,21 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
                 continue
             if isinstance(statement, DBaseNewObjectStatement):
                 class_name = statement.class_name.upper()
+                for arg in statement.constructor_arguments:
+                    info = self.analyze_expression(
+                        arg, symbols=globals_work,
+                        expression_info=self.expression_info,
+                        call_bindings=self.call_bindings,
+                    )
+                    if info.kind not in _STRING_KINDS:
+                        raise DBaseCompilerError(
+                            'Nativer Klassenkonstruktor erwartet einen String.',
+                            line=statement.line, filename=self.filename)
+                expected_args = self.native_class_constructor_arity.get(class_name.casefold(), 0)
+                if len(statement.constructor_arguments) != expected_args:
+                    raise DBaseCompilerError(
+                        f'Konstruktor {statement.class_name} erwartet {expected_args} Parameter.',
+                        line=statement.line, filename=self.filename)
                 if len(statement.target.canonical_parts) == 1:
                     declared = self.declared_object_classes.get(statement.target.canonical_parts[0].casefold())
                     if declared is not None and declared != class_name:
@@ -7853,6 +8365,56 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
                             line=statement.line, column=statement.column, filename=self.filename,
                         )
                 self.object_classes[self._object_key(statement.target)] = class_name
+                continue
+            if isinstance(statement, DBaseNativePropertyStatement):
+                if statement.expression is not None:
+                    info = self.analyze_expression(
+                        statement.expression, symbols=globals_work,
+                        expression_info=self.expression_info,
+                        call_bindings=self.call_bindings,
+                    )
+                    if statement.value_type == 'string' and info.kind not in _STRING_KINDS:
+                        raise DBaseCompilerError('String-PROPERTY erwartet String/Char.',
+                                                 line=statement.line, filename=self.filename)
+                    if statement.value_type == 'number' and info.kind not in ('number', 'logical'):
+                        raise DBaseCompilerError('Numerische PROPERTY erwartet Zahl.',
+                                                 line=statement.line, filename=self.filename)
+                continue
+            if isinstance(statement, DBaseNativeMethodStatement):
+                from .object_abi import METHOD_BY_NAME
+                key = self._object_key(statement.target)
+                if key not in self.object_classes or self.object_classes[key] in {'MENU', 'SESSION', 'DATABASE'}:
+                    raise DBaseCompilerError(
+                        f"Objekt '{statement.target.dotted}' wurde nicht als native Klasse erzeugt.",
+                        line=statement.line, column=1, filename=self.filename)
+                _, kind, params, result = METHOD_BY_NAME[statement.method_name.casefold()]
+                if len(params) != bool(statement.argument_name):
+                    raise DBaseCompilerError(
+                        f"Methode {statement.method_name} erwartet {len(params)} Parameter.",
+                        line=statement.line, column=1, filename=self.filename)
+                if kind == 'procedure' and (statement.result_name or statement.print_result):
+                    raise DBaseCompilerError('PROCEDURE hat keinen Rueckgabewert.',
+                        line=statement.line, column=1, filename=self.filename)
+                if statement.print_result and result == 'PVOID':
+                    raise DBaseCompilerError('Rohzeiger kann nicht als dBASE-Text ausgegeben werden.',
+                        line=statement.line, column=1, filename=self.filename)
+                if statement.argument_name:
+                    allowed_classes = self.native_class_names
+                    if statement.argument_name.casefold() not in allowed_classes and statement.argument_name.casefold() not in self.native_pointer_results:
+                        raise DBaseCompilerError('InheritsFrom erwartet einen Klassennamen oder TClass-Zeiger.',
+                            line=statement.line, column=1, filename=self.filename)
+                if statement.result_name:
+                    result_key = statement.result_name.casefold()
+                    if result == 'PVOID':
+                        self.native_pointer_results.add(result_key)
+                    else:
+                        kind_value = 'string' if result == 'LPCSTR' else 'number'
+                        old = globals_work.get(result_key)
+                        label = old.label if old else self.global_labels.setdefault(result_key, _symbol_label(statement.result_name))
+                        state = _DBaseSymbolState(statement.result_name, label, kind_value,
+                            None, True, statement.line, statement.column)
+                        globals_work[result_key] = state
+                        self.all_global_states[result_key] = state
                 continue
             if isinstance(statement, DBaseObjectPropertyStatement):
                 self._analyze_database_property(statement, globals_work)
@@ -7875,7 +8437,18 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
 
 
 def _analyze_program(statements: Tuple[object, ...], *, filename: str, ffi_prototypes=()) -> _DBaseAnalysis:
-    return _DBaseProgramAnalyzer(statements, filename=filename, ffi_prototypes=ffi_prototypes).run()
+    runtime_statements = tuple(s for s in statements if not isinstance(s, DBaseClassDefinition))
+    analyzer = _DBaseProgramAnalyzer(runtime_statements, filename=filename, ffi_prototypes=ffi_prototypes)
+    from .object_abi import native_class_definitions
+    native_definitions = native_class_definitions(
+        tuple(s for s in statements if isinstance(s, DBaseClassDefinition)))
+    analyzer.native_class_names = {s.name.casefold() for s in native_definitions}
+    analyzer.native_class_constructor_arity = {
+        s.name.casefold(): next((len(m.parameters) for m in s.methods
+                                if m.name.casefold() == '__ini__'), 0)
+        for s in native_definitions
+    }
+    return analyzer.run()
 
 
 class _DBaseCodeGenerator(_Stage12CodeGenerator):
@@ -7907,8 +8480,15 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
         "DBaseQtDatabaseCommit",
     )
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, statements, analysis, **kwargs):
+        # Klassen-Metadaten bleiben verfuegbar fuer die VMT-Ausgabe nach der
+        # normalen Programmgenerierung; nur Top-Level-Code wird gefiltert.
+        from .object_abi import native_class_definitions
+        self.native_class_definitions = native_class_definitions(
+            tuple(s for s in statements if isinstance(s, DBaseClassDefinition)))
+        self.native_class_names = {s.name.casefold() for s in self.native_class_definitions}
+        runtime_statements = tuple(s for s in statements if not isinstance(s, DBaseClassDefinition))
+        super().__init__(runtime_statements, analysis, **kwargs)
         self.object_slots: Dict[Tuple[str, ...], str] = {}
 
     def emit_user_call(self, expression: DBaseCallExpression) -> _DBaseCallBinding:
@@ -7989,9 +8569,22 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
                     else:
                         self.emit('    fistp dword ptr [__dbase_temp_number]')
                         self.emit('    push dword ptr [__dbase_temp_number]')
-            self.emit(f'    call {ffi.label}')  # WINAPI/stdcall cleans arguments.
-        for instruction in ffi_return_instructions(ffi.return_type, is64=self.is64):
-            self.emit(instruction)
+            self.emit(f'    call {ffi.label}')
+            if ffi.calling_convention == 'cdecl':
+                from .ffi import ffi_stack_argument_bytes
+                cleanup = ffi_stack_argument_bytes(ffi.argument_types, target='pe32')
+                if cleanup:
+                    self.emit(f'    add esp, {cleanup}')
+            # For stdcall the callee performs stack cleanup (ret N).
+        if binding.return_kind == 'string':
+            from .ffi_string_result import prg_ansi_result
+            for instruction in prg_ansi_result(
+                    binding.result_label, is64=self.is64,
+                    prefix=self.new_label('ffi_ansi_result')):
+                self.emit(instruction)
+        else:
+            for instruction in ffi_return_instructions(ffi.return_type, is64=self.is64):
+                self.emit(instruction)
         return binding
 
     def _object_slot(self, path: DBaseObjectPath) -> str:
@@ -8096,6 +8689,87 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             self.emit("    call DBaseQtSetColorNormal")
             self.emit("    add esp, 8")
 
+    def emit_native_method(self, statement: DBaseNativeMethodStatement) -> None:
+        """Dispatch via VMT on the real runtime object pointer (Self)."""
+        from .object_abi import METHOD_BY_NAME, vmt_label
+        from .ffi_string_result import prg_ansi_result
+        index, kind, params, result_kind = METHOD_BY_NAME[statement.method_name.casefold()]
+        object_slot = self._object_slot(statement.target)
+        # A NULL/freed handle must never become CALL 0; the lookup can also
+        # fail (invalid VMT).  Return zero/empty string on that path.
+        null_label = self.new_label('native_method_null')
+        done_label = self.new_label('native_method_done')
+        if self.is64:
+            self.emit(f'    mov rcx, qword ptr [{object_slot}]')
+            self.emit('    test rcx, rcx')
+            self.emit(f'    jz {null_label}')
+            self.emit(f'    mov edx, {index}')
+            self.emit('    sub rsp, 40')
+            self.emit('    call __dbase_obj_jit_get_virtual_object')
+            self.emit('    add rsp, 40')
+            self.emit('    test rax, rax')
+            self.emit(f'    jz {null_label}')
+            self.emit('    mov r11, rax')
+            self.emit(f'    mov rcx, qword ptr [{object_slot}]')
+            if statement.argument_name:
+                arg = statement.argument_name
+                if arg.casefold() in self.native_class_names:
+                    self.emit(f'    mov rdx, {vmt_label(arg)}')
+                else:
+                    self.emit(f'    mov rdx, qword ptr [{self._object_slot(_dbase_object_path(arg, statement.line))}]')
+            self.emit('    sub rsp, 40')
+            self.emit('    call r11')
+            self.emit('    add rsp, 40')
+        else:
+            self.emit(f'    cmp dword ptr [{object_slot}], 0')
+            self.emit(f'    je {null_label}')
+            self.emit(f'    push {index}')
+            self.emit(f'    push dword ptr [{object_slot}]')
+            self.emit('    call __dbase_obj_jit_get_virtual_object')
+            self.emit('    add esp, 8')
+            self.emit('    test eax, eax')
+            self.emit(f'    jz {null_label}')
+            self.emit('    mov edx, eax')
+            if statement.argument_name:
+                arg = statement.argument_name
+                if arg.casefold() in self.native_class_names:
+                    self.emit(f'    push {vmt_label(arg)}')
+                else:
+                    self.emit(f'    push dword ptr [{self._object_slot(_dbase_object_path(arg, statement.line))}]')
+            self.emit(f'    push dword ptr [{object_slot}]')
+            self.emit('    call edx')
+            self.emit('    add esp, 8' if statement.argument_name else '    add esp, 4')
+        self.emit(f'    jmp {done_label}')
+        self.emit(f'{null_label}:')
+        self.emit('    xor rax, rax' if self.is64 else '    xor eax, eax')
+        self.emit(f'{done_label}:')
+        if statement.method_name.casefold() in {'free', 'freeinstance'}:
+            self.emit(f'    mov {"qword" if self.is64 else "dword"} ptr [{object_slot}], 0')
+        if result_kind == 'PVOID' and statement.result_name:
+            result_slot = self._object_slot(_dbase_object_path(statement.result_name, statement.line))
+            self.emit(f'    mov {"qword" if self.is64 else "dword"} ptr [{result_slot}], {"rax" if self.is64 else "eax"}')
+        elif result_kind in ('CINT', 'BOOL') and (statement.result_name or statement.print_result):
+            result_slot = (self.global_variable_labels[statement.result_name.casefold()]
+                           if statement.result_name else self.new_storage_slot('native_number'))
+            self.emit(f'    mov dword ptr [{result_slot}_num], eax')
+            self.emit(f'    fild dword ptr [{result_slot}_num]')
+            self.emit(f'    fstp qword ptr [{result_slot}_num]')
+            self.emit(f'    mov dword ptr [{result_slot}_type], {_TYPE_NUMBER}')
+            if statement.print_result:
+                self.emit('    fld qword ptr [' + result_slot + '_num]')
+                self.emit_write_number_from_st0('console')
+        elif result_kind == 'LPCSTR' and (statement.result_name or statement.print_result):
+            result_slot = (self.global_variable_labels[statement.result_name.casefold()]
+                           if statement.result_name else self.new_storage_slot('native_text'))
+            for instruction in prg_ansi_result(result_slot, is64=self.is64,
+                                               prefix=self.new_label('class_cstr')):
+                self.emit(instruction)
+            if statement.print_result:
+                self.emit_write_variable_text(result_slot, 'console')
+        if statement.print_result:
+            label, length = self.text_literal('\r\n')
+            self.emit_write_static(label, length, 'console')
+
     def emit_new_object(self, statement: DBaseNewObjectStatement) -> None:
         target_slot = self._object_slot(statement.target)
         self._load_object_handle(statement.owner)
@@ -8106,6 +8780,32 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             create_symbol = "DBaseQtSessionCreate"
         elif class_name == "DATABASE":
             create_symbol = "DBaseQtDatabaseCreate"
+        elif class_name.casefold() in self.native_class_names:
+            from .object_abi import method_label
+            factory = method_label(statement.class_name, 'create')
+            if statement.constructor_arguments:
+                argument_slot = self.new_storage_slot('ctor_arg')
+                self.emit_store_expression_to_slot(statement.constructor_arguments[0], argument_slot)
+                if self.is64:
+                    self.emit(f'    mov rcx, qword ptr [{argument_slot}_ptr]')
+                    self.emit('    sub rsp, 40')
+                    self.emit(f'    call {factory}')
+                    self.emit('    add rsp, 40')
+                    self.emit(f'    mov qword ptr [{target_slot}], rax')
+                else:
+                    self.emit(f'    push dword ptr [{argument_slot}_ptr]')
+                    self.emit(f'    call {factory}')
+                    self.emit('    add esp, 4')
+                    self.emit(f'    mov dword ptr [{target_slot}], eax')
+            else:
+                self.emit('    sub rsp, 40' if self.is64 else f'    call {factory}')
+                if self.is64:
+                    self.emit(f'    call {factory}')
+                    self.emit('    add rsp, 40')
+                    self.emit(f'    mov qword ptr [{target_slot}], rax')
+                else:
+                    self.emit(f'    mov dword ptr [{target_slot}], eax')
+            return
         else:
             raise DBaseCompilerError(
                 f"Unbekannte eingebaute Klasse '{statement.class_name}'.",
@@ -8122,6 +8822,63 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             self.emit(f"    call {create_symbol}")
             self.emit("    add esp, 4")
             self.emit(f"    mov dword ptr [{target_slot}], eax")
+
+    def emit_native_property(self, statement: DBaseNativePropertyStatement) -> None:
+        """Read/write public native CLASS fields through compiled ABI accessors."""
+        def emit_many(*items):
+            for item in items:
+                self.emit(item)
+        from .object_abi import method_label
+        from .ffi_string_result import prg_ansi_result
+        object_slot = self._object_slot(statement.target)
+        is_string = statement.value_type == 'string'
+        name = ('get_' if statement.print_result else 'set_') + statement.property_name
+        label = method_label(statement.declaring_class, name)
+        if statement.expression is not None:
+            value_slot = self.new_storage_slot('native_property_value')
+            self.emit_store_expression_to_slot(statement.expression, value_slot)
+            if not is_string:
+                emit_many(f'    fld qword ptr [{value_slot}_num]')
+                emit_many('    fistp dword ptr [__dbase_temp_number]')
+        skip = self.new_label('native_property_skip')
+        if self.is64:
+            emit_many(f'    mov rcx, qword ptr [{object_slot}]',
+                      '    test rcx, rcx', f'    jz {skip}')
+            if statement.expression is not None:
+                if is_string:
+                    emit_many(f'    mov rdx, qword ptr [{value_slot}_ptr]')
+                else:
+                    emit_many('    mov edx, dword ptr [__dbase_temp_number]')
+            emit_many('    sub rsp, 40', f'    call {label}', '    add rsp, 40')
+        else:
+            emit_many(f'    cmp dword ptr [{object_slot}], 0', f'    je {skip}')
+            if statement.expression is not None:
+                if is_string:
+                    emit_many(f'    push dword ptr [{value_slot}_ptr]')
+                else:
+                    emit_many('    push dword ptr [__dbase_temp_number]')
+            emit_many(f'    push dword ptr [{object_slot}]', f'    call {label}',
+                      f'    add esp, {8 if statement.expression is not None else 4}')
+        if statement.print_result:
+            done = self.new_label('native_property_done')
+            emit_many(f'    jmp {done}', f'{skip}:',
+                      '    xor rax, rax' if self.is64 else '    xor eax, eax',
+                      f'{done}:')
+        else:
+            emit_many(f'{skip}:')
+        if statement.print_result:
+            if is_string:
+                value = self.new_storage_slot('native_property_text')
+                for instruction in prg_ansi_result(value, is64=self.is64,
+                                                   prefix=self.new_label('native_prop_ansi')):
+                    emit_many(instruction)
+                self.emit_write_variable_text(value, 'console')
+            else:
+                emit_many('    mov dword ptr [__dbase_temp_number], eax',
+                          '    fild dword ptr [__dbase_temp_number]')
+                self.emit_write_number_from_st0('console')
+            label_crlf, length = self.text_literal('\r\n')
+            self.emit_write_static(label_crlf, length, 'console')
 
     def emit_session_login(self, statement: DBaseSessionLoginStatement) -> None:
         session_slot = self._object_slot(statement.target)
@@ -8355,6 +9112,14 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
                 flush()
                 self.emit_database_property(statement)
                 self.emit_shutdown_guard(routine_end_label)
+            elif isinstance(statement, DBaseNativePropertyStatement):
+                flush()
+                self.emit_native_property(statement)
+                self.emit_shutdown_guard(routine_end_label)
+            elif isinstance(statement, DBaseNativeMethodStatement):
+                flush()
+                self.emit_native_method(statement)
+                self.emit_shutdown_guard(routine_end_label)
             elif isinstance(statement, DBaseObjectMethodStatement):
                 flush()
                 self.emit_database_method(statement)
@@ -8404,18 +9169,23 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             if show_marker in assembly and default_call not in assembly:
                 assembly = assembly.replace(show_marker, default_call + show_marker, 1)
 
+        if self.native_class_definitions:
+            from .object_abi import inject_class_assembly
+            assembly = inject_class_assembly(assembly, self.native_class_definitions, target=self.target, ffi_prototypes=self.ffi_prototypes, filename=self.filename)
         if self.object_slots:
             object_data = []
             for label in dict.fromkeys(self.object_slots.values()):
                 object_data.append(f"{label}:")
-                object_data.append("    dd 0, 0" if self.is64 else "    dd 0")
+                # Object handles reside in .bss; initialized DD data is not
+                # valid there and was rejected by the PE32/PE64 assembler.
+                object_data.append("    resq 1" if self.is64 else "    resd 1")
             assembly = assembly.rstrip() + "\n" + "\n".join(object_data) + "\n"
         return assembly
 
 
 # Öffentliche Exportliste der additiven Stage-13-Klassen.
 for _name in (
-    "DBaseObjectPath", "DBaseNewObjectStatement", "DBaseSessionLoginStatement",
+    "DBaseObjectPath", "DBaseNewObjectStatement", "DBaseNativePropertyStatement", "DBaseSessionLoginStatement",
     "DBaseLocalObjectDeclaration", "DBaseObjectPropertyStatement", "DBaseObjectMethodStatement", "DBaseMenuFileStatement",
     "DBaseAppColorStatement", "DBASE_SYSTEM_COLOR_NAMES",
     "DBaseSetColorStatement", "DBaseClearScreenStatement", "DBaseSetBorderColorStatement",
@@ -8435,11 +9205,20 @@ def evaluate_dbase_statements(
 ) -> str:
     filtered = tuple(
         statement for statement in statements
-        if not isinstance(statement, (DBaseLocalObjectDeclaration, DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseObjectPropertyStatement, DBaseObjectMethodStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
+        if not isinstance(statement, (DBaseClassDefinition, DBaseNativeMethodStatement, DBaseLocalObjectDeclaration, DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseNativePropertyStatement, DBaseObjectPropertyStatement, DBaseObjectMethodStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
     )
     return _stage12_evaluate_dbase_statements(filtered, filename=filename)
 
 _stage12_compile_dbase_to_assembly = compile_dbase_to_assembly
+
+
+def _stage609_dbase_peephole(result: DBaseCompileResult, target: str, options):
+    from dataclasses import replace
+    from windows_peephole import optimize_windows_assembly
+    optimized = optimize_windows_assembly(
+        result.assembly, target=target, options=options)
+    return replace(result, assembly=optimized.assembly)
+
 
 def compile_dbase_to_assembly(
     source: str,
@@ -8450,7 +9229,20 @@ def compile_dbase_to_assembly(
     workstation_mode: bool = False,
     debug_theme: str = "default",
     include_paths=(),
+    source_kind: str = "program",
+    peephole_options=None,
 ) -> DBaseCompileResult:
+    if str(source_kind).casefold() == "library":
+        from .dll_backend import compile_dbase_class_library
+        library_result = compile_dbase_class_library(
+            source, filename=filename, target=target,
+            include_paths=include_paths, peephole_options=peephole_options,
+        )
+        return _stage609_dbase_peephole(library_result, target, peephole_options)
+    if str(source_kind).casefold() != "program":
+        raise DBaseCompilerError(
+            f"Unbekannte dBASE-Quellart: {source_kind}", filename=filename,
+        )
     result = _stage12_compile_dbase_to_assembly(
         source,
         filename=filename,
@@ -8480,7 +9272,7 @@ def compile_dbase_to_assembly(
         "dBase-Ausbaustufe 29: Schliessen des Hauptfensters beendet alle Dialog-Eventloops und fuehrt den generierten Code ueber einen gemeinsamen Shutdown-/VirtualFree-Cleanup-Pfad.",
     )
     return DBaseCompileResult(
-        assembly=result.assembly,
+        assembly=_stage609_dbase_peephole(result, target, peephole_options).assembly,
         target=result.target,
         windows_application_mode=result.windows_application_mode,
         source_kind=result.source_kind,

@@ -1,0 +1,11 @@
+{
+  "format": "d64-software-installer",
+  "version": 1,
+  "archive": [],
+  "external": [],
+  "sections": {
+    "Session Variable": "{\n  \"version\": 1,\n  \"overrides\": {},\n  \"custom\": {\n    \"%test%\": \"1234\"\n  }\n}"
+  },
+  "general": {},
+  "name": "Test2"
+}

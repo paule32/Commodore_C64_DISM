@@ -6,16 +6,9 @@ dllname "Runtime.dll"
 global __d64_dll_entry
 entry __d64_dll_entry
 %include "Runtime.generated.pe32.asm.imports.inc"
-%line 56
+%line 54
 __d64_dll_entry:
-    push ebp
-    mov ebp, esp
-    cmp dword ptr [ebp+12], 1
-    jne __pas_dll_attach_done_1
-__pas_dll_attach_done_1:
     mov eax, 1
-    mov esp, ebp
-    pop ebp
     ret 12
 
 ; function IntToStr
@@ -141,7 +134,7 @@ __pas_global_globalwindowproc:
     mov edx, 129
     pop eax
     cmp eax, edx
-    jne __pas_if_else_2
+    jne __pas_if_else_1
     lea ecx, [ebp+20]
     mov eax, dword ptr [ecx]
     push eax
@@ -161,7 +154,7 @@ __pas_global_globalwindowproc:
     setne al
     movzx eax, al
     test eax, eax
-    jz __pas_if_else_4
+    jz __pas_if_else_3
     lea ecx, [ebp+8]
     mov eax, dword ptr [ecx]
     push eax
@@ -179,11 +172,11 @@ __pas_global_globalwindowproc:
     mov eax, dword ptr [ecx]
     push eax
     call _SetWindowLongA@12
-    jmp __pas_if_end_3
-__pas_if_else_4:
-__pas_if_end_5:
-    jmp __pas_if_end_3
-__pas_if_else_2:
+    jmp __pas_if_end_2
+__pas_if_else_3:
+__pas_if_end_4:
+    jmp __pas_if_end_2
+__pas_if_else_1:
     mov eax, -21
     push eax
     lea ecx, [ebp+8]
@@ -194,14 +187,14 @@ __pas_if_else_2:
     lea ecx, [ebp-20]
     pop eax
     mov dword ptr [ecx], eax
-__pas_if_end_3:
+__pas_if_end_2:
     lea ecx, [ebp-20]
     mov eax, dword ptr [ecx]
     test eax, eax
     setne al
     movzx eax, al
     test eax, eax
-    jz __pas_if_else_6
+    jz __pas_if_else_5
     lea ecx, [ebp+8]
     mov eax, dword ptr [ecx]
     mov ecx, __pas_param_twindow_dispatchmessage_winhwnd_24
@@ -233,7 +226,7 @@ __pas_if_end_3:
     mov edx, 130
     pop eax
     cmp eax, edx
-    jne __pas_if_else_8
+    jne __pas_if_else_7
     mov eax, 0
     push eax
     mov eax, -21
@@ -265,8 +258,8 @@ __pas_if_end_3:
     mov esp, ebp
     pop ebp
     ret 16
-__pas_if_else_8:
-__pas_if_end_9:
+__pas_if_else_7:
+__pas_if_end_8:
     lea ecx, [ebp+12]
     mov eax, dword ptr [ecx]
     push eax
@@ -274,7 +267,7 @@ __pas_if_end_9:
     mov edx, 2
     pop eax
     cmp eax, edx
-    jne __pas_if_else_10
+    jne __pas_if_else_9
     mov eax, 0
     push eax
     call _PostQuitMessage@4
@@ -295,8 +288,8 @@ __pas_if_end_9:
     mov esp, ebp
     pop ebp
     ret 16
-__pas_if_else_10:
-__pas_if_end_11:
+__pas_if_else_9:
+__pas_if_end_10:
     lea ecx, [ebp-32]
     mov eax, dword ptr [ecx]
     mov edx, dword ptr [ebp-4]
@@ -309,8 +302,8 @@ __pas_if_end_11:
     mov esp, ebp
     pop ebp
     ret 16
-__pas_if_else_6:
-__pas_if_end_7:
+__pas_if_else_5:
+__pas_if_end_6:
     lea ecx, [ebp+12]
     mov eax, dword ptr [ecx]
     push eax
@@ -318,7 +311,7 @@ __pas_if_end_7:
     mov edx, 2
     pop eax
     cmp eax, edx
-    jne __pas_if_else_12
+    jne __pas_if_else_11
     mov eax, 0
     push eax
     call _PostQuitMessage@4
@@ -339,8 +332,8 @@ __pas_if_end_7:
     mov esp, ebp
     pop ebp
     ret 16
-__pas_if_else_12:
-__pas_if_end_13:
+__pas_if_else_11:
+__pas_if_end_12:
     lea ecx, [ebp+20]
     mov eax, dword ptr [ecx]
     push eax
@@ -410,7 +403,7 @@ __pas_global_runmessageloop:
     lea ecx, [ebp-48]
     pop eax
     mov dword ptr [ecx], eax
-__pas_while_condition_14:
+__pas_while_condition_13:
     lea ecx, [ebp-48]
     mov eax, dword ptr [ecx]
     push eax
@@ -418,7 +411,7 @@ __pas_while_condition_14:
     mov edx, 0
     pop eax
     cmp eax, edx
-    jle __pas_while_end_15
+    jle __pas_while_end_14
     lea ecx, [ebp-44]
     push ecx
     call _TranslateMessage@4
@@ -438,8 +431,8 @@ __pas_while_condition_14:
     lea ecx, [ebp-48]
     pop eax
     mov dword ptr [ecx], eax
-    jmp __pas_while_condition_14
-__pas_while_end_15:
+    jmp __pas_while_condition_13
+__pas_while_end_14:
     mov edx, dword ptr [ebp-4]
     xor edx, ebp
     cmp edx, dword ptr [__pas_cookie_secret]
@@ -515,14 +508,14 @@ __pas_method_tobject_free:
     mov edx, eax
     pop eax
     cmp eax, edx
-    je __pas_if_else_16
+    je __pas_if_else_15
     mov eax, esi
     push eax
     call _jit_object_free
     add esp, 4
-    jmp __pas_if_end_17
-__pas_if_else_16:
-__pas_if_end_17:
+    jmp __pas_if_end_16
+__pas_if_else_15:
+__pas_if_end_16:
     mov edx, dword ptr [ebp-4]
     xor edx, ebp
     cmp edx, dword ptr [__pas_cookie_secret]
@@ -552,14 +545,14 @@ __pas_method_tobject_freeinstance:
     mov edx, eax
     pop eax
     cmp eax, edx
-    je __pas_if_else_18
+    je __pas_if_else_17
     mov eax, esi
     push eax
     call _jit_object_instance_free
     add esp, 4
-    jmp __pas_if_end_19
-__pas_if_else_18:
-__pas_if_end_19:
+    jmp __pas_if_end_18
+__pas_if_else_17:
+__pas_if_end_18:
     mov edx, dword ptr [ebp-4]
     xor edx, ebp
     cmp edx, dword ptr [__pas_cookie_secret]
@@ -998,7 +991,7 @@ __pas_method_twindow_create:
     mov edx, 0
     pop eax
     cmp eax, edx
-    jne __pas_if_else_20
+    jne __pas_if_else_19
     mov eax, 0
     push eax
     mov eax, 16
@@ -1016,9 +1009,9 @@ __pas_method_twindow_create:
     mov eax, 3
     push eax
     call _ExitProcess@4
-    jmp __pas_if_end_21
-__pas_if_else_20:
-__pas_if_end_21:
+    jmp __pas_if_end_20
+__pas_if_else_19:
+__pas_if_end_20:
     mov eax, __pas_string_4
     call __pas_print_string
     call __pas_print_newline
@@ -1069,7 +1062,7 @@ __pas_if_end_21:
     mov edx, 0
     pop eax
     cmp eax, edx
-    jne __pas_if_else_22
+    jne __pas_if_else_21
     mov eax, __pas_string_6
     call __pas_print_string
     call __pas_print_newline
@@ -1090,9 +1083,9 @@ __pas_if_end_21:
     mov eax, 2
     push eax
     call _ExitProcess@4
-    jmp __pas_if_end_23
-__pas_if_else_22:
-__pas_if_end_23:
+    jmp __pas_if_end_22
+__pas_if_else_21:
+__pas_if_end_22:
     mov eax, __pas_string_8
     call __pas_print_string
     call __pas_print_newline
@@ -1303,15 +1296,15 @@ __pas_method_tapplication_create:
     push __pas_vmt_tform
     call _jit_object_instance_new
     add esp, 4
-    mov ecx, __pas_ctor_result__ctor_tform_23_30_30
+    mov ecx, __pas_ctor_result__ctor_tform_22_30_30
     mov dword ptr [ecx], eax
     push esi
-    mov ecx, __pas_ctor_result__ctor_tform_23_30_30
+    mov ecx, __pas_ctor_result__ctor_tform_22_30_30
     mov eax, dword ptr [ecx]
     mov esi, eax
     call __pas_method_tform_create
     pop esi
-    mov ecx, __pas_ctor_result__ctor_tform_23_30_30
+    mov ecx, __pas_ctor_result__ctor_tform_22_30_30
     mov eax, dword ptr [ecx]
     push eax
     mov ecx, esi
@@ -1718,218 +1711,98 @@ __d64_cls_tapplication_method_destroy:
 
 global __d64_cls_exception_get_fmessage
 __d64_cls_exception_get_fmessage:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [eax+4]
-    mov byte ptr [edx+0], cl
-    mov cl, byte ptr [eax+5]
-    mov byte ptr [edx+1], cl
-    mov cl, byte ptr [eax+6]
-    mov byte ptr [edx+2], cl
-    mov cl, byte ptr [eax+7]
-    mov byte ptr [edx+3], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [eax+4]
+    mov dword ptr [edx+0], ecx
     ret
 
 global __d64_cls_exception_set_fmessage
 __d64_cls_exception_set_fmessage:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [edx+0]
-    mov byte ptr [eax+4], cl
-    mov cl, byte ptr [edx+1]
-    mov byte ptr [eax+5], cl
-    mov cl, byte ptr [edx+2]
-    mov byte ptr [eax+6], cl
-    mov cl, byte ptr [edx+3]
-    mov byte ptr [eax+7], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [edx+0]
+    mov dword ptr [eax+4], ecx
     ret
 
 global __d64_cls_tform_get_fwidth
 __d64_cls_tform_get_fwidth:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [eax+20]
-    mov byte ptr [edx+0], cl
-    mov cl, byte ptr [eax+21]
-    mov byte ptr [edx+1], cl
-    mov cl, byte ptr [eax+22]
-    mov byte ptr [edx+2], cl
-    mov cl, byte ptr [eax+23]
-    mov byte ptr [edx+3], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [eax+20]
+    mov dword ptr [edx+0], ecx
     ret
 
 global __d64_cls_tform_set_fwidth
 __d64_cls_tform_set_fwidth:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [edx+0]
-    mov byte ptr [eax+20], cl
-    mov cl, byte ptr [edx+1]
-    mov byte ptr [eax+21], cl
-    mov cl, byte ptr [edx+2]
-    mov byte ptr [eax+22], cl
-    mov cl, byte ptr [edx+3]
-    mov byte ptr [eax+23], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [edx+0]
+    mov dword ptr [eax+20], ecx
     ret
 
 global __d64_cls_tform_get_fheight
 __d64_cls_tform_get_fheight:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [eax+24]
-    mov byte ptr [edx+0], cl
-    mov cl, byte ptr [eax+25]
-    mov byte ptr [edx+1], cl
-    mov cl, byte ptr [eax+26]
-    mov byte ptr [edx+2], cl
-    mov cl, byte ptr [eax+27]
-    mov byte ptr [edx+3], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [eax+24]
+    mov dword ptr [edx+0], ecx
     ret
 
 global __d64_cls_tform_set_fheight
 __d64_cls_tform_set_fheight:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [edx+0]
-    mov byte ptr [eax+24], cl
-    mov cl, byte ptr [edx+1]
-    mov byte ptr [eax+25], cl
-    mov cl, byte ptr [edx+2]
-    mov byte ptr [eax+26], cl
-    mov cl, byte ptr [edx+3]
-    mov byte ptr [eax+27], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [edx+0]
+    mov dword ptr [eax+24], ecx
     ret
 
 global __d64_cls_tform_get_fleft
 __d64_cls_tform_get_fleft:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [eax+28]
-    mov byte ptr [edx+0], cl
-    mov cl, byte ptr [eax+29]
-    mov byte ptr [edx+1], cl
-    mov cl, byte ptr [eax+30]
-    mov byte ptr [edx+2], cl
-    mov cl, byte ptr [eax+31]
-    mov byte ptr [edx+3], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [eax+28]
+    mov dword ptr [edx+0], ecx
     ret
 
 global __d64_cls_tform_set_fleft
 __d64_cls_tform_set_fleft:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [edx+0]
-    mov byte ptr [eax+28], cl
-    mov cl, byte ptr [edx+1]
-    mov byte ptr [eax+29], cl
-    mov cl, byte ptr [edx+2]
-    mov byte ptr [eax+30], cl
-    mov cl, byte ptr [edx+3]
-    mov byte ptr [eax+31], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [edx+0]
+    mov dword ptr [eax+28], ecx
     ret
 
 global __d64_cls_tform_get_ftop
 __d64_cls_tform_get_ftop:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [eax+32]
-    mov byte ptr [edx+0], cl
-    mov cl, byte ptr [eax+33]
-    mov byte ptr [edx+1], cl
-    mov cl, byte ptr [eax+34]
-    mov byte ptr [edx+2], cl
-    mov cl, byte ptr [eax+35]
-    mov byte ptr [edx+3], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [eax+32]
+    mov dword ptr [edx+0], ecx
     ret
 
 global __d64_cls_tform_set_ftop
 __d64_cls_tform_set_ftop:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [edx+0]
-    mov byte ptr [eax+32], cl
-    mov cl, byte ptr [edx+1]
-    mov byte ptr [eax+33], cl
-    mov cl, byte ptr [edx+2]
-    mov byte ptr [eax+34], cl
-    mov cl, byte ptr [edx+3]
-    mov byte ptr [eax+35], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [edx+0]
+    mov dword ptr [eax+32], ecx
     ret
 
 global __d64_cls_tform_get_fcaption
 __d64_cls_tform_get_fcaption:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [eax+36]
-    mov byte ptr [edx+0], cl
-    mov cl, byte ptr [eax+37]
-    mov byte ptr [edx+1], cl
-    mov cl, byte ptr [eax+38]
-    mov byte ptr [edx+2], cl
-    mov cl, byte ptr [eax+39]
-    mov byte ptr [edx+3], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [eax+36]
+    mov dword ptr [edx+0], ecx
     ret
 
 global __d64_cls_tform_set_fcaption
 __d64_cls_tform_set_fcaption:
-    push ebp
-    mov ebp, esp
-    mov eax, dword ptr [ebp+8]
-    mov edx, dword ptr [ebp+12]
-    mov cl, byte ptr [edx+0]
-    mov byte ptr [eax+36], cl
-    mov cl, byte ptr [edx+1]
-    mov byte ptr [eax+37], cl
-    mov cl, byte ptr [edx+2]
-    mov byte ptr [eax+38], cl
-    mov cl, byte ptr [edx+3]
-    mov byte ptr [eax+39], cl
-    mov esp, ebp
-    pop ebp
+    mov eax, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    mov ecx, dword ptr [edx+0]
+    mov dword ptr [eax+36], ecx
     ret
 
 ; Stage 240: cdecl JitDestroyProc -> Exception.Destroy
@@ -2029,39 +1902,14 @@ export "TWindow_new_Create", __d64_cls_twindow_new_create
 export "D64_System_Strings_IntToStr", __pas_global_inttostr
 export "D64_System_Strings_StrToInt", __pas_global_strtoint
 
-; Stage 532: PE32 stack cookie (CSPRNG + atomic first writer)
+; Stage 583: PE32 stack cookie services in libd64_runtime.dll
 __pas_cookie_initialize:
-    push ebp
-    mov ebp, esp
-    sub esp, 4
-    mov eax, dword ptr [__pas_cookie_secret]
-    test eax, eax
-    jne __pas_cookie_initialized
-    lea eax, [ebp-4]
-    push 2
-    push 4
-    push eax
-    push 0
-    call __d64_cookie_BCryptGenRandom
-    test eax, eax
-    js __pas_cookie_failure
-    mov edx, dword ptr [ebp-4]
-    or edx, 1
-    push 0
-    push edx
     push __pas_cookie_secret
-    call __d64_cookie_InterlockedCompareExchange
-__pas_cookie_initialized:
-    mov esp, ebp
-    pop ebp
+    call __d64_pas_cookie_initialize32
+    add esp, 4
     ret
 __pas_cookie_failure:
-    push 0
-    push 0
-    push 0
-    call __d64_cookie_RaiseFailFastException
-    push 3221226505
-    call __d64_cookie_ExitProcess
+    jmp __d64_pas_cookie_failure32
 
 __pas_print_string:
     push eax
@@ -2144,8 +1992,5 @@ __pas_param_twindow_dispatchmessage_winhwnd_24: resb 4 ; intern: integer
 __pas_param_twindow_dispatchmessage_msg_25: resb 4 ; intern: integer
 __pas_param_twindow_dispatchmessage_wparam_26: resb 4 ; intern: integer
 __pas_param_twindow_dispatchmessage_lparam_27: resb 4 ; intern: integer
-__pas_ctor_result__ctor_tform_23_30_30: resb 4 ; intern: TForm
+__pas_ctor_result__ctor_tform_22_30_30: resb 4 ; intern: TForm
 __pas_cookie_secret: resd 1
-__pas_double_scratch: resq 1
-__pas_double_int_scratch: resd 1
-__pas_double_buffer: resb 64

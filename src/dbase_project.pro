@@ -3,16 +3,16 @@ Format = dBase2Many Project
 Version = 2
 WorkingDirectory = examples/dbase
 WorkspaceRoot = ..
-ViewState = AAAA/wAAAAD9AAAAAwAAAAAAAAQcAAACKvwCAAAADPwAAABtAAABKgAAAAAA/////AEAAAAC+wAAADIAZABiAGEAcwBlAF8AdABhAGIAbABlAF8AZABlAHMAaQBnAG4AZQByAF8AZABvAGMAawAAAAFGAAAChAAAAAAAAAAA+wAAACoAZABlAHMAawB0AG8AcABfAHMAZQB0AHQAaQBuAGcAcwBfAGQAbwBjAGsAAAABRgAAAvEAAAAAAAAAAPsAAAAqAHAAcgBvAGwAbwBnAF8AawBuAG8AdwBsAGUAZABnAGUAXwBkAG8AYwBrAQAAAG0AAAGYAAAAAAAAAAD7AAAAJgBsAG8AYwBhAGwAaQB6AGUAXwBwAG8AXwBtAG8AXwBkAG8AYwBrAAAAAG0AAAJiAAAAAAAAAAD7AAAANABkAG8AeAB5AGcAZQBuAF8AZABvAGMAdQBtAGUAbgB0AGEAdABpAG8AbgBfAGQAbwBjAGsAAAAAbQAAAioAAAAAAAAAAPsAAAAmAG0AdQBzAGkAYwBfAGsAZQB5AGIAbwBhAHIAZABfAGQAbwBjAGsAAAAAbQAAAwgAAAAAAAAAAPsAAAAsAGQAYgBhAHMAZQBfAHMAcQBsAF8AYgB1AGkAbABkAGUAcgBfAGQAbwBjAGsAAAAAbQAAAp0AAAAAAAAAAPsAAAAyAGQAYgBhAHMAZQBfAHIAZQBwAG8AcgB0AF8AYgB1AGkAbABkAGUAcgBfAGQAbwBjAGsBAAAAbQAAAioAAAAAAAAAAPsAAAAyAGQAYgBhAHMAZQBfAGwAYQBiAGUAbABfAGQAZQBzAGkAZwBuAGUAcgBfAGQAbwBjAGsBAAAAbQAAAi8AAAAAAAAAAPsAAAAgAGgAdABtAGwAXwBlAGQAaQB0AG8AcgBfAGQAbwBjAGsBAAACgQAAAaQAAAAAAAAAAPsAAAAkAG0AYQB0AGgAXwBsAGUAYQByAG4AaQBuAGcAXwBkAG8AYwBrAAAAAG0AAAKVAAAAAAAAAAD7AAAAIABlAF8AYgBhAHUAawBhAHMAdABlAG4AXwBkAG8AYwBrAQAAAG0AAAIqAAAAAAAAAAD8AAAAbgAAAioAAAAAAP////wBAAAAAvsAAAAwAGQAYgBhAHMAZQBfAGYAbwByAG0AXwBwAHIAbwBwAGUAcgB0AHkAXwBkAG8AYwBrAAAAAAMAAAQcAAAAAAAAAAD7AAAAMABkAGIAYQBzAGUAXwBmAG8AcgBtAF8AZABlAHMAaQBnAG4AZQByAF8AZABvAGMAawAAAAEfAAADAAAAAAAAAAAAAAAAAQAAAQgAAAIq/AIAAAAE+wAAACoAbQB1AHMAaQBjAF8AaQBuAHMAdAByAHUAbQBlAG4AdABfAGQAbwBjAGsAAAAAbQAAAwgAAAAAAAAAAPsAAAAmAG8AcABlAG4AcwBzAGwAXwBzAGUAcgB2AGUAcgBfAGQAbwBjAGsAAAAAbgAAAioAAAAAAAAAAPwAAABuAAACmwAAAAAA/////AEAAAAB+wAAACoAcAByAG8AagBlAGMAdABfAHMAZQB0AHQAaQBuAGcAcwBfAGQAbwBjAGsAAAABAwAAAxwAAAAAAAAAAPwAAABuAAACKgAAAOIA/////AEAAAAC+wAAACAAZAA2ADQAXwBjAG8AbgB0AGUAbgB0AF8AZABvAGMAawEAAAMXAAABCAAAAPwAAAEI+wAAAB4AZgBpAGwAZQBzAHkAcwB0AGUAbQBfAGQAbwBjAGsAAAACawAAAbQAAAFAAP///wAAAAMAAAQcAAAAvvwBAAAAAfsAAAAQAGwAbwBnAF8AZABvAGMAawAAAAADAAAEHAAAAOEA////AAADEAAAAioAAAAEAAAABAAAAAgAAAAI/AAAAAEAAAACAAAAAQAAABgAbQBhAGkAbgBfAHQAbwBvAGwAYgBhAHIBAAAAAP////8AAAAAAAAAAA==
-PrimaryDockLayout = {"paired":true,"area":2,"orientation":1,"first":"right_dock","second":"left_dock","sizes":[264,436],"area_width":436,"central_width":784,"separator_x":619}
+ViewState = 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
+PrimaryDockLayout = {"paired":true,"area":2,"orientation":1,"first":"right_dock","second":"left_dock","sizes":[252,320],"area_width":454,"central_width":796,"separator_x":803}
 
 [Session.Geometry]
 Version = 2
 MainWindow = {"x":195,"y":177,"width":1058,"height":687,"maximized":false,"fullscreen":false,"qt_geometry":"AdnQywADAAAAAADDAAAAsQAABOQAAANfAAAAwwAAALEAAATkAAADXwAAAAAAAAAAB4AAAADDAAAAsQAABOQAAANf"}
-CentralArea = {"x":3,"y":110,"width":784,"height":554}
-PrimaryDockArea = {"area":2,"orientation":1,"first":"right_dock","second":"left_dock","sizes":[264,436],"area_width":436,"central_width":784,"separator_x":619}
-FileSystemDock = {"visible":false,"floating":false,"area":2,"x":619,"y":110,"width":436,"height":554}
-ProjectDock = {"visible":true,"floating":false,"area":2,"x":791,"y":110,"width":264,"height":554}
+CentralArea = {"x":3,"y":110,"width":796,"height":554}
+PrimaryDockArea = {"area":2,"orientation":1,"first":"right_dock","second":"left_dock","sizes":[252,320],"area_width":454,"central_width":796,"separator_x":803}
+FileSystemDock = {"visible":false,"floating":false,"area":2,"x":937,"y":110,"width":320,"height":554}
+ProjectDock = {"visible":true,"floating":false,"area":2,"x":803,"y":110,"width":252,"height":554}
 ProtocolDock = {"visible":false,"floating":false,"area":8,"x":0,"y":0,"width":1052,"height":190}
 
 [Session.DBase.IDCounters]
@@ -198,6 +198,15 @@ RelativePaths = true
 [Settings.Windows.32Bit.Compiler.OutputDirectory]
 Title = Windows 32-Bit Compiler Ausgabe-Verzeichnis
 RelativePaths = true
+AssemblerSyntax = intel
+
+[Settings.Windows.32Bit.Compiler.dBASE.Optimierung]
+Title = Windows 32-Bit Compiler dBASE Optimierung
+ExternalUIComponents = false
+CompressJson = false
+StoreBinaryData = false
+StaticNumericInternalSlots = false
+DynamicTypedVariables = false
 
 [Settings.Windows.32Bit.Compiler.Prolog.Optimierung]
 Title = Windows 32-Bit Compiler Prolog Optimierung
@@ -208,6 +217,13 @@ Title = Windows 32-Bit Umgebung
 WorkstationMode = false
 DebugThemeNormal = dark
 DebugThemeWorkstation = dark
+DBaseRuntimeDLLDirectory = 
+DBaseRuntimeDLLPack = false
+DBaseRuntimeConstPool = false
+ResourceASCIINativeUTF16Copy = false
+ResourceUTF8NativeUTF16Copy = false
+ResourceDLLCompressEnabled = false
+ResourceDLLCompressMode = transparent
 
 [Settings.Windows.32Bit.Linker]
 Title = Windows 32-Bit Linker
@@ -259,6 +275,15 @@ RelativePaths = false
 [Settings.Windows.64Bit.Compiler.OutputDirectory]
 Title = Windows 64-Bit Compiler Ausgabe-Verzeichnis
 RelativePaths = true
+AssemblerSyntax = intel
+
+[Settings.Windows.64Bit.Compiler.dBASE.Optimierung]
+Title = Windows 64-Bit Compiler dBASE Optimierung
+ExternalUIComponents = false
+CompressJson = false
+StoreBinaryData = false
+StaticNumericInternalSlots = false
+DynamicTypedVariables = false
 
 [Settings.Windows.64Bit.Compiler.Prolog.Optimierung]
 Title = Windows 64-Bit Compiler Prolog Optimierung
@@ -269,6 +294,13 @@ Title = Windows 64-Bit Umgebung
 WorkstationMode = false
 DebugThemeNormal = default
 DebugThemeWorkstation = default
+DBaseRuntimeDLLDirectory = 
+DBaseRuntimeDLLPack = false
+DBaseRuntimeConstPool = false
+ResourceASCIINativeUTF16Copy = false
+ResourceUTF8NativeUTF16Copy = false
+ResourceDLLCompressEnabled = false
+ResourceDLLCompressMode = transparent
 
 [Settings.Windows.64Bit.Linker]
 Title = Windows 64-Bit Linker
@@ -456,4 +488,60 @@ Enabled = false
 Mode = none
 Search = balanced
 IncludeDecruncherSource = true
+
+[Settings.Windows.32Bit.Debug]
+Title = Windows 32Bit Debug
+EnableDebug = false
+CheckEarlyStart = false
+DwarfEnabled = false
+DwarfVersion = 3
+
+[Settings.Windows.64Bit.Debug]
+Title = Windows 64Bit Debug
+EnableDebug = false
+CheckEarlyStart = false
+DwarfEnabled = false
+DwarfVersion = 3
+
+[Settings.Windows.32Bit.Compiler.Security]
+Title = Windows 32Bit Compiler Sicherheit
+ProtectorCookie = false
+
+[Settings.Windows.64Bit.Compiler.Security]
+Title = Windows 64Bit Compiler Sicherheit
+ProtectorCookie = false
+
+[Settings.Windows.32Bit.Compiler.Pascal.Optimierung]
+Title = Windows 32Bit Pascal Optimierung
+Level = O0
+NoStackFrames = false
+
+[Settings.Windows.64Bit.Compiler.Pascal.Optimierung]
+Title = Windows 64Bit Pascal Optimierung
+Level = O0
+NoStackFrames = false
+
+[Settings.Windows.32Bit.Compiler.Pascal.Imports]
+Title = Windows 32Bit Pascal Imports
+CacheEnabled = true
+PruneUnused = true
+Externalize = false
+UsePreprocessorLines = false
+
+[Settings.Windows.64Bit.Compiler.Pascal.Imports]
+Title = Windows 64Bit Pascal Imports
+CacheEnabled = true
+PruneUnused = true
+Externalize = false
+UsePreprocessorLines = false
+
+[Settings.Windows.32Bit.Compiler.Parallelisierung]
+Title = Windows 32Bit Compiler Parallelisierung
+AutomaticCpuDetection = true
+MaxCompilerProcesses = 2
+
+[Settings.Windows.64Bit.Compiler.Parallelisierung]
+Title = Windows 64Bit Compiler Parallelisierung
+AutomaticCpuDetection = true
+MaxCompilerProcesses = 2
 

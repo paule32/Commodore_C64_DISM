@@ -498,3 +498,5 @@ src/speech/piper/espeak-ng-data/yue_dict
 src/speech/bin/libretro_speech.dll.a
 src/C64_BASIC_Schultafel_3D.mp4
 /src/dist
+src/runtime/compiler/win32/libd64_runtime.dll.a
+/src/runtime/pascal/cache

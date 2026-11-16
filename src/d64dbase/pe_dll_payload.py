@@ -434,7 +434,52 @@ def pack_pe_dll(image: bytes, *, compressor=None) -> bytes:
 
 
 def is_payload_packed(path: Path) -> bool:
+    """Confirm a real D64Z/MSZIP DLL container, not only a .ztext name.
+
+    This is a structural check: it does not execute the loader or decompress
+    the MSZIP stream. Windows LoadLibrary remains the runtime validation.
+    """
     try:
-        return any(s['name']==b'.ztext' for s in parse_pe(Path(path).read_bytes())['secs'])
-    except (OSError,ValueError,struct.error):
+        pe = parse_pe(Path(path).read_bytes())
+        sections = {section['name']: section for section in pe['secs']}
+        text = sections.get(b'.text')
+        loader = sections.get(b'.loader')
+        payload = sections.get(b'.ztext')
+        if text is None or loader is None or payload is None:
+            return False
+        if text['rsize'] or not text['vsize']:
+            return False
+        if not (loader['rva'] <= pe['entry'] < loader['rva'] + loader['vsize']):
+            return False
+        if payload['vsize'] < D64Z.size or len(payload['data']) < D64Z.size:
+            return False
+        magic, version, codec, flags, text_rva, plain_size, packed_size, old_entry, crc = (
+            D64Z.unpack_from(payload['data'])
+        )
+        if magic != b'D64Z' or version != 1 or codec != 2 or flags != 1:
+            return False
+        if text_rva != text['rva'] or plain_size != text['vsize']:
+            return False
+        if not (0 < packed_size <= payload['vsize'] - D64Z.size):
+            return False
+        if packed_size > len(payload['data']) - D64Z.size:
+            return False
+        if not (text['rva'] <= old_entry < text['rva'] + text['vsize']):
+            return False
+        return True
+    except (OSError, ValueError, KeyError, struct.error):
         return False
+
+
+def packed_payload_info(path: Path) -> dict | None:
+    """Return D64Z .text sizes in bytes for status/log output, or None.
+
+    File size alone is not a reliable indicator of compression: PE alignment,
+    loader, import and relocation sections can offset .text savings.
+    """
+    if not is_payload_packed(path):
+        return None
+    pe = parse_pe(Path(path).read_bytes())
+    payload = next(s for s in pe['secs'] if s['name'] == b'.ztext')
+    values = D64Z.unpack_from(payload['data'])
+    return {'original_bytes': values[5], 'compressed_bytes': values[6]}

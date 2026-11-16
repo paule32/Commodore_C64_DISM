@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "examples": [
+    {"text": "Was ist heute für ein Tag?"},
+    {"text": "Heute ist für ein Tag?"},
+    {"text": "Welcher Tag ist heute?"},
+    {"text": "Wo du wohnst?"},
+    {"text": "Der Mann gehen nach Hause."}
+  ]
+}

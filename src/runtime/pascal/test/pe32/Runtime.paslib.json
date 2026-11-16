@@ -1,0 +1,125 @@
+{
+  "exports": [
+    "D64_System_Strings_IntToStr",
+    "D64_System_Strings_StrToInt",
+    "Exception_Create",
+    "Exception_get_Message",
+    "Exception_new_Create",
+    "TApplication_Create",
+    "TApplication_Destroy",
+    "TApplication_new_Create",
+    "TForm_Create",
+    "TForm_Destroy",
+    "TForm_get_Caption",
+    "TForm_get_Height",
+    "TForm_get_Left",
+    "TForm_get_Top",
+    "TForm_get_Width",
+    "TForm_new_Create",
+    "TForm_set_Caption",
+    "TForm_set_Height",
+    "TForm_set_Left",
+    "TForm_set_Top",
+    "TForm_set_Width",
+    "TObject_ClassName",
+    "TObject_ClassNameAddress",
+    "TObject_ClassParent",
+    "TObject_ClassType",
+    "TObject_Create",
+    "TObject_Destroy",
+    "TObject_Free",
+    "TObject_FreeInstance",
+    "TObject_InheritsFrom",
+    "TObject_InstanceSize",
+    "TObject_new_Create",
+    "TWindow_Create",
+    "TWindow_Destroy",
+    "TWindow_DispatchMessage",
+    "TWindow_GetHandle",
+    "TWindow_new_Create"
+  ],
+  "format": "d64-pascal-library-contract",
+  "library": "Runtime.dll",
+  "target": "pe32",
+  "units": {
+    "system": {
+      "classes": [],
+      "name": "System",
+      "routines": []
+    },
+    "system.objects": {
+      "classes": [
+        "TObject"
+      ],
+      "name": "System.Objects",
+      "routines": []
+    },
+    "system.strings": {
+      "classes": [],
+      "name": "System.Strings",
+      "routines": [
+        {
+          "export": "D64_System_Strings_IntToStr",
+          "name": "IntToStr"
+        },
+        {
+          "export": "D64_System_Strings_StrToInt",
+          "name": "StrToInt"
+        }
+      ]
+    },
+    "system.sysutils": {
+      "classes": [
+        "Exception"
+      ],
+      "name": "System.SysUtils",
+      "routines": []
+    },
+    "system.types": {
+      "classes": [],
+      "name": "System.Types",
+      "routines": []
+    },
+    "vcl": {
+      "classes": [],
+      "name": "VCL",
+      "routines": []
+    },
+    "vcl.windows": {
+      "classes": [
+        "TForm",
+        "TWindow"
+      ],
+      "name": "VCL.Windows",
+      "routines": []
+    },
+    "windows": {
+      "classes": [],
+      "name": "Windows",
+      "routines": []
+    },
+    "windows.application": {
+      "classes": [
+        "TApplication"
+      ],
+      "name": "Windows.Application",
+      "routines": []
+    },
+    "windows.kernel": {
+      "classes": [],
+      "name": "Windows.kernel",
+      "routines": []
+    },
+    "windows.types": {
+      "classes": [],
+      "name": "Windows.Types",
+      "routines": []
+    },
+    "windows.user": {
+      "classes": [],
+      "name": "Windows.User",
+      "routines": []
+    }
+  },
+  "version": 1
+}

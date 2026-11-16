@@ -5,8 +5,7 @@
 // ---------------------------------------------------------------------------
 program test_raise;
 
-{$L inttostr.o}
-{$L strtoint.o}
+{$L Runtime}
 
 uses System, Windows;
 

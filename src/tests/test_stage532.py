@@ -50,13 +50,24 @@ def test_opt_in_and_architectures():
         assert "cookie_failure" not in plain
         assert "BCryptGenRandom" not in plain
         assert "cookie_failure" in active
-        assert "BCryptGenRandom" in active
-        assert "InterlockedCompareExchange" in active
-        assert "RaiseFailFastException" in active
+        if bits == 32:
+            # Stage 583 moves the CSPRNG/atomic/fail-fast services into the DLL.
+            assert '"libd64_runtime.dll", "jit_pas_cookie_initialize32"' in active
+            assert '"libd64_runtime.dll", "jit_pas_cookie_failure32"' in active
+            assert "BCryptGenRandom" not in active
+            assert "InterlockedCompareExchange" not in active
+            assert "RaiseFailFastException" not in active
+            assert "push __pas_cookie_secret" in active
+            assert "jmp __d64_pas_cookie_failure32" in active
+        else:
+            assert "BCryptGenRandom" in active
+            assert "InterlockedCompareExchange" in active
+            assert "RaiseFailFastException" in active
         assert "cookie_secret" in active
         assert active.count("cookie_initialize") >= 2
         assert active.count("jne __pas_cookie_failure") >= 2, bits
-        assert "js __pas_cookie_failure" in active  # NTSTATUS failure only
+        if bits == 64:
+            assert "js __pas_cookie_failure" in active  # PE64 inline NTSTATUS check
         assert f"[{'rbp' if bits == 64 else 'ebp'}-{'8' if bits == 64 else '4'}]" in active
         if bits == 64:
             assert "sub rsp, 32\n    call __pas_cookie_initialize\n    add rsp, 32" in active
@@ -89,7 +100,9 @@ def test_early_exit_and_return_paths():
     for impl in (c._PE32CodeGenerator,c._PE64CodeGenerator):
         assembly = impl(prog, stack_protector=True).generate().assembly
         # One validation at EXIT and one at normal fall-through.
-        body = assembly.split("__pas_global_a:",1)[1].split("; Stage 532",1)[0]
+        body = assembly.split("__pas_global_a:",1)[1].split(
+            "; Stage 583" if impl is c._PE32CodeGenerator else "; Stage 532", 1
+        )[0]
         assert body.count("jne __pas_cookie_failure") == 2
         assert body.count("    ret") == 2
 

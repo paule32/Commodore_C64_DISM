@@ -133,8 +133,11 @@ class InstallerIntegrationTests(unittest.TestCase):
         self.assertIn('Qt.UpArrow', source)
         self.assertIn('"Archiv", "archive"', source)
         self.assertIn('"Extern", "external"', source)
-        self.assertIn('"Zeile hinzufügen"', source)
-        self.assertIn('"Ausgewählte Zeilen löschen"', source)
+        # Stage 569: Das Kontextmenue besitzt statt der alten Zeilenaktionen
+        # die neuen Datei-/Pfad- und Entfernen-Aktionen.
+        self.assertIn('"Hinzufügen:  Datei"', source)
+        self.assertIn('"Hinzufügen:  Pfad"', source)
+        self.assertIn('"Entfernen"', source)
 
 
 if __name__ == "__main__":

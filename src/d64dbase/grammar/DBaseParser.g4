@@ -3,7 +3,20 @@ parser grammar DBaseParser;
 options { tokenVocab=DBaseLexer; }
 
 sourceFile
-    : (routineDefinition | topLevelItem NEWLINE* | NEWLINE)* EOF
+    : (routineDefinition | classDefinition | topLevelItem NEWLINE* | NEWLINE)* EOF
+    ;
+
+// Stage 602: declarations and executable dBASE class methods.
+// The productive dBASE-PRG parser is the Python frontend in compiler.py.
+classDefinition
+    : CLASS IDENTIFIER (OF (CUSTOM | IDENTIFIER))?
+      (NEWLINE+ classMemberDefinition)* NEWLINE* ENDCLASS
+    ;
+
+classMemberDefinition
+    : (PROCEDURE | FUNCTION) IDENTIFIER parameterClause? NEWLINE+
+      routineBodyItem*
+      RETURN expression? NEWLINE*
     ;
 
 topLevelItem
@@ -184,6 +197,7 @@ primaryExpression
     | BANG LPAREN expression RPAREN
     | NUMBER
     | HEX_NUMBER
+    | NULL
     | STRING_DOUBLE
     | STRING_SINGLE
     | callExpression
