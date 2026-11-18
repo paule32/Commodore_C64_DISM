@@ -65,6 +65,7 @@ SET         : [Ss][Ee][Tt];
 CLEAR       : [Cc][Ll][Ee][Aa][Rr];
 COLOR       : [Cc][Oo][Ll][Oo][Rr];
 BORDERCOLOR : [Bb][Oo][Rr][Dd][Ee][Rr][Cc][Oo][Ll][Oo][Rr];
+BACKGROUND : [Bb][Aa][Cc][Kk][Gg][Rr][Oo][Uu][Nn][Dd];
 TO        : [Tt][Oo];
 DEBUG     : [Dd][Ee][Bb][Uu][Gg];
 FORMAT    : [Ff][Oo][Rr][Mm][Aa][Tt];

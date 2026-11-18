@@ -213,6 +213,107 @@ class DerivedMethodEmitter(_NativeSourceEmitter):
             return
         super()._emit_expr(expr, line)
 
+    def _emit_background_numeric(self, expr, line):
+        """Integer-only class expressions, including Self.PROPERTY and methods."""
+        from .compiler import (DBaseLiteralExpression, DBaseBinaryExpression,
+                               DBaseCallExpression, DBaseIdentifierExpression,
+                               DBaseUnaryExpression)
+        if isinstance(expr, DBaseIdentifierExpression):
+            field = self.fields.get(expr.name.casefold())
+            if field is not None and field[3] == 'string':
+                self.error('SET BACKGROUND TO: String-PROPERTY ist kein DOS-Farbcode.', line)
+            self._emit_expr(expr, line)
+        elif isinstance(expr, DBaseCallExpression):
+            method = next((m for m in getattr(self.cls, 'methods', ())
+                          if m.name.casefold() == expr.name.casefold()), None)
+            if method is not None:
+                if method.kind != 'function' or method.parameters or expr.arguments:
+                    self.error('SET BACKGROUND TO: Klassenfunktion muss parameterlos sein.', line)
+                if self.is64:
+                    # While evaluating argument #2/#3 earlier operands may
+                    # remain on the stack. Preserve Win64 16-byte alignment.
+                    pad = 8 if self.stack_words % 2 else 0
+                    self.emit('    mov rcx, qword ptr [rbp-8]',
+                              f'    sub rsp, {32 + pad}',
+                              f'    call {method_label(self.cls.name, method.name)}',
+                              f'    add rsp, {32 + pad}')
+                else:
+                    self.emit('    push dword ptr [ebp+8]',
+                              f'    call {method_label(self.cls.name, method.name)}',
+                              '    add esp, 4')
+            else:
+                self._emit_expr(expr, line)
+        elif isinstance(expr, DBaseBinaryExpression) and expr.operator in ('+', '-', '*', '/'):
+            self._emit_background_numeric(expr.left, line)
+            self._push()
+            self._emit_background_numeric(expr.right, line)
+            self._pop_other()
+            if expr.operator == '+':
+                self.emit(f'    add {self.reg}, {self.other}')
+            elif expr.operator == '-':
+                self.emit(f'    sub {self.other}, {self.reg}',
+                          f'    mov {self.reg}, {self.other}')
+            elif expr.operator == '*':
+                self.emit(f'    imul {self.reg}, {self.other}')
+            else:
+                # Signed integer division; a zero divisor is rejected by
+                # the generated CPU instruction (same as other native code).
+                self.emit(f'    push {self.reg}',
+                          f'    mov {self.reg}, {self.other}',
+                          '    cqo' if self.is64 else '    cdq',
+                          f'    idiv {self.ptr} [{self.sp}]',
+                          f'    add {self.sp}, {8 if self.is64 else 4}')
+        elif isinstance(expr, DBaseUnaryExpression):
+            self._emit_background_numeric(expr.operand, line)
+            if expr.operator == '-':
+                self.emit(f'    neg {self.reg}')
+        elif isinstance(expr, DBaseLiteralExpression) and expr.value_type != 'number':
+            self.error('SET BACKGROUND TO: numerischer Ausdruck erwartet.', line)
+        else:
+            self._emit_expr(expr, line)
+
+    def _emit_set_background(self, source, line):
+        from .compiler import _tokenize_dbase_statement, _DBaseExpressionParser
+        # Field access in the native class emitter is already resolved by
+        # _load(PROPERTY), so Self.PROPERTY is an explicit spelling of it.
+        source = re.sub(r'\bself\s*\.\s*([A-Za-z_]\w*)', r'\1', source,
+                        flags=re.I)
+        tokens = _tokenize_dbase_statement(source, filename=self.filename,
+                                           base_offset=line - 1, source="\n" * (line - 1) + source)
+        parser = _DBaseExpressionParser(tokens, filename=self.filename)
+        args = [parser.parse_expression()]
+        while parser.take('COMMA') is not None:
+            args.append(parser.parse_expression())
+        parser._expect_eof()
+        if len(args) not in (1, 3):
+            self.error('SET BACKGROUND TO erwartet genau 1 oder 3 Argumente.', line)
+        for index, expr in enumerate(args):
+            from .compiler import DBaseLiteralExpression
+            max_value = 255 if len(args) == 1 or index == 2 else 15
+            if isinstance(expr, DBaseLiteralExpression) and expr.value_type == 'number':
+                value = expr.value
+                if value != int(value) or not 0 <= value <= max_value:
+                    self.error(f'SET BACKGROUND TO: Wert muss von 0 bis {max_value} reichen.', line)
+            self._emit_background_numeric(expr, line)
+            self._push()
+        if self.is64:
+            self.emit('    pop r8')
+            if len(args) == 3:
+                self.emit('    pop rdx', '    pop rcx')
+            else:
+                self.emit('    mov edx, -1', '    mov ecx, -1')
+            self.stack_words -= len(args)
+            self.emit('    sub rsp, 32', '    call DBaseQtFillBackground', '    add rsp, 32')
+        else:
+            self.emit('    pop edx')
+            if len(args) == 3:
+                self.emit('    pop ecx', '    pop eax')
+                self.emit('    push edx', '    push ecx', '    push eax')
+            else:
+                self.emit('    push edx', '    push -1', '    push -1')
+            self.stack_words -= len(args)
+            self.emit('    call DBaseQtFillBackground', '    add esp, 12')
+
     def _emit_super_init(self, argument, line):
         parent = str(self.cls.parent or '')
         declared = self.classes.get(parent.casefold())
@@ -333,6 +434,9 @@ class DerivedMethodEmitter(_NativeSourceEmitter):
                     self.error('ENDIF ohne IF in Klassenmethode.', lineno)
                 false_label, end_label, done = self.condition_stack.pop()
                 self.emit(f'{end_label if done else false_label}:')
+            elif re.fullmatch(r'(?i)set\s+background\s+to\s+.+', statement):
+                expression_text = re.sub(r'(?i)^set\s+background\s+to\s+', '', statement)
+                self._emit_set_background(expression_text, lineno)
             elif op == 'return':
                 if expr_text:
                     if self.method.kind != 'function' and self.method.name.casefold() != '__ini__':

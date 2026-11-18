@@ -247,6 +247,14 @@ class DBaseClearScreenStatement:
 
 
 @dataclass(frozen=True)
+class DBaseSetBackgroundStatement:
+    """SET BACKGROUND TO char / background, foreground, char (DOS 0..15/255)."""
+    arguments: Tuple[DBaseExpression, ...]
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
 class DBaseSetBorderColorStatement:
     expression: DBaseExpression
     line: int
@@ -2269,7 +2277,7 @@ class _DBaseExpressionParser:
             command = self.current
             if command.kind != "IDENT":
                 raise DBaseCompilerError(
-                    "Nach SET wird FORMAT, DEBUG, SPEECH, COLOR oder BORDERCOLOR erwartet.",
+                    "Nach SET wird FORMAT, DEBUG, SPEECH, COLOR, BACKGROUND oder BORDERCOLOR erwartet.",
                     line=command.line,
                     column=command.column,
                     filename=self.filename,
@@ -2364,6 +2372,18 @@ class _DBaseExpressionParser:
                         line=value.line, column=value.column, filename=self.filename,
                     )
                 return DBaseSetSpeechStatement(option, number, first.line, first.column)
+            if keyword == "background":
+                self._expect_keyword("to", "Nach SET BACKGROUND wird TO erwartet.")
+                arguments = [self.parse_expression()]
+                while self.take("COMMA") is not None:
+                    arguments.append(self.parse_expression())
+                if len(arguments) not in (1, 3):
+                    raise DBaseCompilerError(
+                        "SET BACKGROUND TO erwartet genau 1 oder 3 numerische Ausdruecke.",
+                        line=first.line, column=first.column, filename=self.filename,
+                    )
+                self._expect_eof()
+                return DBaseSetBackgroundStatement(tuple(arguments), first.line, first.column)
             if keyword == "bordercolor":
                 self._expect_keyword("to", "Nach SET BORDERCOLOR wird TO erwartet.")
                 if self.current.kind == "EOF":
@@ -2407,7 +2427,7 @@ class _DBaseExpressionParser:
                     column=first.column,
                 )
             raise DBaseCompilerError(
-                "Nach SET wird FORMAT, DEBUG, SPEECH, COLOR oder BORDERCOLOR erwartet.",
+                "Nach SET wird FORMAT, DEBUG, SPEECH, COLOR, BACKGROUND oder BORDERCOLOR erwartet.",
                 line=command.line,
                 column=command.column,
                 filename=self.filename,
@@ -2416,7 +2436,7 @@ class _DBaseExpressionParser:
         raise DBaseCompilerError(
             "Erwartet wird '?' oder '??', eine Variablenzuweisung, ein Member-Aufruf, "
             "RETURN, CLEAR SCREEN, SAY <text>, SET SPEECH ..., SET FORMAT TO ..., SET DEBUG ON/OFF, "
-            "SET COLOR TO ... oder SET BORDERCOLOR TO ... .",
+            "SET COLOR TO ..., SET BACKGROUND TO ... oder SET BORDERCOLOR TO ... .",
             line=first.line,
             column=first.column,
             filename=self.filename,
@@ -3938,6 +3958,16 @@ class _DBaseProgramAnalyzer:
                 local_symbols.clear()
                 local_symbols.update(merged)
                 continue
+            if isinstance(statement, DBaseSetBackgroundStatement):
+                symbols = self._merged_symbols(self.global_symbols, local_symbols)
+                for index, expression in enumerate(statement.arguments):
+                    info = self.analyze_expression(
+                        expression, symbols=symbols,
+                        expression_info=instance.expression_info,
+                        call_bindings=instance.call_bindings,
+                    )
+                    self._validate_background_argument(info, expression, index, len(statement.arguments))
+                continue
             if isinstance(statement, DBaseSetBorderColorStatement):
                 expression = statement.expression
                 if isinstance(expression, DBaseCallExpression) and expression.name.casefold() != "rgb":
@@ -3984,6 +4014,21 @@ class _DBaseProgramAnalyzer:
             if isinstance(statement, DBaseRoutineDefinition):
                 continue
             raise AssertionError(type(statement))
+
+    def _validate_background_argument(self, info, expression, index, count):
+        if info.kind != "number":
+            raise DBaseCompilerError(
+                "SET BACKGROUND TO erwartet numerische Werte fuer Farben und Zeichen.",
+                line=expression.line, column=expression.column, filename=self.filename,
+            )
+        maximum = 255 if count == 1 or index == 2 else 15
+        if info.constant_value is not None:
+            value = Decimal(info.constant_value.value)
+            if not value.is_finite() or value != value.to_integral_value() or not 0 <= value <= maximum:
+                raise DBaseCompilerError(
+                    f"SET BACKGROUND TO: Parameter {index + 1} muss eine ganze Zahl von 0 bis {maximum} sein.",
+                    line=expression.line, column=expression.column, filename=self.filename,
+                )
 
     def _validate_clear_screen_expression(
         self, expression: DBaseExpression, info: _DBaseExpressionInfo
@@ -4161,6 +4206,14 @@ class _DBaseProgramAnalyzer:
                     column=statement.column,
                     filename=self.filename,
                 )
+            if isinstance(statement, DBaseSetBackgroundStatement):
+                for index, expression in enumerate(statement.arguments):
+                    info = self.analyze_expression(
+                        expression, symbols=globals_work,
+                        expression_info=self.expression_info, call_bindings=self.call_bindings,
+                    )
+                    self._validate_background_argument(info, expression, index, len(statement.arguments))
+                continue
             if isinstance(statement, DBaseSetBorderColorStatement):
                 expression = statement.expression
                 if isinstance(expression, DBaseCallExpression) and expression.name.casefold() != "rgb":
@@ -4244,6 +4297,10 @@ class _DBaseProgramAnalyzer:
                 # Konsoleninhalt ab.
                 console_chunks.clear()
                 continue
+            if isinstance(statement, DBaseSetBackgroundStatement):
+                # Fills the visible terminal area; the compile transcript is
+                # not a snapshot of GUI geometry and intentionally ignores it.
+                continue
             if isinstance(statement, DBaseSetBorderColorStatement):
                 continue
             if isinstance(statement, DBaseAssignmentStatement):
@@ -4301,9 +4358,11 @@ class _DBaseProgramAnalyzer:
 
         console_chunks: list[str] = []
         debug_chunks: list[str] = []
+        # Stage 619: Wie Pascal WriteLn beginnt ?/?? im DEBUG-Kanal.
+        # SET FORMAT TO CONSOLE und SET DEBUG OFF bleiben explizite Opt-outs.
         _, _, transcript_complete, uses_debug_output = self._preview_top_sequence(
             self.statements,
-            format_target="console",
+            format_target="screen",
             debug_override=None,
             console_chunks=console_chunks,
             debug_chunks=debug_chunks,
@@ -4744,6 +4803,8 @@ class _DBaseEvaluator:
             if isinstance(statement, DBaseReturnStatement):
                 value = None if statement.expression is None else self._eval_expr(statement.expression, scope)
                 raise _DBaseReturnSignal(value)
+            if isinstance(statement, DBaseSetBackgroundStatement):
+                continue
             if isinstance(statement, DBaseClearScreenStatement):
                 self.output.clear()
                 continue
@@ -5768,6 +5829,38 @@ class _DBaseCodeGenerator:
                 self.emit(f"{next_label}:")
         self.emit(f"{end_label}:")
 
+    def emit_set_background(self, statement: DBaseSetBackgroundStatement) -> None:
+        """Runtime ABI DBaseQtFillBackground(bg, fg, ch), 32-bit cdecl.
+
+        The single-argument form passes -1/-1 to retain the current
+        background/foreground palette; expressions are evaluated at runtime.
+        """
+        # Store each operand in its own slot to preserve the order and to
+        # prevent subsequent FUNCTION calls from clobbering earlier results.
+        slots = []
+        for expression in statement.arguments:
+            slot = self.new_storage_slot("background_arg")
+            self.emit_numeric_expression(expression)
+            self.emit(f"    fistp dword ptr [{slot}_num]")
+            slots.append(slot)
+        if len(slots) == 1:
+            bg, fg, char = None, None, slots[0]
+        else:
+            bg, fg, char = slots
+        if self.is64:
+            self.emit(f"    mov ecx, dword ptr [{bg}_num]" if bg else "    mov ecx, -1")
+            self.emit(f"    mov edx, dword ptr [{fg}_num]" if fg else "    mov edx, -1")
+            self.emit(f"    mov r8d, dword ptr [{char}_num]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call DBaseQtFillBackground")
+            self.emit("    add rsp, 40")
+        else:
+            self.emit(f"    push dword ptr [{char}_num]")
+            self.emit(f"    push dword ptr [{fg}_num]" if fg else "    push -1")
+            self.emit(f"    push dword ptr [{bg}_num]" if bg else "    push -1")
+            self.emit("    call DBaseQtFillBackground")
+            self.emit("    add esp, 12")
+
     def emit_clear_screen(self, statement: DBaseClearScreenStatement) -> None:
         expression = statement.expression
         if expression is None:
@@ -5960,7 +6053,7 @@ class _DBaseCodeGenerator:
         *,
         routine_end_label: str = "",
         routine_result_label: str = "",
-        format_target: str = "console",
+        format_target: str = "screen",
         debug_override: Optional[bool] = None,
         debug_visible: bool = False,
     ) -> tuple[str, Optional[bool], bool]:
@@ -6004,6 +6097,8 @@ class _DBaseCodeGenerator:
                     self.emit(f"    push {label}")
                     self.emit("    call DBaseQtSetOutputColor")
                     self.emit("    add esp, 8")
+            elif isinstance(statement, DBaseSetBackgroundStatement):
+                self.emit_set_background(statement)
             elif isinstance(statement, DBaseClearScreenStatement):
                 self.emit_clear_screen(statement)
             elif isinstance(statement, DBaseSetBorderColorStatement):
@@ -6351,6 +6446,7 @@ class _DBaseCodeGenerator:
             "DBaseQtAppendConsole",
             "DBaseQtAppendDebug",
             "DBaseQtSetOutputColor",
+            "DBaseQtFillBackground",
             "DBaseQtClearScreen",
             "DBaseQtClearScreenChar",
             "DBaseQtClearScreenColor",
@@ -6517,6 +6613,9 @@ class _DBaseCodeGenerator:
             nul = label == title_label
             self.data_lines.extend(_db_lines(label, payload, nul_terminate=nul))
         self.data_lines.extend([
+            # Stage 619: START DEFAULT = SCREEN (DEBUG), nicht CONSOLE.
+            # Diese Initialisierung muss im PE .data stehen: .bss ist Null.
+            "__dbase_output_format_screen:", "    dd 1",
             # -1 = noch keine explizite SET DEBUG-Anweisung; in diesem Fall
             # wirkt SET FORMAT TO SCREEN/CONSOLE weiter wie bisher.
             "__dbase_output_debug_override:", "    dd -1",
@@ -6539,7 +6638,6 @@ class _DBaseCodeGenerator:
             "__dbase_call_number:", "    resq 1",
             "__dbase_format_buffer:", "    resq 1" if self.is64 else "    resd 1",
             "__dbase_exit_code:", "    resd 1",
-            "__dbase_output_format_screen:", "    resd 1",
             "__dbase_output_debug_visible:", "    resd 1",
             "__dbase_console_number_len:", "    resd 1",
         ]
@@ -6714,7 +6812,8 @@ def compile_dbase_to_assembly(
             "Member-Parameterlisten sind nicht kuenstlich begrenzt; Aufrufe werden in Value-Slots uebergeben.",
             "FUNCTION-Instanzen werden anhand der verwendeten Parameter-Typen spezialisiert und koennen Zahl, String oder Char liefern.",
             "? fuegt CR/LF an; ?? schreibt ohne NewLine.",
-            "Stage 109: Beim ersten ausgefuehrten ?/?? im CONSOLE-Kanal wird per AllocConsole ein nicht modales Windows-Konsolenfenster erzeugt.",
+            "Stage 619: ?/?? schreiben standardmaessig in den DEBUG-QDialog (wie Pascal WriteLn). SET FORMAT TO CONSOLE oder SET DEBUG OFF aktivieren die native Konsole.",
+            "Stage 109: Beim ersten ausgefuehrten ?/?? im expliziten CONSOLE-Kanal wird per AllocConsole ein nicht modales Windows-Konsolenfenster erzeugt.",
             "Stage 109: Der Console-Screen-Buffer umfasst 500 Zeilen Scroll-Back; das Windows-Console-Host-Fenster unterstuetzt Mausrad-Scrollen und automatisches Weiterscrollen am Pufferende.",
             "Stage 109: Beim GUI-Shutdown wird die native Konsole per FreeConsole wieder geschlossen; DEBUG-Ausgabe bleibt im Qt-DEBUG-Kanal.",
             "Bei String/Char + Zahl wird die Zahl automatisch fuer die Textausgabe formatiert.",
@@ -6785,6 +6884,7 @@ __all__ = [
     "DBaseSetSpeechStatement",
     "DBaseSayStatement",
     "DBaseSetColorStatement",
+    "DBaseSetBackgroundStatement",
     "DBaseClearScreenStatement",
     "DBaseSetBorderColorStatement",
     "DBaseReturnStatement",
@@ -9188,7 +9288,7 @@ for _name in (
     "DBaseObjectPath", "DBaseNewObjectStatement", "DBaseNativePropertyStatement", "DBaseSessionLoginStatement",
     "DBaseLocalObjectDeclaration", "DBaseObjectPropertyStatement", "DBaseObjectMethodStatement", "DBaseMenuFileStatement",
     "DBaseAppColorStatement", "DBASE_SYSTEM_COLOR_NAMES",
-    "DBaseSetColorStatement", "DBaseClearScreenStatement", "DBaseSetBorderColorStatement",
+    "DBaseSetColorStatement", "DBaseSetBackgroundStatement", "DBaseClearScreenStatement", "DBaseSetBorderColorStatement",
     "DBASE_FOREGROUND_COLOR_CODES", "DBASE_BACKGROUND_COLOR_CODES",
     "DBaseMenuProperty", "DBaseWithStatement",
 ):

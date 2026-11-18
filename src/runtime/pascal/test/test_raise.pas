@@ -5,7 +5,10 @@
 // ---------------------------------------------------------------------------
 program test_raise;
 
-{$L Runtime}
+{$ifndef __D64_TARGET_PE32__}
+{$L inttostr.o}
+{$L strtoint.o}
+{$endif}
 
 uses System, Windows;
 

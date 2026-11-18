@@ -98,6 +98,7 @@ setStatement
     | SET DEBUG (ON | OFF)
     | SET COLOR TO (STRING_DOUBLE | STRING_SINGLE)
     | SET BORDERCOLOR TO expression
+    | SET BACKGROUND TO expression (COMMA expression COMMA expression)?
     ;
 
 // APPLICATION-Properties verwenden normale Ausdruecke. Fuer _app.menuFile
@@ -201,12 +202,12 @@ primaryExpression
     | STRING_DOUBLE
     | STRING_SINGLE
     | callExpression
-    | IDENTIFIER
+    | objectPath
     | LPAREN expression RPAREN
     ;
 
 callExpression
-    : IDENTIFIER LPAREN argumentList? RPAREN
+    : objectPath LPAREN argumentList? RPAREN
     ;
 
 argumentList

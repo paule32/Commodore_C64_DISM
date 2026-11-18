@@ -21,7 +21,7 @@ $account  = 'dBaseBot';
  * Hier kommt das ECHTE NickServ/SASL-Passwort hinein.
  * KEIN SHA256-Hash!
  */
-$password = 'db74302cd31287b746b557b5257e7b977b7cf24b22485bfc43b85d05f71df33c';
+$password = 'db74302bfc43b85d05f71df33c';
 $channel  = '#DBase';
 $message  = '[C64 DISM] new push on: ' . date('Y-m-d H:i:s');
 

@@ -15,6 +15,7 @@ from .compiler import (
     DBaseSetFormatStatement,
     DBaseSetDebugStatement,
     DBaseSetColorStatement,
+    DBaseSetBackgroundStatement,
     DBaseClearScreenStatement,
     DBaseSetBorderColorStatement,
     DBaseReturnStatement,

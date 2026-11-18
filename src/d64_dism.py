@@ -123843,6 +123843,11 @@ border-radius: 7px;}}"""
             def perform_operation():
                 ok = False
                 failure = None
+                # Stage 620: Nur Aufrufe INNERHALB des laufenden Splash-
+                # Vorgangs duerfen eigene Dock-Slots unmittelbar ausfuehren.
+                # Neue externe Aufrufe, solange der Splash noch zeichnet,
+                # muessen dagegen warten bzw. werden abgewiesen.
+                self._operation_prelude_executing = True
                 try:
                     # Alle QGraphicsScene-/QDockWidget-Zugriffe bleiben im GUI-Thread.
                     ok = bool(operation())
@@ -123851,6 +123856,7 @@ border-radius: 7px;}}"""
                 except Exception as exc:
                     failure = exc
                 finally:
+                    self._operation_prelude_executing = False
                     # WFM-Dock wird bereits von operation() eingeblendet.
                     # Den Vorspann erst im nächsten Paint-Zyklus entfernen.
                     if ok and failure is None:
@@ -148181,6 +148187,24 @@ QFileDialog QComboBox QAbstractItemView {
             _column: int = 0,
         ) -> None:
             kind = self._project_item_kind(item)
+            # Stage 620: Sprite-Blatt und zugehoeriges Dock als EINEN Vorgang
+            # hinter dem Splash laden. Sonst wird _show_c64_tool_dock im
+            # Projektbaum ohne den ueblichen show_*_dock-Slot aufgerufen.
+            if (kind == PROJECT_NODE_C64_SPRITE_FILE
+                    and getattr(self, "_dock_prelude_ready", False)
+                    and not getattr(self, "_dock_prelude_dispatching", False)
+                    and getattr(self, "_operation_prelude", None) is None):
+                def open_sprite_leaf() -> bool:
+                    self._dock_prelude_dispatching = True
+                    try:
+                        self.open_project_item(item, _column)
+                        return True
+                    finally:
+                        self._dock_prelude_dispatching = False
+                return self.run_with_operation_prelude(
+                    "C64 Sprite-Editor", f"{item.text(0)} wird geladen …",
+                    open_sprite_leaf,
+                )
             if self._is_unsaved_dbase_module_leaf(item):
                 if self._confirm_pending_dbase_module_before_other_action(item):
                     self._activate_unsaved_dbase_module_leaf(item)
@@ -148309,12 +148333,24 @@ QFileDialog QComboBox QAbstractItemView {
                             f"{path.name}: Tabellen-Designer geöffnet", 6000
                         )
                 elif role == "queries":
-                    self.show_dbase_sql_builder()
-                    if self.dbase_sql_builder_widget is not None:
+                    # Stage 620: SQL-Projekt und Dock in EINER Vorspann-
+                    # Operation laden. Das anschliessende load_project darf
+                    # nicht vor der verzögerten Dock-Konstruktion laufen.
+                    def open_sql_query() -> bool:
+                        self.show_dbase_sql_builder()
+                        if self.dbase_sql_builder_widget is None:
+                            return False
                         self.dbase_sql_builder_widget.load_project(path)
                         self.statusBar().showMessage(
                             f"{path.name}: SQL Builder geöffnet", 6000
                         )
+                        return True
+
+                    self.run_with_operation_prelude(
+                        "dBASE SQL-Builder",
+                        f"{path.name} wird im SQL-Builder geladen …",
+                        open_sql_query,
+                    )
                 elif role == "reports":
                     if self.open_dbase_report_file(path):
                         self._remember_recent_file(path)
@@ -150322,6 +150358,13 @@ QFileDialog QComboBox QAbstractItemView {
             begin_global_exception_shutdown()
             super().closeEvent(event)
 
+    # Stage 620: Einheitlicher, bereits bei den Projekteinstellungen genutzter
+    # Warte-Splash vor Benutzeraktionen, die ein Docking-Fenster oeffnen.
+    # Die Installation muss vor ExplorerWindow.__init__ erfolgen, weil dort
+    # QAction.triggered.connect() die gebundenen Python-Methoden speichert.
+    from dock_opening_prelude import install_dock_opening_preludes
+    install_dock_opening_preludes(ExplorerWindow)
+
     app = application or QApplication.instance()
     if app is None:
         # Die Stage-258-Qt-Attribute wurden bereits vor QtWebEngine gesetzt.
@@ -150420,6 +150463,9 @@ QFileDialog QComboBox QAbstractItemView {
     window.winId()
     window.show()
     app.processEvents()
+    # Erst nach dem initialen Layout und den automatisch restaurierten Docks
+    # sind explizite Benutzer-Oeffnungsaktionen Splash-pflichtig.
+    window._dock_prelude_ready = True
     window.raise_()
     window.activateWindow()
     if callable(window_shown_callback):

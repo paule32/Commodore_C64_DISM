@@ -290,3 +290,18 @@ verwendet, benötigt weiterhin eine entsprechend neu gebaute Qt5-DLL.
 
 Der Stage-458-Fehler zeigte erwartete `02c943...`, aber gefundene `4c919b...`,
 weil der IDE-Hashfilter die Stage-458-Funktionen nicht ausklammerte.
+
+
+## Stage 619 – PRG DEBUG als eigener Dialog
+
+Normale dBASE-PRG-Programme verwenden ab Stage 619 bei `?` und `??`
+standardmäßig den gleichen unabhängigen Qt5-DEBUG-QDialog wie die
+WFM-Ausgabe (statt eines DEBUG-Tabs). Der Compiler wählt initial `SCREEN`;
+mit `SET FORMAT TO CONSOLE` bzw. `SET DEBUG OFF` wird die native Console
+ausgewählt. `SET DEBUG ON` erzwingt DEBUG auch nach `SET FORMAT TO CONSOLE`.
+
+**Achtung:** Nach Änderungen an `d64qt5_bridge.cpp` ist die DLL selbst neu
+zu bauen (`build_d64qt5_mingw32.bat` mit passender Qt5/MinGW32-Toolchain)
+und als `libd64_qt5.dll` ins Verzeichnis der gelinkten PE32-EXE zu kopieren.
+Die bestehende `libd64_qt5.dll` in älteren `packed(...).zip` wurde noch nicht
+mit dieser QDialog-Änderung gebaut. Auf PE32+ dieselbe Maßnahme mit Qt5/MinGW64.

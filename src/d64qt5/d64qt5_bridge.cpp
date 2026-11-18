@@ -105,6 +105,9 @@
 # include "d64_debug_title_surface.hpp"
 # include "d64_debug_navy_scrollbar.hpp"
 # include "d64_debug_context_menu.hpp"
+# include "d64_turbo_output.hpp"
+# include "d64_turbo_editor.hpp"
+# include "d64_turbo_tools.hpp"
 # include "d64_dbase_runtime.hpp"
 # include "d64_runtime_abi.hpp"
 
@@ -181,6 +184,14 @@ QMenuBar        * g_menu_bar        = nullptr;
 QStatusBar      * g_status_bar      = nullptr;
 
 QPlainTextEdit  * g_console         = nullptr;
+D64TurboOutputWidget * g_turbo_output = nullptr;
+D64ApplicationVfs g_editor_vfs;
+D64TurboEditorWidget * g_turbo_editor = nullptr;
+QList<QPointer<D64TurboEditorWidget>> g_turbo_editors; // Stage 628: mehrere Fenster
+// Stage 631: alle DOS-Desktop-Werkzeuge leben im gleichen QPlainTextEdit-Viewport.
+QList<QPointer<D64TurboToolWindow>> g_turbo_tools;
+QPointer<QWidget> g_turbo_focused_window;
+QMenu *g_turbo_windows_menu = nullptr;
 QPlainTextEdit  * g_debug           = nullptr;
 
 QLineEdit       * g_debug_input     = nullptr;
@@ -532,6 +543,17 @@ protected:
 
     void closeEvent(QCloseEvent *event) override
     {
+        // Stage 628: ALLE geoeffneten Dokumente pruefen; ein Abbruch
+        // verhindert das Schliessen des gesamten Hauptfensters.
+        if (!g_shutdown_requested && (!g_workstation_mode_enabled || g_exit_authorized)) {
+            for (const QPointer<D64TurboEditorWidget> &editor : g_turbo_editors) {
+                if (editor && editor->isVisible() && editor->isModified()
+                    && !editor->confirmClose()) {
+                    event->ignore();
+                    return;
+                }
+            }
+        }
         if (g_exit_authorized || g_shutdown_requested) {
             request_runtime_shutdown();
             QMainWindow::closeEvent(event);
@@ -1753,31 +1775,282 @@ void set_login_session_state(bool value)
     update_menu_access_state();
 }
 
+QFont make_console_grid_font(); // Definition nach create_standard_menu()
+
+// Stage 628: Datei-/Bearbeiten-Menue steuert den gerade aktiven Editor.
+// Andere Fenster werden bei "Neu" NICHT zurueckgesetzt oder geschlossen.
+D64TurboEditorWidget *active_turbo_editor()
+{
+    if (g_turbo_editor && g_turbo_editor->isVisible())
+        return g_turbo_editor;
+    for (int i = g_turbo_editors.size() - 1; i >= 0; --i) {
+        if (g_turbo_editors.at(i) && g_turbo_editors.at(i)->isVisible()) {
+            g_turbo_editor = g_turbo_editors.at(i);
+            return g_turbo_editor;
+        }
+    }
+    g_turbo_editor = nullptr;
+    return nullptr;
+}
+
+// Stage 631: Fensterliste / Anordnung ist eine gemeinsame Runtime-Funktion,
+// nicht pro Editor dupliziert. Qt::WA_DeleteOnClose wird durch QPointer abgefangen.
+QList<QWidget *> visible_turbo_windows()
+{
+    QList<QWidget *> windows;
+    if (g_turbo_output && g_turbo_output->isVisible()) windows.append(g_turbo_output);
+    for (const QPointer<D64TurboEditorWidget> &editor : g_turbo_editors)
+        if (editor && editor->isVisible()) windows.append(editor);
+    for (const QPointer<D64TurboToolWindow> &tool : g_turbo_tools)
+        if (tool && tool->isVisible()) windows.append(tool);
+    return windows;
+}
+
+void activate_turbo_window(QWidget *window)
+{
+    if (!window) return;
+    if (auto *editor = dynamic_cast<D64TurboEditorWidget *>(window))
+        editor->activate();
+    else if (auto *tool = dynamic_cast<D64TurboToolWindow *>(window))
+        tool->activate();
+    else { window->show(); window->raise(); window->setFocus(Qt::OtherFocusReason); }
+    g_turbo_focused_window = window;
+}
+
+void layout_turbo_windows(bool cascade)
+{
+    if (!g_console) return;
+    const QList<QWidget *> windows = visible_turbo_windows();
+    if (windows.isEmpty()) return;
+    const QWidget *viewport = g_console->viewport();
+    const QFontMetrics fm(make_console_grid_font());
+    const int cw = qMax(1, fm.horizontalAdvance(QLatin1Char('M')));
+    const int ch = qMax(1, fm.lineSpacing());
+    const int cols = qMax(1, viewport->width() / cw);
+    const int rows = qMax(1, viewport->height() / ch);
+    const int n = windows.size();
+    const int columns = cascade ? 1 : qMax(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(n)))));
+    const int rowsOfWindows = cascade ? 1 : (n + columns - 1) / columns;
+    for (int i = 0; i < n; ++i) {
+        const int col = cascade ? (2 * i) % qMax(1, cols - 11) : (i % columns) * (cols / columns);
+        const int row = cascade ? (i * 2) % qMax(1, rows - 3) : (i / columns) * (rows / rowsOfWindows);
+        const int winCols = cascade ? qMax(26, cols - 11) : qMax(26, cols / columns);
+        const int winRows = cascade ? qMax(9, rows - 5) : qMax(9, rows / rowsOfWindows);
+        QWidget *window = windows.at(i);
+        if (auto *editor = dynamic_cast<D64TurboEditorWidget *>(window))
+            editor->setGridGeometry(col, row, winCols, winRows);
+        else if (auto *tool = dynamic_cast<D64TurboToolWindow *>(window))
+            tool->setGridGeometry(col, row, winCols, winRows);
+        else if (g_turbo_output && window == g_turbo_output)
+            g_turbo_output->setGridGeometry(col, row, winCols, winRows);
+        window->raise();
+    }
+    g_turbo_focused_window = windows.last();
+}
+
+void rebuild_turbo_windows_menu()
+{
+    if (!g_turbo_windows_menu) return;
+    g_turbo_windows_menu->clear();
+    QAction *cascade = g_turbo_windows_menu->addAction(QStringLiteral("Kaskadieren"));
+    QAction *tile = g_turbo_windows_menu->addAction(QStringLiteral("Nebeneinander"));
+    QObject::connect(cascade, &QAction::triggered, g_turbo_windows_menu,
+                     [](bool) { layout_turbo_windows(true); });
+    QObject::connect(tile, &QAction::triggered, g_turbo_windows_menu,
+                     [](bool) { layout_turbo_windows(false); });
+    const QList<QWidget *> windows = visible_turbo_windows();
+    cascade->setEnabled(!windows.isEmpty());
+    tile->setEnabled(!windows.isEmpty());
+    g_turbo_windows_menu->addSeparator();
+    int editorNumber = 0;
+    for (QWidget *window : windows) {
+        QString caption;
+        if (window == g_turbo_output) caption = QStringLiteral("Ausgabe");
+        else if (auto *editor = dynamic_cast<D64TurboEditorWidget *>(window))
+            caption = QStringLiteral("Editor %1 – %2").arg(++editorNumber).arg(editor->windowCaption());
+        else if (auto *tool = dynamic_cast<D64TurboToolWindow *>(window))
+            caption = tool->windowName();
+        else continue;
+        QAction *action = g_turbo_windows_menu->addAction(caption);
+        action->setCheckable(true);
+        action->setChecked(window == g_turbo_focused_window.data());
+        const QPointer<QWidget> guarded(window);
+        QObject::connect(action, &QAction::triggered, g_turbo_windows_menu,
+                         [guarded](bool) { if (guarded) activate_turbo_window(guarded.data()); });
+    }
+}
+
+D64TurboToolWindow *create_turbo_tool(D64TurboToolWindow::Kind kind)
+{
+    if (!g_console || !g_console->viewport()) return nullptr;
+    auto *tool = new D64TurboToolWindow(g_console->viewport(), kind);
+    const int n = g_turbo_editors.size() + g_turbo_tools.size();
+    tool->setGridFont(make_console_grid_font());
+    tool->setInitialGridPosition(4 + n*3 % 16, 2 + n*2 % 12);
+    tool->setActivationCallback([](D64TurboToolWindow *selected) {
+        g_turbo_focused_window = selected;
+    });
+    tool->setClosedCallback([](D64TurboToolWindow *closed) {
+        for (int i = g_turbo_tools.size()-1; i >= 0; --i)
+            if (!g_turbo_tools.at(i) || g_turbo_tools.at(i)==closed) g_turbo_tools.removeAt(i);
+        if (g_turbo_focused_window == closed) g_turbo_focused_window = nullptr;
+        rebuild_turbo_windows_menu();
+    });
+    g_turbo_tools.append(QPointer<D64TurboToolWindow>(tool));
+    tool->activate();
+    rebuild_turbo_windows_menu();
+    return tool;
+}
+
+D64TurboEditorWidget *create_turbo_editor()
+{
+    if (!g_console || !g_console->viewport()) return nullptr;
+    auto *editor = new D64TurboEditorWidget(g_console->viewport(), &g_editor_vfs);
+    editor->setDarkMode(g_debug_theme_mode != 1);
+    editor->setGridFont(make_console_grid_font());
+    const int count = g_turbo_editors.size();
+    editor->setInitialGridPosition(2 + (count * 3) % 16,
+                                   1 + (count * 2) % 10);
+    editor->setActivationCallback([](D64TurboEditorWidget *focused) {
+        g_turbo_editor = focused;
+        g_turbo_focused_window = focused;
+    });
+    editor->setClosedCallback([](D64TurboEditorWidget *closed) {
+        for (int i = g_turbo_editors.size() - 1; i >= 0; --i) {
+            if (!g_turbo_editors.at(i) || g_turbo_editors.at(i) == closed)
+                g_turbo_editors.removeAt(i);
+        }
+        if (g_turbo_editor == closed) {
+            g_turbo_editor = nullptr;
+            active_turbo_editor();
+        }
+        if (g_turbo_focused_window == closed) g_turbo_focused_window = nullptr;
+        rebuild_turbo_windows_menu();
+    });
+    g_turbo_editors.append(QPointer<D64TurboEditorWidget>(editor));
+    editor->activate();
+    rebuild_turbo_windows_menu();
+    return editor;
+}
+
 void create_standard_menu()
 {
     if (!g_menu_bar || g_default_menu_created)
         return;
 
-    QAction *systemEntry = g_menu_bar->addAction(QStringLiteral("="));
-    systemEntry->setEnabled(true);
+    // Erstes Menue "=" wie im klassischen Turbo Vision.
+    auto *systemMenu = new AsciiPopupMenu(QStringLiteral("="), g_menu_bar);
+    systemMenu->setObjectName(QStringLiteral("dbaseTurboSystemMenu"));
+    for (const auto &entry : {
+         qMakePair(QStringLiteral("Taschenrechner"), D64TurboToolWindow::Calculator),
+         qMakePair(QStringLiteral("ASCII-Zeichentabelle"), D64TurboToolWindow::AsciiTable),
+         qMakePair(QStringLiteral("Puzzle"), D64TurboToolWindow::Puzzle)}) {
+        QAction *action = systemMenu->addAction(entry.first);
+        QObject::connect(action, &QAction::triggered, systemMenu,
+            [kind = entry.second](bool) { create_turbo_tool(kind); });
+    }
+    g_menu_bar->addMenu(systemMenu);
 
     AsciiPopupMenu *fileMenu = new AsciiPopupMenu(QStringLiteral("Datei"), g_menu_bar);
     fileMenu->setPointSize(g_font_point_size);
     fileMenu->setFont(g_menu_bar->font());
 
-    fileMenu->addAction(QStringLiteral("Neu"));
-    fileMenu->addAction(QStringLiteral("Speichern"));
-    fileMenu->addAction(QStringLiteral("Speichern unter..."));
-    fileMenu->addAction(QStringLiteral("Alle Schließen"));
+    auto hookFile = [fileMenu](const QString &text, const QKeySequence &shortcut,
+                                const std::function<void()> &slot) {
+        QAction *action = fileMenu->addAction(text);
+        if (!shortcut.isEmpty()) action->setShortcut(shortcut);
+        QObject::connect(action, &QAction::triggered, fileMenu, [slot](bool) {
+            if (slot) slot();
+        });
+        return action;
+    };
+    hookFile(QStringLiteral("Neu"), QKeySequence::New, []() {
+        create_turbo_editor();
+    });
+    hookFile(QStringLiteral("Öffnen..."), QKeySequence::Open, []() {
+        if (D64TurboEditorWidget *editor = create_turbo_editor()) {
+            if (!editor->openDocument()) editor->close();
+        }
+    });
+    hookFile(QStringLiteral("Speichern"), QKeySequence::Save, []() {
+        if (D64TurboEditorWidget *editor = active_turbo_editor())
+            editor->saveDocument();
+    });
+    hookFile(QStringLiteral("Speichern unter..."), QKeySequence::SaveAs, []() {
+        if (D64TurboEditorWidget *editor = active_turbo_editor())
+            editor->saveDocument(true);
+    });
+    QAction *closeAllEditors = fileMenu->addAction(QStringLiteral("Alle Schließen"));
+    QObject::connect(closeAllEditors, &QAction::triggered, fileMenu, [](bool) {
+        const auto windows = g_turbo_editors;
+        for (const QPointer<D64TurboEditorWidget> &editor : windows) {
+            if (editor && !editor->close()) break; // Abbrechen respektieren
+        }
+    });
     fileMenu->addSeparator();
     g_login_action = fileMenu->addAction(QStringLiteral("Login"));
     g_quit_action = fileMenu->addAction(QStringLiteral("Beenden"));
     g_security_file_menu = fileMenu;
-
     connect_login_action(g_login_action);
     connect_quit_action(g_quit_action);
-
     g_menu_bar->addMenu(fileMenu);
+
+    // Alle Standard-Shortcuts bleiben im Bearbeiten-Menue sichtbar.
+    AsciiPopupMenu *editMenu = new AsciiPopupMenu(QStringLiteral("Bearbeiten"), g_menu_bar);
+    editMenu->setObjectName(QStringLiteral("dbaseTurboEditMenu"));
+    editMenu->setPointSize(g_font_point_size);
+    editMenu->setFont(g_menu_bar->font());
+    auto hookEdit = [editMenu](const QString &text, const QKeySequence &shortcut,
+                                const std::function<void()> &slot) {
+        QAction *action = editMenu->addAction(text);
+        action->setShortcut(shortcut);
+        QObject::connect(action, &QAction::triggered, editMenu, [slot](bool) {
+            if (active_turbo_editor() && slot) slot();
+        });
+    };
+    hookEdit(QStringLiteral("Rückgängig"), QKeySequence(static_cast<int>(Qt::CTRL) | static_cast<int>(Qt::Key_Z)), []() {
+        g_turbo_editor->undo();
+    });
+    hookEdit(QStringLiteral("Wiederherstellen"), QKeySequence(static_cast<int>(Qt::CTRL) | static_cast<int>(Qt::Key_Y)), []() {
+        g_turbo_editor->redo();
+    });
+    editMenu->addSeparator();
+    hookEdit(QStringLiteral("Ausschneiden"), QKeySequence(static_cast<int>(Qt::CTRL) | static_cast<int>(Qt::Key_X)), []() {
+        g_turbo_editor->cut();
+    });
+    hookEdit(QStringLiteral("Kopieren"), QKeySequence(static_cast<int>(Qt::CTRL) | static_cast<int>(Qt::Key_C)), []() {
+        g_turbo_editor->copy();
+    });
+    hookEdit(QStringLiteral("Einfügen"), QKeySequence(static_cast<int>(Qt::CTRL) | static_cast<int>(Qt::Key_V)), []() {
+        g_turbo_editor->paste();
+    });
+    hookEdit(QStringLiteral("Löschen"), QKeySequence(Qt::Key_Delete), []() {
+        g_turbo_editor->deleteSelection();
+    });
+    hookEdit(QStringLiteral("Alles auswählen"), QKeySequence(static_cast<int>(Qt::CTRL) | static_cast<int>(Qt::Key_A)), []() {
+        g_turbo_editor->selectAll();
+    });
+    g_menu_bar->addMenu(editMenu);
+
+    g_turbo_windows_menu = new AsciiPopupMenu(QStringLiteral("Fenster"), g_menu_bar);
+    g_turbo_windows_menu->setObjectName(QStringLiteral("dbaseTurboWindowMenu"));
+    g_menu_bar->addMenu(g_turbo_windows_menu);
+    QObject::connect(g_turbo_windows_menu, &QMenu::aboutToShow,
+                     g_turbo_windows_menu, []() { rebuild_turbo_windows_menu(); });
+    rebuild_turbo_windows_menu();
+
+    auto *helpMenu = new AsciiPopupMenu(QStringLiteral("Hilfe"), g_menu_bar);
+    helpMenu->setObjectName(QStringLiteral("dbaseTurboHelpMenu"));
+    QAction *aboutAction = helpMenu->addAction(QStringLiteral("Über ..."));
+    QObject::connect(aboutAction, &QAction::triggered, helpMenu, [](bool) {
+        D64TurboMessageBox::information(g_console ? g_console->viewport() : g_window,
+            QStringLiteral("dBase2Many · dBL / Turbo Vision\n"
+                           "Taschenrechner, CP437-Zeichentabelle und 15-Puzzle\n"
+                           "Stage 631 – Qt5-Runtime"),
+            QStringLiteral("Information"));
+    });
+    g_menu_bar->addMenu(helpMenu);
+
     g_default_menu_created = true;
     update_menu_access_state();
 }
@@ -1960,9 +2233,9 @@ bool render_console_character_pattern(
     if (!g_console || byteCode < 0 || byteCode > 255)
         return false;
 
-    const QChar glyph = cp437_character(byteCode);
-    if (glyph.isNull() && byteCode != 0)
-        return false;
+    // Die komplette DOS-CP437-Tabelle benutzen, auch fuer die grafischen
+    // Zeichen 0..31 (z.B. Smiley/Herzen) und 127 (Haus-Symbol).
+    const QChar glyph = D64TurboOutputWidget::dosCharacter(byteCode);
 
     QString pattern;
     pattern.reserve(DBASE_TEXT_COLUMNS * DBASE_TEXT_ROWS + (DBASE_TEXT_ROWS - 1));
@@ -7046,6 +7319,12 @@ void apply_output_font()
 
     if (g_console)
         g_console->setFont(font);
+    if (g_turbo_output)
+        g_turbo_output->setGridFont(font);
+    for (const QPointer<D64TurboEditorWidget> &editor : g_turbo_editors)
+        if (editor) editor->setGridFont(font);
+    for (const QPointer<D64TurboToolWindow> &tool : g_turbo_tools)
+        if (tool) tool->setGridFont(font);
     if (g_debug)
         g_debug->setFont(font);
     if (g_debug_input)
@@ -7356,7 +7635,7 @@ void select_console()
     g_stack->setCurrentWidget(g_console_page);
 }
 
-void install_debug_tab(bool select_it)
+[[maybe_unused]] void install_debug_tab(bool select_it)
 {
     if (!g_tab_bar || !g_stack || !g_debug_page)
         return;
@@ -8191,6 +8470,10 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
         return 0;
     }
 
+    // Stage 626: festes, EXE-spezifisches Host-Mapping vor Dateidialogen.
+    const bool editorMappingReady = g_editor_vfs.initialize();
+    Q_UNUSED(editorMappingReady);
+
     // Eine erneute Initialisierung im selben Host-Prozess beginnt mit einem
     // sauberen Shutdown-Zustand.
     g_shutdown_requested = false;
@@ -8303,6 +8586,23 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
     g_console->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     console_layout->addWidget(g_console, 1);
 
+    // Stage 622: eigenstaendiges, gruenes Turbo-Vision-Ausgabefenster
+    // als Kind des sichtbaren 80x25-Konsolen-Viewports. Kein extra Desktop
+    // und keine Abhaengigkeit von dem WFM-/Workstation-DEBUG-QDialog.
+    g_turbo_output = new D64TurboOutputWidget(g_console->viewport());
+    g_turbo_output->setActivationCallback([](D64TurboOutputWidget *window) {
+        g_turbo_focused_window = window;
+    });
+    g_turbo_output->setGridFont(make_console_grid_font());
+    g_turbo_output->hide();
+
+    // Stage 628: Editor-Fenster werden erst auf "Datei -> Neu/Oeffnen"
+    // angelegt. Jedes Dokument erhaelt eine eigene Instanz.
+    g_turbo_editors.clear();
+    g_turbo_tools.clear();
+    g_turbo_focused_window = nullptr;
+    g_turbo_editor = nullptr;
+
     // Feste letzte Zeile innerhalb des Rahmens. QStatusBar ist bewusst ein
     // echtes Widget und kein Text im Dokument; dadurch bleiben spaetere
     // Statusfelder/Widgets erreichbar, waehrend nur die Mitte scrollt.
@@ -8380,6 +8680,9 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
     apply_dark_style();
     apply_output_font();
     apply_console_background();
+    // Stage 626: Datei-/Bearbeiten-Menues fuer Editor auch ohne
+    // programmseitig erzeugte Menubar zur Verfuegung stellen.
+    create_standard_menu();
 
     // Definierter Startzustand: Konsole sichtbar, DEBUG nicht vorhanden.
     remove_debug_tab();
@@ -8536,11 +8839,27 @@ extern "C" D64QT5_API void DBaseQtSetDebugVisible(int visible)
             g_app->processEvents();
         return;
     }
-    // Normaler .prg-/Konsolenmodus behält den bestehenden DEBUG-Tab.
+    // Stage 622: Normales .prg -> gruenes Turbo-Vision-Ausgabefenster
+    // innerhalb des bereits existierenden Qt5-Konsolenfensters.
+    if (!g_wfm_gui_mode && !g_workstation_mode_enabled && g_turbo_output) {
+        if (g_debug_visible) {
+            g_turbo_output->show();
+            g_turbo_output->raise();
+        } else {
+            g_turbo_output->hide();
+        }
+        rebuild_turbo_windows_menu();
+        if (g_app) g_app->processEvents();
+        return;
+    }
+    // Stage 619: Auch normale dBASE-PRG-Programme verwenden denselben
+    // eigenstaendigen Qt5-DEBUG-QDialog wie WFM/Pascal-Workstation.
+    // Es wird kein zusaetzlicher GUI-Tab angelegt. SET DEBUG OFF blendet
+    // ausschliesslich den Dialog aus, ohne alte Ausgabe zu loeschen.
     if (visible)
-        install_debug_tab(true);
-    else
-        remove_debug_tab();
+        show_wfm_output_dialog(nullptr);
+    else if (g_wfm_output_dialog)
+        g_wfm_output_dialog->hide();
     if (g_app)
         g_app->processEvents();
 }
@@ -8599,8 +8918,24 @@ extern "C" D64QT5_API void DBaseQtAppendDebug(const char *text, int length)
         return;
     }
 
-    install_debug_tab(true);
-    append_text(g_debug, text, length);
+    // Stage 622: Standard-PRINT ?/?? wird im DOS-Zeichenfenster sichtbar.
+    // Ein explizites SET DEBUG OFF unterdrueckt die Sichtbarkeit, nicht
+    // die bisherige Textpufferung. WFM und Workstation bleiben unveraendert.
+    if (!g_wfm_gui_mode && !g_workstation_mode_enabled && g_turbo_output && text && length > 0) {
+        g_turbo_output->appendOutput(QString::fromLocal8Bit(text, length));
+        if (g_debug_visible && !g_turbo_output->isVisible()) {
+            g_turbo_output->show();
+            rebuild_turbo_windows_menu();
+        }
+        if (g_turbo_editor && g_turbo_editor->isVisible())
+            g_turbo_editor->raise();
+        return;
+    }
+    // Stage 619: In normalen .prg-Programmen String-Literale im dBASE
+    // Windows-1252-Format dekodieren und im eigenen DEBUG-Dialog zeigen.
+    // Workstation-Runner-Ausgaben wurden bereits oben ueber DOW1 abgewickelt.
+    if (text && length > 0)
+        append_wfm_output(QString::fromLocal8Bit(text, length), false);
 }
 
 extern "C" D64QT5_API int DBaseQtSetColorNormal(const char *name, int length)
@@ -8639,6 +8974,54 @@ extern "C" D64QT5_API int DBaseQtSetOutputColor(const char *spec, int length)
     g_remote_last_snapshot.clear();
     if (g_app)
         g_app->processEvents();
+    return 1;
+}
+
+// Stage 625: SET BACKGROUND TO zeichnet den HINTERGRUND des Hauptfensters.
+// Die Hintergrund-Zeichenflaeche ist g_console (QPlainTextEdit, 80x25),
+// nicht das darueberliegende verschiebbare D64TurboOutputWidget.
+// Bei -1 bleiben die zuletzt konfigurierten Hintergrundfarben erhalten.
+extern "C" D64QT5_API int DBaseQtFillBackground(int bg, int fg, int code)
+{
+    if (code < 0 || code > 255 || bg < -1 || bg > 15 || fg < -1 || fg > 15)
+        return 0;
+    if (!g_console)
+        return 0;
+
+    // Bei einer erneuten Kurzform sollen die Farben der letzten
+    // SET-BACKGROUND-Fuellung erhalten bleiben. Fuer die erste Kurzform
+    // werden die normalen Farben der Konsole uebernommen.
+    const bool alreadyFilled = (g_console_clear_mode == ConsoleClearMode::CharacterPattern);
+    const QColor previousBg = alreadyFilled
+        ? g_console_clear_char_background : g_console_background;
+    const QColor previousFg = alreadyFilled
+        ? g_console_clear_char_foreground : g_output_foreground;
+    const QColor background = (bg >= 0)
+        ? D64TurboOutputWidget::vgaColor(bg) : previousBg;
+    const QColor foreground = (fg >= 0)
+        ? D64TurboOutputWidget::vgaColor(fg) : previousFg;
+
+    // Vorhandenen Zeichencode-/Zoom-Mechanismus der Hauptkonsole nutzen.
+    // Er schreibt das CP437-Fuellzeichen mit Vorder- und Hintergrundfarbe
+    // in g_console und wird beim Lupen-Zoom erneut auf 80x25 gerastert.
+    if (!render_console_character_pattern(code, foreground, background))
+        return 0;
+
+    g_console_clear_mode = ConsoleClearMode::CharacterPattern;
+    g_console_clear_char_code = code;
+    g_console_clear_char_foreground = foreground;
+    g_console_clear_char_background = background;
+    g_terminal_template_dirty = true;
+    g_remote_last_snapshot.clear();
+
+    // Keine automatische Anzeige, Farbveraenderung oder Fuellung des
+    // gruennen Turbo-Vision-Ausgabefensters. Bereits geoeffnete Fenster
+    // bleiben oberhalb des QPlainTextEdit; ein verdeckter Desktopteil
+    // wird beim Verschieben durch Qt automatisch wieder dargestellt.
+    if (g_turbo_output && g_turbo_output->isVisible())
+        g_turbo_output->raise();
+    if (g_turbo_editor && g_turbo_editor->isVisible())
+        g_turbo_editor->raise();
     return 1;
 }
 
@@ -9770,16 +10153,25 @@ static void apply_wfm_debug_theme()
             "QDialog#dbaseWorkstationOutputDialog{background:#171717;color:#ededed;}"
             "QDialog#dbaseWorkstationOutputDialog QWidget#qt_scrollarea_viewport{background:#101010;color:#ededed;}"
             "QPlainTextEdit#dbaseWorkstationOutput{"
-            "background:#101010;color:#e8e8e8;border:1px solid #315581;"
+            "background:#101010;color:#d0d0d0;border:1px solid #315581;"
             "selection-background-color:#0b2f63;selection-color:#ffffff;}"
         );
     } else {
         style = QStringLiteral(
             "QDialog#dbaseWorkstationOutputDialog{background:#f0f0f0;color:#111111;}"
             "QPlainTextEdit#dbaseWorkstationOutput{"
-            "background:#ffffff;color:#111111;border:1px solid #b0b0b0;"
+            "background:#ffffff;color:#454545;border:1px solid #b0b0b0;"
             "selection-background-color:#cfe4f7;selection-color:#000000;}"
         );
+    }
+    // Stage 621: DEBUG-Schriftfarbe ausdruecklich grau halten. Die
+    // QPalette dient als Fallback, falls ein fremdes globales Stylesheet die
+    // Textfarbe nicht von unserer QPlainTextEdit-Regel uebernimmt.
+    if (g_wfm_output_edit) {
+        QPalette palette = g_wfm_output_edit->palette();
+        palette.setColor(QPalette::Base, dark ? QColor("#101010") : QColor("#ffffff"));
+        palette.setColor(QPalette::Text, dark ? QColor("#d0d0d0") : QColor("#454545"));
+        g_wfm_output_edit->setPalette(palette);
     }
     // Stage 313: Beide Scrollbalken navyblau, auch horizontal.
     debugDialog->setStyleSheet(style + dbase_debug_navy_scrollbars());
@@ -9819,15 +10211,13 @@ static void ensure_wfm_output_dialog()
     // Im JOINED-Modus darf kein zweites lokales DEBUG-Fenster entstehen.
     if (!g_app || g_shutdown_requested)
         return;
-#ifdef _WIN32
-    // Bei Ausfall der Runner-Pipe ist ein lokaler Fallback auch im
-    // JOINED-Prozess noetig. Angelegt wird er nur nach Transportfehler.
-    if (!g_wfm_gui_mode && !g_workstation_mode_enabled)
-        return;
-#else
-    if (!g_wfm_gui_mode)
-        return;
-#endif
+    // Stage 621: Auch eine normale, direkt gestartete dBASE-.prg-EXE darf
+    // denselben lokalen DEBUG-QDialog wie eine WFM-/Workstation-Anwendung
+    // verwenden. Der bisherige Guard (!g_wfm_gui_mode &&
+    // !g_workstation_mode_enabled) verhinderte seine Erzeugung vollstaendig:
+    // DBaseQtAppendDebug() lief ins Leere, obwohl der Compiler ? korrekt
+    // zum DEBUG-Kanal routete. Im Runner-Modus wird diese Funktion weiterhin
+    // nur als Fallback nach einem fehlgeschlagenen Pipe-Transfer aufgerufen.
     if (g_wfm_output_dialog && g_wfm_output_edit)
         return;
 
@@ -10840,6 +11230,12 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     g_prolog_input = nullptr;
     g_prolog_layout_filter = nullptr;
 
+    g_turbo_editor = nullptr; // aktive Instanz (vor Parent-Loeschung freigeben)
+    g_turbo_editors.clear(); // QPointer: Ownership bleibt beim Viewport
+    g_turbo_tools.clear();
+    g_turbo_focused_window = nullptr;
+    g_turbo_windows_menu = nullptr;
+    g_turbo_output = nullptr; // Kind von g_window / g_console-Viewport
     delete g_window;
     g_window = nullptr;
     g_root = nullptr;
@@ -10874,6 +11270,7 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     g_default_menu_created = false;
     g_font_point_size = 10;
     g_console_font_family.clear();
+    g_editor_vfs = D64ApplicationVfs();
     g_console_background = QColor(0, 0, 0);
     g_console_border_color = QColor(255, 255, 255);
     g_output_foreground = QColor(169, 169, 169);

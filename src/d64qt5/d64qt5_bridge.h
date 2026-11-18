@@ -105,6 +105,7 @@ D64QT5_API void DBaseQtAppendConsole(const char *text, int length);
 D64QT5_API void DBaseQtAppendDebug(const char *text, int length);
 D64QT5_API int  DBaseQtSetColorNormal(const char *name, int length);
 D64QT5_API int  DBaseQtSetOutputColor(const char *spec, int length);
+D64QT5_API int  DBaseQtFillBackground(int bg, int fg, int code);
 D64QT5_API void DBaseQtClearScreen(void);
 D64QT5_API int  DBaseQtClearScreenChar(double code);
 D64QT5_API int  DBaseQtClearScreenColor(const char *name, int length);

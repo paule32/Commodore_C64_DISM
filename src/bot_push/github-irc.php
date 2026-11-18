@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-const WEBHOOK_SECRET = 'db74302cd31287b746b557b5257e7b977b7cf24b22485bfc43b85d05f71df33c';
+const WEBHOOK_SECRET = 'db74c43b85d05f71df33c';
 
 $token = $_SERVER['HTTP_X_WEBHOOK_TOKEN'] ?? '';
 
