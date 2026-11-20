@@ -309,6 +309,68 @@ def externalize_windows_imports(assembly: str, assembly_path: str | Path) -> tup
     return ''.join(remaining), include_path, ''.join(imports)
 
 
+def externalize_windows_exports(
+    assembly: str, assembly_path: str | Path,
+) -> tuple[str, Path | None, str | None]:
+    """Move native dBASE DLL EXPORT directives into an adjacent target .inc.
+
+    For ``System.SysUtils.generated.pe32.asm`` the result is
+    ``System.SysUtils.pe32.inc``.  ``%line N`` following the include restores
+    the logical position of the next retained line, so diagnostics still
+    point into the original generated assembly.  The internal assembler
+    separately tracks include-file locations.
+
+    The function is pure: GUI build code commits both the .inc and the ASM.
+    """
+    original = str(assembly)
+    rows = original.splitlines(keepends=True)
+    export_pattern = re.compile(r'^\s*export\s+[^;\r\n]+(?:\s*;.*)?$', re.I)
+    indices = [i for i, raw in enumerate(rows)
+               if export_pattern.fullmatch(raw.rstrip('\r\n'))]
+    if not indices:
+        return original, None, None
+
+    asm_path = Path(assembly_path)
+    match = re.fullmatch(
+        r'(.+)\.generated\.(pe32|pe64)\.asm', asm_path.name, re.I)
+    if match:
+        include_name = match.group(1) + '.' + match.group(2).lower() + '.inc'
+    else:
+        # Also allow direct calls with a hand-written filename.
+        match = re.fullmatch(r'(.+)\.(pe32|pe64)\.asm', asm_path.name, re.I)
+        if match:
+            include_name = match.group(1) + '.' + match.group(2).lower() + '.inc'
+        else:
+            raise ValueError(
+                'EXPORT-Auslagerung erwartet *.generated.pe32.asm oder '
+                '*.generated.pe64.asm (auch *.pe32.asm/*.pe64.asm).')
+    include_path = asm_path.with_name(include_name)
+    newline = '\r\n' if '\r\n' in original else '\n'
+    selected = set(indices)
+    exports = [rows[i].rstrip('\r\n') for i in indices]
+    output = []
+    included = False
+    cursor = 0
+    while cursor < len(rows):
+        if cursor not in selected:
+            output.append(rows[cursor])
+            cursor += 1
+            continue
+        # Adjacent export directives form one include site; source comments
+        # and non-export directives are retained in their original order.
+        end = cursor + 1
+        while end < len(rows) and end in selected:
+            end += 1
+        if not included:
+            output.append(f'%include "{include_name}"{newline}')
+            included = True
+        # NASM semantics: the *next* line is restored to its original
+        # 1-based line number, even when the export block had many lines.
+        output.append(f'%line {end + 1}{newline}')
+        cursor = end
+    return ''.join(output), include_path, newline.join(exports) + newline
+
+
 def externalize_windows_wfm_payload(
     assembly: str, assembly_path: str | Path
 ) -> tuple[str, Path | None, str | None]:

@@ -35427,6 +35427,7 @@ PE32_DOS_HEADER_SIZE = 0x40  # Stage216: PE-Signatur direkt hinter IMAGE_DOS_HEA
 # Stage 470: shared pure-Python preprocessor (no NASM/external build tool).
 from windows_asm_macros import (
     WindowsAsmMacroError, preprocess_windows_asm, externalize_windows_imports,
+    externalize_windows_exports,
     externalize_windows_wfm_payload,
 )
 
@@ -35968,6 +35969,14 @@ def _parse_pe32_source_lines(
             return 1 if not operands else 3
         if mnemonic in {"nop", "leave", "int3", "pushad", "popad", "cdq", "cld", "std", "cli", "sti"}:
             return 1
+        # x87 FINIT without WAIT: DB E3 (two bytes, no operands).
+        # Keep the pass-one size identical to the pass-two encoding.
+        if mnemonic == "fninit" and not operands:
+            return 2
+        # Stage 648: native block copy in dBASE CATCH/THROW (F3 A5).
+        # Keep both PE32 passes in sync; the instruction is exactly 2 bytes.
+        if mnemonic == "rep" and operands == ["movsd"]:
+            return 2
         if mnemonic == "int" and len(operands) == 1:
             return 2
         if mnemonic in {"call", "jmp"} and len(operands) == 1:
@@ -36379,6 +36388,15 @@ def _assemble_pe32_preprocessed(source, macro_result, progress_callback=None) ->
         operands = _x86_split_operands(inst_parts[1] if len(inst_parts) > 1 else "")
         instruction_count += 1
 
+        # FNINIT initializes the x87 FPU; unlike NOP this resets its state.
+        # Intel opcode: DB E3.  Reject unexpected operands in the normal
+        # unsupported-instruction path below.
+        if mnemonic == "fninit" and not operands:
+            output.extend((0xDB, 0xE3))
+            continue
+        if mnemonic == "rep" and operands == ["movsd"]:
+            output.extend((0xF3, 0xA5))
+            continue
         # Minimal x87 subset for native PROLOG IEEE-754 Double arithmetic.
         if mnemonic in {"fld", "fild", "fstp", "fistp"} and len(operands) == 1:
             op = operands[0].strip()
@@ -40237,6 +40255,9 @@ def _encode_pe64_instruction(text: str, line: int, offset: int, *, relocs: Optio
     if mnemonic == "int3": return b"\xCC"
     if mnemonic == "cdq": return b"\x99"
     if mnemonic == "cqo": return b"\x48\x99"
+    if mnemonic == "fninit" and not ops: return b"\xDB\xE3"
+    # Stage 648: string instruction with an explicit REP prefix.
+    if mnemonic == "rep" and ops == ["movsd"]: return b"\xF3\xA5"
     if mnemonic == "leave": return b"\xC9"
     if mnemonic == "ret":
         if not ops: return b"\xC3"
@@ -50688,6 +50709,11 @@ PROJECT_NODE_MARKER_LINE = "project_marker_line"
 
 PROJECT_NODE_ARCHIVE_ROOT = "archive_root"
 PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT = "prolog_knowledge_root"
+# Stage 652: Turbo-Vision Help sources live in their own project node.
+PROJECT_TURBO_HELP_ENTRY_KEY = "__project_turbo_help_sources__"
+PROJECT_TURBO_HELP_SECTION = "Category.TurboHelp"
+PROJECT_NODE_TURBO_HELP_ROOT = "turbo_help_root"
+PROJECT_NODE_TURBO_HELP_FILE = "turbo_help_file"
 PROJECT_NODE_PROLOG_KNOWLEDGE_FILE = "prolog_knowledge_file"
 PROJECT_NODE_ARCHIVE = "archive"
 PROJECT_NODE_ARCHIVE_OBJECT = "archive_object"
@@ -51689,6 +51715,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     # hält diese Hierarchie in der *.pro-Datei getrennt von normalen C-Dateien.
     entries[PROJECT_C_ARCHIVES_KEY] = []
     entries[PROJECT_PROLOG_KNOWLEDGE_KEY] = []
+    entries[PROJECT_TURBO_HELP_ENTRY_KEY] = []
     entries[PROJECT_C64_RESOURCE_ENTRY_KEY] = []
     entries[PROJECT_C64_SPRITES_ENTRY_KEY] = []
     for _key in PROJECT_C64_SOURCE_KEYS.values():
@@ -52083,6 +52110,16 @@ def format_project_ini(
         for row in entries.get(PROJECT_NAMED_ASSIGNMENTS_KEY, ())
     }
     encode_named_project_metadata(parser, _named_names, _named_selection, _named_files)
+
+    # Stage 652: persist the Turbo Help project leaves, not unsaved tabs.
+    parser[PROJECT_TURBO_HELP_SECTION] = {"Title": "Turbo Help"}
+    for _n, _item in enumerate(entries.get(PROJECT_TURBO_HELP_ENTRY_KEY, ()), 1):
+        _path = str(_item.get("path", "")).strip()
+        if _path and Path(_path).suffix.casefold() == ".thlp":
+            parser[PROJECT_TURBO_HELP_SECTION][f"Item{_n:04d}"] = json.dumps({
+                "title": str(_item.get("title", "") or Path(_path).name),
+                "path": _project_storage_path(_path, project_path),
+            }, ensure_ascii=False, separators=(",", ":"))
 
     for key, title, _extensions in PROJECT_CATEGORIES:
         section = f"Category.{key}"
@@ -53896,6 +53933,22 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                 entries[_ls["output_key"]] = [dict(item) for item in entries[_settings["output_key"]]]
                 entries[_ls["cache_key"]] = [dict(item) for item in entries.get(_settings["asm_cache_key"], ())]
 
+    # Stage 652: load Turbo Help source leaves from the .pro file.
+    if parser.has_section(PROJECT_TURBO_HELP_SECTION):
+        for _key, _text in sorted(parser.items(PROJECT_TURBO_HELP_SECTION)):
+            if not _key.casefold().startswith("item"):
+                continue
+            try:
+                _payload = json.loads(_text)
+            except (ValueError, TypeError):
+                continue
+            _path = str(_payload.get("path", "")).strip() if isinstance(_payload, dict) else ""
+            if _path and Path(_path).suffix.casefold() == ".thlp":
+                _loaded = _project_loaded_path(_path, Path(project_path))
+                entries[PROJECT_TURBO_HELP_ENTRY_KEY].append({
+                    "path": _loaded,
+                    "title": str(_payload.get("title", "") or Path(_loaded).name),
+                })
     return entries
 
 
@@ -113527,6 +113580,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             # Stage ASM 77: nativer PyQt5 HTML-WYSIWYG-Editor.
             self.html_editor_dock = None
             self.html_editor_widget = None
+            # Stage 654: Dock und Editor der Turbo-Hilfe getrennt initialisieren.
+            # Ein Projektblatt kann vor dem ersten Aufruf des Menüs geöffnet werden.
+            self.turbo_help_compiler_dock = None
+            self.turbo_help_compiler_editor = None
             # Stage ASM 91: elektronischer Schaltungsbaukasten.
             self.e_baukasten_dock = None
             self.e_baukasten_widget = None
@@ -125043,6 +125100,332 @@ border-radius: 7px;}}"""
             self.statusBar().showMessage("HTML Editor geöffnet", 4000)
 
         # -------------------------------------------------------------------
+        # Stage 651: Turbo Vision Hilfecompiler (nur Python/dBase2Many).
+        # Das Dock und F2 laufen im Python-Hauptprozess. Die Darstellung
+        # erfolgt in einem separaten Qt5-Bridge-DEBUG-Fenster (GNU-MO-Datei).
+        # Die Bridge stellt weder Compiler noch Hilfecompiler-Menü bereit.
+        # -------------------------------------------------------------------
+        def _turbo_help_active_editor(self):
+            """Resolve the actual editor widget; never trust QAction/Qt bool results.
+
+            A project-tree click may open the dock for the first time, or a
+            restored dock may already own the editor while the cached reference
+            is missing/invalid. Only a real TurboHelpEditor is returned.
+            """
+            from turbo_help_gui import TurboHelpEditor
+
+            editor = getattr(self, "turbo_help_compiler_editor", None)
+            if isinstance(editor, TurboHelpEditor):
+                return editor
+            dock = getattr(self, "turbo_help_compiler_dock", None)
+            candidate = dock.widget() if dock is not None else None
+            if isinstance(candidate, TurboHelpEditor):
+                self.turbo_help_compiler_editor = candidate
+                return candidate
+            return None
+
+        def _add_project_turbo_help_file(self, path, *, title="", mark_modified=True):
+            root = getattr(self, "project_turbo_help_root", None)
+            if root is None:
+                return None
+            path = Path(path).expanduser().resolve()
+            if path.suffix.casefold() != ".thlp":
+                return None
+            for i in range(root.childCount()):
+                child = root.child(i)
+                if str(child.data(0, Qt.UserRole + 302) or "").casefold() == str(path).casefold():
+                    return child
+            child = QTreeWidgetItem(root, [str(title or path.name)])
+            child.setData(0, Qt.UserRole + 302, str(path))
+            child.setData(0, Qt.UserRole + 303, PROJECT_NODE_TURBO_HELP_FILE)
+            child.setToolTip(0, str(path))
+            child.setIcon(0, self.icon_provider.icon(QFileInfo(str(path))))
+            root.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            editor = self._turbo_help_active_editor()
+            if editor is not None:
+                editor.project_sources = [
+                    Path(root.child(i).data(0, Qt.UserRole + 302))
+                    for i in range(root.childCount())
+                    if root.child(i).data(0, Qt.UserRole + 302)
+                ]
+            return child
+
+        def _turbo_help_document_saved(self, filename: str, edit=None) -> None:
+            # Convert a temporary tree leaf into a real persisted THLP leaf.
+            path = Path(filename).resolve()
+            pending = getattr(self, "_turbo_help_pending_leaves", {})
+            leaf = pending.pop(edit, None)
+            if leaf is not None and leaf.parent() is getattr(self, "project_turbo_help_root", None):
+                leaf.setText(0, path.name)
+                leaf.setData(0, Qt.UserRole + 302, str(path))
+                leaf.setToolTip(0, str(path))
+                leaf.setIcon(0, self.icon_provider.icon(QFileInfo(str(path))))
+                self.set_project_modified(True)
+                editor = self._turbo_help_active_editor()
+                if editor is not None:
+                    root = self.project_turbo_help_root
+                    editor.project_sources = [
+                        Path(root.child(i).data(0, Qt.UserRole + 302))
+                        for i in range(root.childCount())
+                        if root.child(i).data(0, Qt.UserRole + 302)
+                    ]
+                return
+            self._add_project_turbo_help_file(path)
+
+        def _project_turbo_help_add(self):
+            directory = (Path(self.current_project_path).parent
+                         if getattr(self, "current_project_path", None) else self.current_directory)
+            filenames, _ = QFileDialog.getOpenFileNames(
+                self, "Turbo Help: Dateien hinzufügen", str(directory),
+                "Turbo Help Quellen (*.thlp)")
+            for filename in filenames:
+                if Path(filename).is_file():
+                    self._add_project_turbo_help_file(Path(filename))
+                    editor = self._turbo_help_active_editor()
+                    if editor is not None:
+                        editor.load_document(Path(filename))
+
+        def _project_turbo_help_new(self):
+            self.show_turbo_help_compiler_dock()
+            editor = self._turbo_help_active_editor()
+            if editor is None:
+                self.show_error("Turbo Help", "Der Hilfecompiler-Editor konnte nicht geöffnet werden.")
+                return
+            edit = editor.new_document()
+            root = getattr(self, "project_turbo_help_root", None)
+            if root is not None and edit is not None:
+                item = QTreeWidgetItem(root, ["Unbenannt.thlp"])
+                item.setData(0, Qt.UserRole + 303, PROJECT_NODE_TURBO_HELP_FILE)
+                item.setToolTip(0, "Ungespeicherte Hilfequelle – im Editor speichern")
+                self._turbo_help_pending_leaves[edit] = item
+                root.setExpanded(True)
+                self.project_tree.setCurrentItem(item)
+
+        def _project_turbo_help_open(self, item):
+            if not item.data(0, Qt.UserRole + 302):
+                for edit, pending in getattr(self, "_turbo_help_pending_leaves", {}).items():
+                    if pending is item:
+                        self.show_turbo_help_compiler_dock()
+                        editor = self._turbo_help_active_editor()
+                        if editor is None:
+                            self.show_error("Turbo Help", "Der Hilfecompiler-Editor ist nicht verfügbar.")
+                            return
+                        editor.tabs.setCurrentWidget(edit)
+                        edit.setFocus()
+                        return
+                return
+            path = Path(str(item.data(0, Qt.UserRole + 302) or ""))
+            if not path.is_file():
+                self.show_error("Turbo Help", f"Hilfedatei fehlt: {path}")
+                return
+            self.show_turbo_help_compiler_dock()
+            editor = self._turbo_help_active_editor()
+            if editor is None:
+                self.show_error("Turbo Help", "Der Hilfecompiler-Editor ist nicht verfügbar.")
+                return
+            editor.load_document(path)
+
+        def _project_turbo_help_context(self, item, position):
+            kind = self._project_item_kind(item)
+            menu = self._project_popup_menu()
+            new_action = menu.addAction("Neu:  Inhalt")
+            add_action = menu.addAction("Hinzufügen")
+            remove_action = menu.addAction("Entfernen") if kind == PROJECT_NODE_TURBO_HELP_FILE else None
+            action = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+            if action is new_action:
+                self._project_turbo_help_new()
+            elif action is add_action:
+                self._project_turbo_help_add()
+            elif remove_action is not None and action is remove_action:
+                # Removing an entry does not delete its physical .thlp file.
+                root = item.parent()
+                if root is not None:
+                    editor = self._turbo_help_active_editor()
+                    target = str(item.data(0, Qt.UserRole + 302) or "")
+                    if editor is not None and target:
+                        for _idx in range(editor.tabs.count() - 1, -1, -1):
+                            _open_editor = editor.tabs.widget(_idx)
+                            _open_path = editor._path_for(_open_editor)
+                            if _open_path is not None and str(_open_path).casefold() == target.casefold():
+                                if not editor.close_document(_open_editor):
+                                    return
+                    for _edit, _leaf in list(getattr(self, "_turbo_help_pending_leaves", {}).items()):
+                        if _leaf is item:
+                            self.show_turbo_help_compiler_dock()
+                            editor = self._turbo_help_active_editor()
+                            if editor is None:
+                                self.show_error("Turbo Help", "Der Hilfecompiler-Editor ist nicht verfügbar.")
+                                return
+                            if not editor.close_document(_edit):
+                                return
+                            self._turbo_help_pending_leaves.pop(_edit, None)
+                            break
+                    root.takeChild(root.indexOfChild(item))
+                    editor = self._turbo_help_active_editor()
+                    if editor is not None:
+                        editor.project_sources = [
+                            Path(root.child(i).data(0, Qt.UserRole + 302))
+                            for i in range(root.childCount())
+                            if root.child(i).data(0, Qt.UserRole + 302)
+                        ]
+                    self.set_project_modified(True)
+
+        def show_turbo_help_compiler_dock(self, _checked=False):
+            """Hilfe-Dock oeffnen und immer einen gueltigen TurboHelpEditor liefern.
+
+            Stage 654: Ein wiederhergestelltes Dock kann bereits existieren,
+            ohne dass sein Editor-Attribut noch gesetzt ist. In diesem Fall
+            zuerst den vorhandenen Editor aus dock.widget() zurueckgewinnen.
+            """
+            from turbo_help_gui import TurboHelpEditor
+
+            dock = getattr(self, "turbo_help_compiler_dock", None)
+            editor = self._turbo_help_active_editor()
+            if dock is not None and editor is None:
+                # Vorhandenen Editor mitsamt offenen/ungespeicherten Tabs erhalten.
+                dock_widget = dock.widget()
+                if isinstance(dock_widget, TurboHelpEditor):
+                    editor = dock_widget
+                    self.turbo_help_compiler_editor = editor
+
+            if editor is None:
+                source = (Path(__file__).resolve().parent / "help" /
+                          "turbo_vision" / "System.Help.thlp")
+                root = getattr(self, "project_turbo_help_root", None)
+                first = next(
+                    (Path(root.child(i).data(0, Qt.UserRole + 302))
+                     for i in range(root.childCount())
+                     if root.child(i).data(0, Qt.UserRole + 302)
+                     and Path(root.child(i).data(0, Qt.UserRole + 302)).is_file()),
+                    None,
+                ) if root is not None else None
+                editor = TurboHelpEditor(
+                    first if first is not None else
+                    (source if source.is_file() else None), self
+                )
+                editor.compiled.connect(self._turbo_help_compiled)
+                editor.document_saved.connect(self._turbo_help_document_saved)
+                self.turbo_help_compiler_editor = editor
+
+            if dock is None:
+                dock = QDockWidget("Hilfecompiler", self)
+                dock.setObjectName("turbo_help_compiler_dock")
+                dock.setFeatures(self._dock_features())
+                dock.setAllowedAreas(
+                    Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea |
+                    Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
+                )
+                dock.setMinimumSize(0, 0)
+                dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                dock.setWidget(editor)
+                dock.setTitleBarWidget(DockTitleBar(dock))
+                self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+                dock.visibilityChanged.connect(
+                    lambda visible, current=dock:
+                        self._exclusive_tool_workspace_visibility_changed(visible, current)
+                )
+                self.turbo_help_compiler_dock = dock
+                dock.hide()
+            elif dock.widget() is not editor:
+                # Verwaistes Dock nach Layout-Wiederherstellung reaktivieren.
+                dock.setWidget(editor)
+
+            # Read the *current* selected project/ABI on every F2 press.
+            editor.resolve_output_executable = self._turbo_help_project_executable
+            root = getattr(self, "project_turbo_help_root", None)
+            if root is not None:
+                editor.use_project_list = bool(
+                    getattr(self, "current_project_path", None))
+                editor.project_sources = [
+                    Path(root.child(i).data(0, Qt.UserRole + 302))
+                    for i in range(root.childCount())
+                    if root.child(i).data(0, Qt.UserRole + 302)
+                ]
+                # Jede registrierte Quelle genau einmal in den Tabs anzeigen.
+                for path in editor.project_sources:
+                    if path.is_file():
+                        editor.load_document(path)
+
+            self._activate_exclusive_tool_workspace(dock)
+            dock.show()
+            dock.raise_()
+            self._expand_exclusive_tool_workspace(dock)
+            QTimer.singleShot(0, lambda d=dock:
+                              self._expand_exclusive_tool_workspace(d))
+            if editor.editor is not None:
+                editor.editor.setFocus(Qt.OtherFocusReason)
+            self.statusBar().showMessage(
+                "Hilfecompiler geöffnet – F2 erzeugt PO/HLP, F1 zeigt index", 5000
+            )
+            return editor
+
+        def _turbo_help_project_executable(self) -> Path:
+            """Resolve F2 HLP destination from Projektname + dBASE EXE output settings.
+
+            The selected name is authoritative; THLP tab names do not affect
+            the generated .po/.hlp names. No preexisting EXE is required.
+            """
+            from project_named_targets import profile_name
+            if self._project_named_current_scope() != ("dbase", "program"):
+                raise ValueError(
+                    "Bitte unter Projekt-Informationen → Projektname ein "
+                    "dBASE-Programm (z. B. Programm: AppDB) auswählen."
+                )
+            name = profile_name(self._named_project_names, "dbase", "program").strip()
+            if name.casefold().endswith(".exe"):
+                name = name[:-4]
+            if not name or name in {".", ".."} or re.search(r'[<>:"/\\|?*\x00-\x1f]', name):
+                raise ValueError(f"Ungültiger EXE-Projektname: {name!r}")
+
+            # Use the PE target of the active dBASE document whenever known.
+            active = self.current_document()
+            target = str(getattr(active, "build_target", "") or "").casefold()
+            if not getattr(active, "is_dbase_document", False) or target not in {"pe32", "pe64"}:
+                target = ""
+            if not target:
+                # If the project has only one configured output directory,
+                # that ABI is unambiguous even with the Help dock in focus.
+                configured = [key for key in ("pe32", "pe64")
+                              if self._project_windows_language_output_path(key, "dbase")]
+                if len(configured) == 1:
+                    target = configured[0]
+                else:
+                    # When both are configured, prefer an existing application;
+                    # otherwise retain the standard PE32 target.
+                    existing = [key for key in ("pe32", "pe64")
+                                if (self._project_windows_language_output_path(key, "dbase")
+                                    and (self._project_windows_language_output_path(key, "dbase")
+                                         / (name + ".exe")).is_file())]
+                    target = existing[0] if len(existing) == 1 else "pe32"
+            output_dir = self._project_windows_language_output_path(target, "dbase")
+            if output_dir is None:
+                # Matches the existing dBASE executable fallback in the linker.
+                output_dir = Path(self.current_directory).expanduser().resolve()
+            return output_dir / (name + ".exe")
+
+        def _turbo_help_compiled(self, topics, po_path: str, mo_path: str) -> None:
+            # Stage 653: Der Help Compiler laeuft ausschliesslich in dBase2Many.
+            # Eine eigene turbo_help_host.exe ist weder fuer das Build noch fuer
+            # die Vorschau vorgesehen. Die native Hilfe wird ausschliesslich in
+            # der laufenden Turbo-Vision-Konsolenanwendung durch F1 geoeffnet.
+            # Das Kompilat wird bei der EXE-Erzeugung als App.hlp bereitgestellt.
+            self._turbo_help_catalog_path = Path(mo_path).resolve()
+            self._turbo_help_catalog_project = (
+                str(Path(self.current_project_path).resolve())
+                if getattr(self, "current_project_path", None) else None
+            )
+            self.statusBar().showMessage(
+                f"Hilfe kompiliert: {Path(po_path).name}, {Path(mo_path).name} – "
+                "in der Turbo-Vision-Anwendung mit F1 anzeigen", 8000
+            )
+            self.log(
+                f"HELP: {len(topics)} Themen | PO: {po_path} | HLP: {mo_path} | "
+                "F1 in der laufenden Qt5-Bridge; kein externer Help-Host"
+            )
+
+        # -------------------------------------------------------------------
         # Stage ASM 10: grafischer dBase SQL Builder.
         # -------------------------------------------------------------------
         def _ensure_dbase_sql_builder(self) -> None:
@@ -129299,6 +129682,17 @@ border-radius: 7px;}}"""
             tools_menu.addAction(self.resource_action)
             tools_menu.addAction(self.localize_action)
             tools_menu.addAction(self.doxygen_action)
+            # Stage 651: Hilfecompiler wird von der Python-Anwendung gesteuert.
+            # Kein C++-Bridge-Menü und kein Compiler in der Qt5-Runtime.
+            self.turbo_help_compiler_action = QAction("Hilfecompiler", self)
+            self.turbo_help_compiler_action.setObjectName("turbo_help_compiler_action")
+            self.turbo_help_compiler_action.setStatusTip(
+                "Turbo Vision Hilfetexte bearbeiten und mit F2 zu GNU PO/MO kompilieren"
+            )
+            self.turbo_help_compiler_action.triggered.connect(
+                self.show_turbo_help_compiler_dock
+            )
+            tools_menu.addAction(self.turbo_help_compiler_action)
             tools_menu.addSeparator()
             tools_menu.addAction(self.html_editor_action)
 
@@ -134547,6 +134941,7 @@ border: 2px solid #2a69aa;
             # Keep a unique per-program/per-target filename to avoid collisions.
             _asm_import_include = None
             _asm_payload_include = None
+            _asm_export_include = None
             if str(language_name).startswith("dBase") and document.build_target in {"pe32", "pe64"}:
                 _small_asm, _include_path, _include_text = externalize_windows_imports(
                     generated.assembly, assembly_path
@@ -134562,6 +134957,15 @@ border: 2px solid #2a69aa;
                 if _payload_path is not None:
                     generated = replace(generated, assembly=_small_asm)
                     _asm_payload_include = (_payload_path, _payload_text)
+                # Stage 649: dBASE CLASS DLL EXPORTs are compiler metadata,
+                # not instructions.  Keep them in a separate target-specific
+                # include and restore the logical ASM line with %line N.
+                if getattr(generated, "source_kind", "program") == "library":
+                    _small_asm, _export_path, _export_text = externalize_windows_exports(
+                        generated.assembly, assembly_path)
+                    if _export_path is not None:
+                        generated = replace(generated, assembly=_small_asm)
+                        _asm_export_include = (_export_path, _export_text)
             # Stage 480: the setting now controls generated ASM output rather
             # than merely accepting AT&T entered by hand.  Keep Stage 470/471
             # import and UI-payload sidecars intact; those are included through
@@ -134615,6 +135019,9 @@ border: 2px solid #2a69aa;
                     self._write_assembled_program(_inc_path, _inc_text.encode("utf-8"))
                 if _asm_payload_include is not None:
                     _inc_path, _inc_text = _asm_payload_include
+                    self._write_assembled_program(_inc_path, _inc_text.encode("utf-8"))
+                if _asm_export_include is not None:
+                    _inc_path, _inc_text = _asm_export_include
                     self._write_assembled_program(_inc_path, _inc_text.encode("utf-8"))
                 self._write_assembled_program(
                     assembly_path,
@@ -136253,6 +136660,63 @@ border: 2px solid #2a69aa;
                     else program.prg
                 )
                 self._write_assembled_program(output_path, program_data)
+                # Stage 652: Turbo-Vision-Hilfe als <EXE-Stamm>.hlp.
+                # Die Runtime liest weiterhin das GNU-MO-Binärformat. Die Qt5-Bridge liest diese Datei
+                # relativ zum EXE-Pfad, auch wenn die EXE ausserhalb der IDE
+                # aus einem anderen Arbeitsverzeichnis gestartet wird.
+                if (document.is_dbase_document
+                        and document.build_target in {"pe32", "pe64"}
+                        and output_path.suffix.casefold() == ".exe"):
+                    from turbo_help_sidecar import install_help_catalog, compile_project_help
+                    _catalog = None
+                    # All registered THLP sources are authoritative. Rebuild the
+                    # help catalog for this executable directly in its configured
+                    # output directory even when F2 was not pressed in the IDE.
+                    _help_root = getattr(self, "project_turbo_help_root", None)
+                    _help_sources = (
+                        [Path(_help_root.child(i).data(0, Qt.UserRole + 302))
+                         for i in range(_help_root.childCount())]
+                        if _help_root is not None else []
+                    )
+                    _help_deployed = False
+                    if _help_sources:
+                        try:
+                            _deployed = compile_project_help(_help_sources, output_path)
+                            self.log(f"TURBO HELP HLP: {len(_help_sources)} Quellen -> {_deployed}")
+                            _help_deployed = True
+                        except (OSError, ValueError) as exc:
+                            self.log(f"TURBO HELP HLP WARNING: {exc}")
+                    _help_project = getattr(self, "_turbo_help_catalog_project", None)
+                    _current_project = (
+                        str(Path(self.current_project_path).resolve())
+                        if getattr(self, "current_project_path", None) else None
+                    )
+                    _recent = getattr(self, "_turbo_help_catalog_path", None)
+                    if (_recent and _help_project == _current_project
+                            and Path(_recent).is_file()):
+                        _catalog = Path(_recent)
+                    if _catalog is None:
+                        # Alternativ kann ein Projekt die fertig erzeugte
+                        # System.Help.mo in seinem Projektbaum ablegen.
+                        _base_dir = (Path(self.current_project_path).parent
+                                     if getattr(self, "current_project_path", None)
+                                     else (document.path.parent if document.path
+                                           else self.current_directory))
+                        for _candidate in (
+                                _base_dir / "System.Help.hlp",
+                                _base_dir / "help" / "System.Help.hlp",
+                                _base_dir / "help" / "turbo_vision" / "System.Help.hlp"):
+                            if _candidate.is_file():
+                                _catalog = _candidate
+                                break
+                    if _catalog is not None and not _help_sources:
+                        try:
+                            _sidecar = install_help_catalog(output_path, _catalog)
+                            self.log(f"TURBO HELP HLP: {_catalog} -> {_sidecar}")
+                        except (OSError, ValueError) as exc:
+                            # Hilfedateifehler darf keine erfolgreich gelinkte
+                            # EXE als Assemblerfehler erscheinen lassen.
+                            self.log(f"TURBO HELP HLP WARNING: {exc}")
                 # Stage 552: the on-disk PE import directory of a packed EXE
                 # lists only cabinet/kernel32. Use the *link manifest* to find
                 # original imports, including those from externalized .inc, and
@@ -141170,6 +141634,18 @@ border: 2px solid #2a69aa;
             )
             self._project_checkbox_guard = False
             folder_icon = self.style().standardIcon(QStyle.SP_DirClosedIcon)
+            self._turbo_help_pending_leaves = {}
+            self.project_turbo_help_root = QTreeWidgetItem(self.project_tree, ["Turbo Help"])
+            self.project_turbo_help_root.setData(0, Qt.UserRole + 303, PROJECT_NODE_TURBO_HELP_ROOT)
+            self.project_turbo_help_root.setIcon(0, folder_icon)
+            self.project_turbo_help_root.setToolTip(0, "Turbo Vision Hilfe (*.thlp); Rechtsklick für Neu/Hinzufügen")
+            for _entry in values.get(PROJECT_TURBO_HELP_ENTRY_KEY, ()):
+                _path = str(_entry.get("path", "")).strip()
+                if _path:
+                    self._add_project_turbo_help_file(Path(_path),
+                        title=str(_entry.get("title", "")), mark_modified=False)
+            self.project_turbo_help_root.setExpanded(True)
+
 
             # Stage 246: exakt die beiden Debug-Navigationsbereiche stehen
             # vor allen bisherigen Projektkategorien.
@@ -142037,6 +142513,15 @@ border: 2px solid #2a69aa;
 
         def collect_project_entries(self) -> Dict[str, List[Dict[str, str]]]:
             entries = empty_project_entries()
+            _help_root = getattr(self, "project_turbo_help_root", None)
+            if _help_root is not None:
+                for _i in range(_help_root.childCount()):
+                    _item = _help_root.child(_i)
+                    _path = str(_item.data(0, Qt.UserRole + 302) or "")
+                    if _path:
+                        entries[PROJECT_TURBO_HELP_ENTRY_KEY].append({
+                            "path": _path, "title": _item.text(0),
+                        })
             for key, _title, _extensions in PROJECT_CATEGORIES:
                 root = self.project_root_items.get(key)
                 if root is None:
@@ -142778,6 +143263,7 @@ border: 2px solid #2a69aa;
             special = (
                 bool(entries.get(PROJECT_C_ARCHIVES_KEY))
                 or bool(entries.get(PROJECT_PROLOG_KNOWLEDGE_KEY))
+                or bool(entries.get(PROJECT_TURBO_HELP_ENTRY_KEY))
                 or bool(entries.get(PROJECT_BREAKPOINTS_KEY))
                 or bool(entries.get(PROJECT_BOOKMARKS_KEY))
                 or any(
@@ -146696,6 +147182,9 @@ QFileDialog QComboBox QAbstractItemView {
         # ---------------------------------------------------------------------------
         def _on_project_item_double_clicked(self, item: QTreeWidgetItem, column: int = 0) -> None:
             kind = self._project_item_kind(item)
+            if kind == PROJECT_NODE_TURBO_HELP_FILE:
+                self._project_turbo_help_open(item)
+                return
             if kind in {PROJECT_NODE_PASCAL_TARGET_SOURCE, PROJECT_NODE_PASCAL_TABLE_FILE} or (
                 kind == PROJECT_NODE_RESOURCE_FILE
                 and str(item.data(0, Qt.UserRole + 301) or "").casefold() == "pascal"
@@ -146726,6 +147215,9 @@ QFileDialog QComboBox QAbstractItemView {
 
         def _on_project_c64_leaf_clicked(self, item: QTreeWidgetItem, _column: int = 0) -> None:
             if QApplication.keyboardModifiers() & (Qt.ShiftModifier | Qt.ControlModifier):
+                return
+            if self._project_item_kind(item) == PROJECT_NODE_TURBO_HELP_FILE:
+                self._project_turbo_help_open(item)
                 return
                 
             if self._project_item_kind(item) == PROJECT_NODE_C64_SPRITE_FILE:
@@ -147050,6 +147542,9 @@ QFileDialog QComboBox QAbstractItemView {
                 self.project_tree.clearSelection()
                 item.setSelected(True)
             kind = self._project_item_kind(item)
+            if kind in {PROJECT_NODE_TURBO_HELP_ROOT, PROJECT_NODE_TURBO_HELP_FILE}:
+                self._project_turbo_help_context(item, position)
+                return
             if (not self._is_unsaved_dbase_module_leaf(item)
                     and not self._confirm_pending_dbase_module_before_other_action(item)):
                 return

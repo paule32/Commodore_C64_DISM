@@ -300,6 +300,41 @@ class DBaseIfStatement:
 
 
 @dataclass(frozen=True)
+class DBaseCatchClause:
+    """A typed, lexically scoped dBL exception handler."""
+    class_name: str
+    variable: str
+    body: Tuple[object, ...]
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseThrowStatement:
+    """THROW NEW Exception(text), THROW e, or THROW text."""
+    class_name: str
+    message: Optional[DBaseExpression]
+    variable: str
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class DBaseTryStatement:
+    """TRY / typed CATCH / optional FINALLY / ENDTRY."""
+    try_body: Tuple[object, ...]
+    catches: Tuple[DBaseCatchClause, ...]
+    finally_body: Tuple[object, ...]
+    line: int
+    column: int
+
+
+# Win32 errors are Win32 API status codes, NOT native SEH exception codes.
+_WIN32_RAISE_BUILTINS = {"win32raise": "win32exception",
+                         "win32fileraise": "win32fileexception"}
+
+
+@dataclass(frozen=True)
 class DBaseRoutineDefinition:
     kind: str
     name: str
@@ -327,6 +362,17 @@ class DBaseClassDefinition:
     column: int
     methods: Tuple[object, ...] = ()
     properties: Tuple[object, ...] = ()
+
+
+@dataclass(frozen=True)
+class DBaseNativeClassCallStatement:
+    """Invoke a user CLASS method on a native JObject/JitVmt instance."""
+    target: object
+    declaring_class: str
+    method_name: str
+    argument: Optional[DBaseExpression]
+    line: int
+    column: int
 
 
 @dataclass(frozen=True)
@@ -1747,7 +1793,7 @@ _NUMBER_RE = re.compile(
 _HEX_0X_RE = re.compile(r"0[xX][0-9A-Fa-f]+")
 _HEX_DOLLAR_RE = re.compile(r"\$[0-9A-Fa-f]+")
 _HEX_SUFFIX_RE = re.compile(r"[0-9][0-9A-Fa-f]*[hH](?![A-Za-z0-9_])")
-_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 _TYPE_NUMBER = 1
 _TYPE_STRING = 2
@@ -2059,6 +2105,7 @@ def _tokenize_dbase_statement(
             "=": "EQUAL",
             "<": "LT",
             ">": "GT",
+            ".": "DOT",  # Stage 647: super().FIELD after a call
             "#": "NEHASH",
             "!": "BANG",
             "$": "DOLLAR",
@@ -2612,6 +2659,18 @@ class _DBaseExpressionParser:
                     while self.take("COMMA") is not None:
                         arguments.append(self.parse_expression())
                 self.expect("RPAREN", "Fehlende schliessende Klammer ')' im Funktionsaufruf.")
+                # Stage 647: SUPER is a lexical parent selector, not an
+                # instantiable receiver. Only SUPER().<inherited-field> is
+                # lowered to a qualified identifier for the native emitter.
+                if name.casefold() == "super" and self.take("DOT") is not None:
+                    member = self.expect("IDENT", "SUPER(). erwartet einen geerbten Feldnamen.")
+                    if "." in str(member.value):
+                        raise DBaseCompilerError(
+                            "SUPER(). erwartet genau einen Feldnamen.",
+                            line=member.line, column=member.column, filename=self.filename)
+                    return DBaseIdentifierExpression(
+                        line=token.line, column=token.column,
+                        name="super." + str(member.value))
                 return DBaseCallExpression(
                     line=token.line,
                     column=token.column,
@@ -2696,6 +2755,8 @@ _REMOVED_ROUTINE_END_KEYWORDS = {
     "endproc", "endprocedure", "endfunc", "endfunction", "endunction",
 }
 _IF_STOP_KEYWORDS = {"elseif", "else", "endif"}
+_EXCEPTION_STOP_KEYWORDS = {"catch", "finally", "endtry", "end"}
+
 _COMPARISON_TOKEN_KINDS = {
     "LT", "LE", "EQUAL", "EQEQ", "GT", "GE", "NEANGLE", "NEHASH", "NEBANG"
 }
@@ -2801,6 +2862,29 @@ def parse_dbase_statements(
 
     def parse_simple(tokens: Tuple[DBaseToken, ...]) -> object:
         parser = _DBaseExpressionParser(tokens, filename=filename)
+        first = parser.current
+        if first.kind == "IDENT" and str(first.value).casefold() == "throw":
+            parser.index += 1
+            if parser.current.kind == "EOF":
+                return DBaseThrowStatement("", None, "", first.line, first.column)
+            if (parser.current.kind == "IDENT" and
+                    str(parser.current.value).casefold() == "new"):
+                parser.index += 1
+                class_token = parser.expect("IDENT", "Nach THROW NEW wird eine Exception-Klasse erwartet.")
+                parser.expect("LPAREN", "THROW NEW Class(...) erwartet '('.")
+                message = None
+                if parser.current.kind != "RPAREN":
+                    message = parser.parse_expression()
+                parser.expect("RPAREN", "THROW NEW Class(...) erwartet ')'.")
+                parser._expect_eof()
+                return DBaseThrowStatement(str(class_token.value), message, "", first.line, first.column)
+            if (parser.current.kind == "IDENT" and parser.peek().kind == "EOF"):
+                variable = str(parser.current.value)
+                parser.index += 1
+                return DBaseThrowStatement("", None, variable, first.line, first.column)
+            message = parser.parse_expression()
+            parser._expect_eof()
+            return DBaseThrowStatement("Exception", message, "", first.line, first.column)
         return parser.parse_statement()
 
     def parse_block(
@@ -2809,6 +2893,7 @@ def parse_dbase_statements(
         stop_keywords: frozenset[str],
         routine_kind: str = "",
         routine_name: str = "",
+        catch_variables: frozenset[str] = frozenset(),
     ) -> tuple[list[object], int]:
         result: list[object] = []
         while index < len(records):
@@ -2824,22 +2909,37 @@ def parse_dbase_statements(
                     column=first.column,
                     filename=filename,
                 )
-            if keyword in _IF_STOP_KEYWORDS:
+            if keyword in _IF_STOP_KEYWORDS | _EXCEPTION_STOP_KEYWORDS:
                 raise DBaseCompilerError(
-                    f"Unerwartetes {first.text.upper()} ohne passenden IF-Block.",
+                    f"Unerwartetes {first.text.upper()} ohne passenden IF-/TRY-Block.",
                     line=first.line,
                     column=first.column,
                     filename=filename,
                 )
             if keyword == "if":
                 statement, index = parse_if(
-                    index,
-                    routine_kind=routine_kind,
-                    routine_name=routine_name,
+                    index, routine_kind=routine_kind, routine_name=routine_name,
+                    catch_variables=catch_variables,
                 )
                 result.append(statement)
                 continue
+            if keyword == "try":
+                statement, index = parse_try(index, routine_kind=routine_kind,
+                                             routine_name=routine_name,
+                                             catch_variables=catch_variables)
+                result.append(statement)
+                continue
             statement = parse_simple(tokens)
+            if isinstance(statement, DBaseThrowStatement) and statement.variable:
+                if statement.variable.casefold() not in catch_variables:
+                    raise DBaseCompilerError(
+                        f"THROW {statement.variable} erwartet eine sichtbare CATCH-Variable.",
+                        first.line, first.column, filename)
+            if isinstance(statement, DBaseThrowStatement) and not (
+                    statement.variable or statement.class_name):
+                if not catch_variables:
+                    raise DBaseCompilerError("THROW ohne Wert ist nur innerhalb CATCH erlaubt.",
+                                             first.line, first.column, filename)
             if isinstance(statement, DBaseReturnStatement):
                 if not routine_kind:
                     raise DBaseCompilerError(
@@ -2866,11 +2966,72 @@ def parse_dbase_statements(
             index += 1
         return result, index
 
+    def parse_try(
+        index: int,
+        *,
+        routine_kind: str = "",
+        routine_name: str = "",
+        catch_variables: frozenset[str] = frozenset(),
+    ) -> tuple[DBaseTryStatement, int]:
+        tokens, _ = records[index]
+        first = tokens[0]
+        if len(tokens) != 2:
+            raise DBaseCompilerError("TRY darf keine Parameter enthalten.",
+                                     first.line, first.column, filename)
+        try_body, at = parse_block(
+            index + 1, stop_keywords=frozenset({"catch", "finally", "endtry", "end"}),
+            routine_kind=routine_kind, routine_name=routine_name,
+            catch_variables=catch_variables)
+        catches: list[DBaseCatchClause] = []
+        while at < len(records) and records[at][1] == "catch":
+            catch_tokens, _ = records[at]
+            cp = _DBaseExpressionParser(catch_tokens, filename=filename)
+            cp.index += 1
+            cp.expect("LPAREN", "CATCH erwartet (ExceptionClass variable).")
+            type_token = cp.expect("IDENT", "CATCH erwartet eine Exception-Klasse.")
+            var_token = cp.expect("IDENT", "CATCH erwartet einen Variablennamen.")
+            cp.expect("RPAREN", "CATCH erwartet eine schliessende Klammer.")
+            cp._expect_eof()
+            variable = str(var_token.value)
+            body, at = parse_block(
+                at + 1, stop_keywords=frozenset({"catch", "finally", "endtry", "end"}),
+                routine_kind=routine_kind, routine_name=routine_name,
+                catch_variables=catch_variables | {variable.casefold()})
+            catches.append(DBaseCatchClause(
+                str(type_token.value), variable, tuple(body),
+                catch_tokens[0].line, catch_tokens[0].column))
+        finally_body: list[object] = []
+        seen_finally = at < len(records) and records[at][1] == "finally"
+        if seen_finally:
+            finally_tokens, _ = records[at]
+            if len(finally_tokens) != 2:
+                raise DBaseCompilerError("FINALLY darf keine Parameter enthalten.",
+                                         finally_tokens[0].line, finally_tokens[0].column, filename)
+            finally_body, at = parse_block(
+                at + 1, stop_keywords=frozenset({"endtry", "end", "finally", "catch"}),
+                routine_kind=routine_kind, routine_name=routine_name,
+                catch_variables=catch_variables)
+        if at >= len(records) or records[at][1] != "endtry":
+            raise DBaseCompilerError(
+                "TRY erwartet ENDTRY (TRY ... FINALLY ... END ist entfernt).",
+                first.line, first.column, filename)
+        end_tokens, _ = records[at]
+        if len(end_tokens) != 2:
+            raise DBaseCompilerError("ENDTRY darf keine Parameter enthalten.",
+                                     end_tokens[0].line, end_tokens[0].column, filename)
+        if not catches and not seen_finally:
+            raise DBaseCompilerError("TRY benoetigt mindestens CATCH oder FINALLY.",
+                                     first.line, first.column, filename)
+        return DBaseTryStatement(
+            tuple(try_body), tuple(catches), tuple(finally_body),
+            first.line, first.column), at + 1
+
     def parse_if(
         index: int,
         *,
         routine_kind: str = "",
         routine_name: str = "",
+        catch_variables: frozenset[str] = frozenset(),
     ) -> tuple[DBaseIfStatement, int]:
         tokens, keyword = records[index]
         first = tokens[0]
@@ -2883,6 +3044,7 @@ def parse_dbase_statements(
             stop_keywords=frozenset(_IF_STOP_KEYWORDS),
             routine_kind=routine_kind,
             routine_name=routine_name,
+            catch_variables=catch_variables,
         )
         branches.append(DBaseIfBranch(condition, tuple(body), first.line, first.column))
 
@@ -2908,6 +3070,7 @@ def parse_dbase_statements(
                     stop_keywords=frozenset(_IF_STOP_KEYWORDS),
                     routine_kind=routine_kind,
                     routine_name=routine_name,
+                    catch_variables=catch_variables,
                 )
                 branches.append(
                     DBaseIfBranch(condition, tuple(branch_body), branch_first.line, branch_first.column)
@@ -2930,6 +3093,7 @@ def parse_dbase_statements(
                     stop_keywords=frozenset({"endif"}),
                     routine_kind=routine_kind,
                     routine_name=routine_name,
+                    catch_variables=catch_variables,
                 )
                 branches.append(
                     DBaseIfBranch(None, tuple(branch_body), branch_first.line, branch_first.column)
@@ -2956,9 +3120,9 @@ def parse_dbase_statements(
         first = tokens[0]
         reject_removed_end(tokens, keyword)
 
-        if keyword in _IF_STOP_KEYWORDS:
+        if keyword in _IF_STOP_KEYWORDS | _EXCEPTION_STOP_KEYWORDS:
             raise DBaseCompilerError(
-                f"Unerwartetes {first.text.upper()} ohne passenden IF-Block.",
+                f"Unerwartetes {first.text.upper()} ohne passenden IF-/TRY-Block.",
                 line=first.line,
                 column=first.column,
                 filename=filename,
@@ -2966,6 +3130,10 @@ def parse_dbase_statements(
 
         if keyword == "if":
             statement, index = parse_if(index)
+            statements.append(statement)
+            continue
+        if keyword == "try":
+            statement, index = parse_try(index)
             statements.append(statement)
             continue
 
@@ -2989,9 +3157,9 @@ def parse_dbase_statements(
                         column=body_first.column,
                         filename=filename,
                     )
-                if body_keyword in _IF_STOP_KEYWORDS:
+                if body_keyword in _IF_STOP_KEYWORDS | _EXCEPTION_STOP_KEYWORDS:
                     raise DBaseCompilerError(
-                        f"Unerwartetes {body_first.text.upper()} ohne passenden IF-Block.",
+                        f"Unerwartetes {body_first.text.upper()} ohne passenden IF-/TRY-Block.",
                         line=body_first.line,
                         column=body_first.column,
                         filename=filename,
@@ -3003,6 +3171,11 @@ def parse_dbase_statements(
                         routine_name=name,
                     )
                     body.append(if_statement)
+                    continue
+                if body_keyword == "try":
+                    try_statement, index = parse_try(index, routine_kind=kind,
+                                                     routine_name=name)
+                    body.append(try_statement)
                     continue
 
                 statement = parse_simple(body_tokens)
@@ -3201,6 +3374,37 @@ def _routine_instance_label(definition: DBaseRoutineDefinition, signature: Tuple
     return f"__dbase_{definition.kind}_{_safe_member_name(definition.name)}__{signature_text}"
 
 
+
+def _dbase_exception_hierarchy(statements: Tuple[object, ...]) -> dict[str, tuple[str, str, int]]:
+    """Runtime type registry; native class declarations remain the source of ancestry."""
+    known: dict[str, tuple[str, str]] = {
+        "exception": ("Exception", "TObject"),
+        "dbexception": ("DbException", "Exception"),
+        "win32exception": ("Win32Exception", "Exception"),
+        "win32fileexception": ("Win32FileException", "Win32Exception"),
+    }
+    for definition in statements:
+        if isinstance(definition, DBaseClassDefinition):
+            known[definition.name.casefold()] = (definition.name, definition.parent)
+    # Only subclasses of Exception qualify for managed dBL THROW/CATCH.
+    valid: dict[str, tuple[str, str, int]] = {}
+    for key, (name, parent) in known.items():
+        seen: set[str] = set()
+        current = key
+        while current != "exception" and current not in seen:
+            seen.add(current)
+            current = known.get(current, ("", ""))[1].casefold()
+        if current == "exception":
+            valid[key] = (name, parent, 0)
+    for idx, key in enumerate(sorted(valid), 1):
+        name, parent, _ = valid[key]
+        valid[key] = (name, parent, idx)
+    return valid
+
+
+def _dbase_catch_prefix(clause: DBaseCatchClause) -> str:
+    return f"__dbase_caught_{clause.line}_{clause.column}"
+
 class _DBaseProgramAnalyzer:
     def __init__(self, statements: Tuple[object, ...], *, filename: str, ffi_prototypes=()) -> None:
         self.ffi_prototypes = {item.name.casefold(): item for item in ffi_prototypes}
@@ -3219,6 +3423,8 @@ class _DBaseProgramAnalyzer:
         self.instances: Dict[Tuple[str, Tuple[str, ...]], _DBaseRoutineInstance] = {}
         self.storage_slots: list[str] = []
         self.call_counter = 0
+        self.exception_types: dict[str, tuple[str, str, int]] = _dbase_exception_hierarchy(statements)
+        self._catch_bindings: list[dict[str, str]] = []
 
         for statement in self.statements:
             if not isinstance(statement, DBaseRoutineDefinition):
@@ -3845,6 +4051,125 @@ class _DBaseProgramAnalyzer:
                 else bool(Decimal(info.constant_value.value)))
 
 
+    def _analyze_exitprocess(self, statement: DBaseCallStatement, *,
+                             symbols, expression_info, call_bindings) -> bool:
+        if statement.call.name.casefold() != "exitprocess":
+            return False
+        args = statement.call.arguments
+        if len(args) != 1:
+            raise DBaseCompilerError(
+                "ExitProcess erwartet genau einen numerischen Exit-Code.",
+                statement.line, statement.column, self.filename)
+        info = self.analyze_expression(args[0], symbols=symbols,
+                                       expression_info=expression_info,
+                                       call_bindings=call_bindings)
+        if info.kind != "number":
+            raise DBaseCompilerError("ExitProcess erwartet eine Zahl.",
+                                     statement.line, statement.column, self.filename)
+        return True
+
+    def _analyze_win32_check_file(self, statement: DBaseCallStatement, *, symbols,
+                                  expression_info, call_bindings) -> bool:
+        if statement.call.name.casefold() != "win32checkfile":
+            return False
+        arguments = statement.call.arguments
+        if len(arguments) != 1:
+            raise DBaseCompilerError("Win32CheckFile erwartet genau einen VFS-Dateipfad.",
+                                     statement.line, statement.column, self.filename)
+        info = self.analyze_expression(arguments[0], symbols=symbols,
+                                       expression_info=expression_info,
+                                       call_bindings=call_bindings)
+        if info.kind not in _STRING_KINDS:
+            raise DBaseCompilerError("Win32CheckFile erwartet einen Textpfad.",
+                                     statement.line, statement.column, self.filename)
+        return True
+
+    def _analyze_win32_raise(self, statement: DBaseCallStatement, *, symbols,
+                             expression_info, call_bindings) -> bool:
+        key = statement.call.name.casefold()
+        if key not in _WIN32_RAISE_BUILTINS:
+            return False
+        arguments = statement.call.arguments
+        if len(arguments) != 1:
+            raise DBaseCompilerError(
+                f"{statement.call.name} erwartet genau einen Win32-Fehlercode.",
+                statement.line, statement.column, self.filename)
+        info = self.analyze_expression(arguments[0], symbols=symbols,
+                                       expression_info=expression_info,
+                                       call_bindings=call_bindings)
+        if info.kind != "number":
+            raise DBaseCompilerError(
+                f"{statement.call.name} erwartet einen numerischen Fehlercode.",
+                statement.line, statement.column, self.filename)
+        return True
+
+    def _analyze_throw(self, statement: DBaseThrowStatement, *, symbols,
+                       expression_info, call_bindings) -> None:
+        if statement.variable or not statement.class_name:
+            name = statement.variable.casefold() if statement.variable else ""
+            if not self._catch_bindings or (name and not any(
+                    name in context for context in reversed(self._catch_bindings))):
+                raise DBaseCompilerError("THROW erwartet eine sichtbare CATCH-Variable.",
+                                         statement.line, statement.column, self.filename)
+            return
+        if statement.class_name.casefold() not in self.exception_types:
+            raise DBaseCompilerError(
+                f"'{statement.class_name}' ist keine bekannte Exception-Klasse.",
+                statement.line, statement.column, self.filename)
+        if statement.message is not None:
+            info = self.analyze_expression(
+                statement.message, symbols=symbols,
+                expression_info=expression_info, call_bindings=call_bindings)
+            if info.kind not in _STRING_KINDS:
+                raise DBaseCompilerError("THROW erwartet eine Textmeldung.",
+                                         statement.line, statement.column, self.filename)
+
+    def _analyze_catch(self, clause: DBaseCatchClause, body_callback, symbols):
+        key = clause.class_name.casefold()
+        if key not in self.exception_types:
+            raise DBaseCompilerError(
+                f"CATCH-Klasse '{clause.class_name}' ist keine Exception-Unterklasse.",
+                clause.line, clause.column, self.filename)
+        prefix = _dbase_catch_prefix(clause)
+        self.storage_slots.extend((prefix + "_message", prefix + "_class", prefix + "_id",
+                                   prefix + "_object", prefix + "_code"))
+        additions = {}
+        for prop, slot in (("message", "message"), ("error", "message"),
+                           ("classname", "class"), ("code", "code")):
+            name = clause.variable + "." + prop
+            additions[name.casefold()] = _DBaseSymbolState(
+                name, prefix + "_" + slot,
+                "number" if prop == "code" else "string", None, True,
+                clause.line, clause.column)
+        prior = {name: symbols.get(name) for name in additions}
+        symbols.update(additions)
+        self._catch_bindings.append({clause.variable.casefold(): prefix})
+        try:
+            body_callback()
+        finally:
+            self._catch_bindings.pop()
+            for name, old in prior.items():
+                if old is None:
+                    symbols.pop(name, None)
+                else:
+                    symbols[name] = old
+
+    def _validate_catch_order(self, catches):
+        def is_subclass(child: str, ancestor: str):
+            current = child.casefold()
+            while current in self.exception_types:
+                if current == ancestor.casefold():
+                    return True
+                current = self.exception_types[current][1].casefold()
+            return False
+        for i, clause in enumerate(catches):
+            for earlier in catches[:i]:
+                if is_subclass(clause.class_name, earlier.class_name):
+                    raise DBaseCompilerError(
+                        f"CATCH ({clause.class_name}) wird bereits durch "
+                        f"CATCH ({earlier.class_name}) abgefangen.",
+                        clause.line, clause.column, self.filename)
+
     def _analyze_routine_sequence(
         self,
         sequence: Tuple[object, ...],
@@ -3887,6 +4212,21 @@ class _DBaseProgramAnalyzer:
                 continue
             if isinstance(statement, DBaseCallStatement):
                 symbols = self._merged_symbols(self.global_symbols, local_symbols)
+                if self._analyze_win32_check_file(
+                        statement, symbols=symbols,
+                        expression_info=instance.expression_info,
+                        call_bindings=instance.call_bindings):
+                    continue
+                if self._analyze_win32_raise(
+                        statement, symbols=symbols,
+                        expression_info=instance.expression_info,
+                        call_bindings=instance.call_bindings):
+                    continue
+                if self._analyze_exitprocess(
+                        statement, symbols=symbols,
+                        expression_info=instance.expression_info,
+                        call_bindings=instance.call_bindings):
+                    continue
                 self.analyze_expression(
                     statement.call,
                     symbols=symbols,
@@ -3928,6 +4268,25 @@ class _DBaseProgramAnalyzer:
                         filename=self.filename,
                     )
                 instance.return_info = info
+                continue
+            if isinstance(statement, DBaseThrowStatement):
+                symbols = self._merged_symbols(self.global_symbols, local_symbols)
+                self._analyze_throw(statement, symbols=symbols,
+                                    expression_info=instance.expression_info,
+                                    call_bindings=instance.call_bindings)
+                continue
+            if isinstance(statement, DBaseTryStatement):
+                self._validate_catch_order(statement.catches)
+                self._analyze_routine_sequence(
+                    statement.try_body, definition=definition,
+                    instance=instance, local_symbols=local_symbols)
+                for clause in statement.catches:
+                    self._analyze_catch(clause, lambda clause=clause: self._analyze_routine_sequence(
+                        clause.body, definition=definition, instance=instance,
+                        local_symbols=local_symbols), local_symbols)
+                self._analyze_routine_sequence(
+                    statement.finally_body, definition=definition,
+                    instance=instance, local_symbols=local_symbols)
                 continue
             if isinstance(statement, DBaseIfStatement):
                 base = dict(local_symbols)
@@ -4168,6 +4527,21 @@ class _DBaseProgramAnalyzer:
                 )
                 continue
             if isinstance(statement, DBaseCallStatement):
+                if self._analyze_win32_check_file(
+                        statement, symbols=globals_work,
+                        expression_info=self.expression_info,
+                        call_bindings=self.call_bindings):
+                    continue
+                if self._analyze_win32_raise(
+                        statement, symbols=globals_work,
+                        expression_info=self.expression_info,
+                        call_bindings=self.call_bindings):
+                    continue
+                if self._analyze_exitprocess(
+                        statement, symbols=globals_work,
+                        expression_info=self.expression_info,
+                        call_bindings=self.call_bindings):
+                    continue
                 self.analyze_expression(
                     statement.call,
                     symbols=globals_work,
@@ -4175,6 +4549,19 @@ class _DBaseProgramAnalyzer:
                     call_bindings=self.call_bindings,
                     require_value=False,
                 )
+                continue
+            if isinstance(statement, DBaseThrowStatement):
+                self._analyze_throw(statement, symbols=globals_work,
+                                    expression_info=self.expression_info,
+                                    call_bindings=self.call_bindings)
+                continue
+            if isinstance(statement, DBaseTryStatement):
+                self._validate_catch_order(statement.catches)
+                self._analyze_top_sequence(statement.try_body, globals_work)
+                for clause in statement.catches:
+                    self._analyze_catch(clause, lambda clause=clause: self._analyze_top_sequence(
+                        clause.body, globals_work), globals_work)
+                self._analyze_top_sequence(statement.finally_body, globals_work)
                 continue
             if isinstance(statement, DBaseIfStatement):
                 base = dict(globals_work)
@@ -4319,6 +4706,29 @@ class _DBaseProgramAnalyzer:
                 chunks.append(rendered)
                 if statement.newline:
                     chunks.append("\r\n")
+                continue
+            if isinstance(statement, DBaseThrowStatement):
+                complete = False
+                continue
+            if isinstance(statement, DBaseTryStatement):
+                # A dynamic THROW/CATCH path cannot be predicted in the
+                # compile-time transcript. FINALLY is shown for fallthrough.
+                may_throw = any(isinstance(item, (DBaseThrowStatement, DBaseCallStatement))
+                                for item in statement.try_body)
+                if may_throw:
+                    complete = False
+                format_target, debug_override, inner_complete, inner_debug = self._preview_top_sequence(
+                    statement.try_body, format_target=format_target,
+                    debug_override=debug_override, console_chunks=console_chunks,
+                    debug_chunks=debug_chunks)
+                complete = complete and inner_complete
+                uses_debug = uses_debug or inner_debug
+                format_target, debug_override, inner_complete, inner_debug = self._preview_top_sequence(
+                    statement.finally_body, format_target=format_target,
+                    debug_override=debug_override, console_chunks=console_chunks,
+                    debug_chunks=debug_chunks)
+                complete = complete and inner_complete
+                uses_debug = uses_debug or inner_debug
                 continue
             if isinstance(statement, DBaseIfStatement):
                 selected: Optional[DBaseIfBranch] = None
@@ -4640,6 +5050,30 @@ def _evaluate_dbase_expression(
     raise AssertionError(type(expression))
 
 
+@dataclass
+class _DBaseExceptionObject:
+    """Preview counterpart of a native JitVmt Exception instance."""
+    class_name: str
+    properties: Dict[str, object]
+
+    @property
+    def message(self) -> str:
+        return self.properties.get("message", "Error.")
+
+
+class _DBaseRaisedException(Exception):
+    def __init__(self, class_name: str, message: str,
+                 obj: Optional[_DBaseExceptionObject] = None) -> None:
+        self.obj = obj if obj is not None else _DBaseExceptionObject(
+            class_name, {"message": message})
+        self.class_name = self.obj.class_name
+        super().__init__(f"{class_name}: {message}")
+
+    @property
+    def message(self) -> str:
+        return self.obj.message
+
+
 class _DBaseReturnSignal(Exception):
     def __init__(self, value: Optional[DBaseValue]) -> None:
         self.value = value
@@ -4658,6 +5092,64 @@ class _DBaseEvaluator:
         self.globals: Dict[str, DBaseValue] = {}
         self.output: list[str] = []
         self.depth = 0
+        self.exception_types = _dbase_exception_hierarchy(statements)
+        self.exception_class_definitions = {
+            item.name.casefold(): item
+            for item in statements if isinstance(item, DBaseClassDefinition)
+        }
+        self._caught_exceptions: list[tuple[str, _DBaseRaisedException]] = []
+
+    def _new_exception_object(self, class_name: str, message: str) -> _DBaseExceptionObject:
+        """Interpret native Message defaults and its __ini__ body in preview.
+
+        This is an interpreter for the existing string-property subset, not a
+        replacement for the compiled native TObject constructor.
+        """
+        key = class_name.casefold()
+        lineage = []
+        seen = set()
+        while key in self.exception_types and key not in seen:
+            seen.add(key)
+            definition = self.exception_class_definitions.get(key)
+            if definition is not None:
+                lineage.append(definition)
+            key = self.exception_types[key][1].casefold()
+        fields = {"message": "Error.", "code": 0}
+        from .derived_class_abi import property_default
+        for definition in reversed(lineage):
+            for prop in definition.properties:
+                kind, value = property_default(prop)
+                if kind == "string":
+                    fields[prop.name.casefold()] = str(value)
+        obj = _DBaseExceptionObject(class_name, fields)
+        ctor = None
+        for definition in lineage:
+            ctor = next((m for m in definition.methods
+                         if m.name.casefold() == "__ini__"), None)
+            if ctor is not None:
+                break
+        if ctor is None:
+            obj.properties["message"] = message
+            return obj
+        env = {"message": DBaseValue("string", obj.message)}
+        if ctor.parameters:
+            env[ctor.parameters[0].casefold()] = DBaseValue("string", message)
+        for lineno, raw in ctor.body:
+            action = raw.strip()
+            if not re.match(r"^message\s*=", action, re.I):
+                continue
+            rhs = action.split("=", 1)[1].strip()
+            tokens = _tokenize_dbase_statement(
+                rhs, filename=self.filename,
+                base_offset=0, source=rhs)
+            parser = _DBaseExpressionParser(tokens, filename=self.filename)
+            expression = parser.parse_expression()
+            parser._expect_eof()
+            result = _evaluate_dbase_expression(expression, filename=self.filename,
+                                                variables=env)
+            env["message"] = DBaseValue("string", str(result.value))
+        obj.properties["message"] = str(env["message"].value)
+        return obj
 
     def _eval_expr(self, expression: DBaseExpression, scope: Mapping[str, DBaseValue]) -> DBaseValue:
         merged = dict(self.globals)
@@ -4767,6 +5259,22 @@ class _DBaseEvaluator:
                 continue
             if isinstance(statement, DBaseAssignmentStatement):
                 value = self._eval_expr(statement.expression, scope)
+                if "." in statement.name:
+                    variable, member = statement.name.casefold().split(".", 1)
+                    active = next((error for name, error in reversed(self._caught_exceptions)
+                                   if name == variable), None)
+                    if active is not None:
+                        if member not in {"message", "error"}:
+                            raise DBaseCompilerError(
+                                "Exception-Property ist schreibgeschuetzt: " + member,
+                                statement.line, statement.column, self.filename)
+                        if value.kind not in _STRING_KINDS:
+                            raise DBaseCompilerError("Exception.Message erwartet Text.",
+                                                     statement.line, statement.column, self.filename)
+                        active.obj.properties["message"] = str(value.value)
+                        scope[variable + ".message"] = DBaseValue("string", active.message)
+                        scope[variable + ".error"] = DBaseValue("string", active.message)
+                        continue
                 if in_routine is None:
                     self.globals[statement.name.casefold()] = value
                 else:
@@ -4779,6 +5287,23 @@ class _DBaseEvaluator:
                     self.output.append("\r\n")
                 continue
             if isinstance(statement, DBaseCallStatement):
+                if statement.call.name.casefold() == "win32checkfile":
+                    # The app VFS is private to the actual Windows process.
+                    # Never probe the compiler host filesystem in preview.
+                    raise DBaseCompilerError(
+                        "Win32CheckFile kann nur in der Windows-EXE ausgefuehrt werden.",
+                        statement.line, statement.column, self.filename)
+                native_key = _WIN32_RAISE_BUILTINS.get(statement.call.name.casefold())
+                if native_key is not None:
+                    from .win32_errors import win32_message
+                    code_value = self._eval_expr(statement.call.arguments[0], scope)
+                    code = int(code_value.value)
+                    if code != 0:
+                        cls = self.exception_types[native_key][0]
+                        obj = self._new_exception_object(cls, win32_message(code))
+                        obj.properties["code"] = code
+                        raise _DBaseRaisedException(cls, obj.message, obj)
+                    continue
                 definition = self.routines.get(statement.call.name.casefold())
                 if definition is None:
                     raise DBaseCompilerError(
@@ -4793,6 +5318,57 @@ class _DBaseEvaluator:
                     scope,
                     expect_value=False,
                 )
+                continue
+            if isinstance(statement, DBaseThrowStatement):
+                if statement.variable or not statement.class_name:
+                    name = statement.variable.casefold() if statement.variable else ""
+                    caught = next((error for label, error in reversed(self._caught_exceptions)
+                                   if not name or name == label), None)
+                    if caught is None:
+                        raise DBaseCompilerError("THROW ohne passende CATCH-Variable.",
+                                                 statement.line, statement.column, self.filename)
+                    raise caught
+                message = ("Error." if statement.message is None else
+                           str(self._eval_expr(statement.message, scope).value))
+                obj = self._new_exception_object(statement.class_name, message)
+                raise _DBaseRaisedException(statement.class_name, obj.message, obj)
+            if isinstance(statement, DBaseTryStatement):
+                pending = None
+                try:
+                    try:
+                        self._execute_sequence(statement.try_body, scope, in_routine=in_routine)
+                    except _DBaseRaisedException as error:
+                        def inherits(name, base):
+                            current = name.casefold()
+                            while current in self.exception_types:
+                                if current == base.casefold():
+                                    return True
+                                current = self.exception_types[current][1].casefold()
+                            return False
+                        for clause in statement.catches:
+                            if inherits(error.class_name, clause.class_name):
+                                variable = clause.variable.casefold()
+                                properties = {variable + ".message": DBaseValue("string", error.message),
+                                              variable + ".error": DBaseValue("string", error.message),
+                                              variable + ".classname": DBaseValue("string", error.class_name),
+                                              variable + ".code": DBaseValue("number", Decimal(error.obj.properties.get("code", 0)))}
+                                previous = {name: scope.get(name) for name in properties}
+                                scope.update(properties)
+                                self._caught_exceptions.append((variable, error))
+                                try:
+                                    self._execute_sequence(clause.body, scope, in_routine=in_routine)
+                                finally:
+                                    self._caught_exceptions.pop()
+                                    for name, old in previous.items():
+                                        if old is None:
+                                            scope.pop(name, None)
+                                        else:
+                                            scope[name] = old
+                                break
+                        else:
+                            raise
+                finally:
+                    self._execute_sequence(statement.finally_body, scope, in_routine=in_routine)
                 continue
             if isinstance(statement, DBaseIfStatement):
                 for branch in statement.branches:
@@ -4883,6 +5459,11 @@ class _DBaseCodeGenerator:
             for expression in self.current_expression_info
         )
         self.current_instance: Optional[_DBaseRoutineInstance] = None
+        self.exception_types = _dbase_exception_hierarchy(statements)
+        self._exception_targets: tuple[str, ...] = ()
+        self._exception_fallback: str = ""
+        self._dbase_finalizers: tuple[tuple[Tuple[object, ...], int], ...] = ()
+        self._caught_bindings: list[dict[str, str]] = []
         self.extra_storage_slots: list[str] = []
         # Stage 29: Top-Level-Abbruchziel, wenn die Qt-Runtime durch das
         # Schliessen des Hauptfensters einen Shutdown anfordert.
@@ -4950,6 +5531,30 @@ class _DBaseCodeGenerator:
         self.emit(f"    mov eax, dword ptr [{source}_len]")
         self.emit(f"    mov dword ptr [{destination}_len], eax")
 
+    def emit_copy_exception_pair(self, source_message: str, destination_message: str) -> None:
+        """Copy adjacent Message/Class value slots (Stage 648).
+
+        _emit_value_slot_data emits each slot as type (4), number (8),
+        pointer (4/8), length (4), without padding. The analyzer allocates
+        caught Message and Class consecutively; the emitter likewise
+        allocates the active exception Message and Class consecutively.
+        Thus the two slots form one 40-byte / 48-byte contiguous range.
+
+        REP MOVSD requires DF=0 (guaranteed by the Windows x86/x64 ABI).
+        ESI/EDI or RSI/RDI are nonvolatile and must be saved. ECX is volatile.
+        No calls happen between the saves and restores.
+        """
+        addr = "r" if self.is64 else "e"
+        count = 12 if self.is64 else 10
+        self.emit(f"    push {addr}si")
+        self.emit(f"    push {addr}di")
+        self.emit(f"    lea {addr}si, [{source_message}_type]")
+        self.emit(f"    lea {addr}di, [{destination_message}_type]")
+        self.emit(f"    mov ecx, {count}")
+        self.emit("    rep movsd")
+        self.emit(f"    pop {addr}di")
+        self.emit(f"    pop {addr}si")
+
     def emit_static_text_to_slot(self, value: str, kind: str, destination: str) -> None:
         label, length = self.text_literal(value)
         if self.is64:
@@ -4996,6 +5601,9 @@ class _DBaseCodeGenerator:
         for source, destination in zip(binding.argument_slots, binding.parameter_slots):
             self.emit_copy_slot(source, destination)
         self.emit_internal_call(binding.target_label)
+        # A managed THROW in a called dBASE routine travels to its caller.
+        # Never execute further statements or consume a stale return value.
+        self.emit_exception_check()
         return binding
 
     def emit_numeric_expression(self, expression: DBaseExpression) -> None:
@@ -6047,6 +6655,288 @@ class _DBaseCodeGenerator:
             self.emit("    call SpeechSpeakCP1252")
         self.emit(f"{done}:")
 
+    def emit_win32_raise(self, statement: DBaseCallStatement) -> None:
+        """Promote an explicitly supplied Win32 error number to TObject."""
+        kind = _WIN32_RAISE_BUILTINS[statement.call.name.casefold()]
+        self.emit_numeric_expression(statement.call.arguments[0])
+        self.emit("    fistp dword ptr [__dbase_exception_code]")
+        self.emit_win32_raise_code(kind)
+
+    def emit_win32_check_file(self, statement: DBaseCallStatement) -> None:
+        """Probe a user-private VFS file via Qt/Win32 and promote its error.
+
+        One atomic bridge call does the actual CreateFileW and captures
+        GetLastError BEFORE returning; arbitrary host paths are rejected by
+        the same virtual mount mapping as the editor's Open dialog.
+        """
+        self.emit_store_expression_to_slot(statement.call.arguments[0],
+                                           "__dbase_win32_file_path")
+        if self.is64:
+            self.emit("    mov rcx, qword ptr [__dbase_win32_file_path_ptr]")
+            self.emit("    mov edx, dword ptr [__dbase_win32_file_path_len]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call DBaseQtVfsCheckOpenRead")
+            self.emit("    add rsp, 40")
+        else:
+            self.emit("    push dword ptr [__dbase_win32_file_path_len]")
+            self.emit("    push dword ptr [__dbase_win32_file_path_ptr]")
+            self.emit("    call DBaseQtVfsCheckOpenRead")
+            self.emit("    add esp, 8")
+        self.emit("    mov dword ptr [__dbase_exception_code], eax")
+        self.emit_win32_raise_code("win32fileexception")
+
+    def emit_win32_raise_code(self, kind: str) -> None:
+        """Common conversion of an OS DWORD into managed exception + native Code."""
+        done = self.new_label("win32_no_error")
+        self.emit("    cmp dword ptr [__dbase_exception_code], 0")
+        self.emit(f"    je {done}")
+        self.emit_win32_message()
+        class_name, _parent, type_id = self.exception_types[kind]
+        self.emit_static_text_to_slot(class_name, "string", "__dbase_exception_class")
+        self.emit(f"    mov dword ptr [__dbase_exception_id], {type_id}")
+        # Stage 647: the Win32 DWORD must exist before Win32Exception.__ini__
+        # formats super().Code; the default factory called __ini__ first.
+        self.emit_build_exception_object(kind, preinit_code=True)
+        # Native numeric PROPERTY inherited from Exception, not just BSS.
+        from .object_abi import method_label
+        skip = self.new_label("win32_missing_object")
+        if self.is64:
+            self.emit("    mov rcx, qword ptr [__dbase_exception_object_ptr]")
+            self.emit("    test rcx, rcx")
+            self.emit(f"    jz {skip}")
+            self.emit("    mov edx, dword ptr [__dbase_exception_code]")
+            self.emit("    sub rsp, 40")
+            self.emit(f"    call {method_label('Exception', 'set_Code')}")
+            self.emit("    add rsp, 40")
+        else:
+            self.emit("    cmp dword ptr [__dbase_exception_object_ptr], 0")
+            self.emit(f"    je {skip}")
+            self.emit("    push dword ptr [__dbase_exception_code]")
+            self.emit("    push dword ptr [__dbase_exception_object_ptr]")
+            self.emit(f"    call {method_label('Exception', 'set_Code')}")
+            self.emit("    add esp, 8")
+        self.emit(f"{skip}:")
+        self.emit(f"    jmp {self._exception_destination()}")
+        self.emit(f"{done}:")
+
+    def emit_win32_message(self) -> None:
+        """FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS.
+
+        Uses a buffer private to the executable.  __ini__ copies it to the
+        native object's owned Message property before the next API call.
+        """
+        message_ok = self.new_label("win32_message_ok")
+        message_done = self.new_label("win32_message_done")
+        if self.is64:
+            self.emit("    mov ecx, 4608")  # 0x1200 flags
+            self.emit("    xor edx, edx")
+            self.emit("    mov r8d, dword ptr [__dbase_exception_code]")
+            self.emit("    xor r9d, r9d")  # system UI locale
+            self.emit("    sub rsp, 72")
+            self.emit("    mov rax, __dbase_win32_message_buffer")
+            self.emit("    mov qword ptr [rsp+32], rax")
+            self.emit("    mov qword ptr [rsp+40], 1024")
+            self.emit("    mov qword ptr [rsp+48], 0")
+            self.emit("    call FormatMessageA")
+            self.emit("    add rsp, 72")
+            self.emit("    test eax, eax")
+            self.emit(f"    jnz {message_ok}")
+        else:
+            for arg in ("0", "1024", "__dbase_win32_message_buffer", "0",
+                        "dword ptr [__dbase_exception_code]", "0", "4608"):
+                self.emit(f"    push {arg}")
+            self.emit("    call FormatMessageA")
+            self.emit("    test eax, eax")
+            self.emit(f"    jnz {message_ok}")
+        self.emit_static_text_to_slot("Windows-Systemfehler", "string", "__dbase_exception_message")
+        self.emit(f"    jmp {message_done}")
+        self.emit(f"{message_ok}:")
+        self.emit("    mov dword ptr [__dbase_exception_message_len], eax")
+        if self.is64:
+            self.emit("    mov rax, __dbase_win32_message_buffer")
+            self.emit("    mov qword ptr [__dbase_exception_message_ptr], rax")
+        else:
+            self.emit("    mov dword ptr [__dbase_exception_message_ptr], __dbase_win32_message_buffer")
+        self.emit(f"    mov dword ptr [__dbase_exception_message_type], {_TYPE_STRING}")
+        self.emit(f"{message_done}:")
+
+    def emit_exitprocess(self, statement: DBaseCallStatement) -> None:
+        """Explicit Win32 exit; the caller owns cleanup and exit code."""
+        argument = statement.call.arguments[0]
+        self.emit_numeric_expression(argument)
+        self.emit("    fistp dword ptr [__dbase_temp_number]")
+        if self.is64:
+            self.emit("    mov ecx, dword ptr [__dbase_temp_number]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call ExitProcess")
+            self.emit("    add rsp, 40")
+        else:
+            self.emit("    push dword ptr [__dbase_temp_number]")
+            self.emit("    call ExitProcess")
+
+    def _exception_destination(self) -> str:
+        return self._exception_targets[-1] if self._exception_targets else self._exception_fallback
+
+    def emit_exception_check(self) -> None:
+        destination = self._exception_destination()
+        if not destination:
+            return
+        self.emit("    cmp dword ptr [__dbase_exception_id], 0")
+        no_error = self.new_label("exception_clear")
+        self.emit(f"    je {no_error}")
+        # Discard any pending x87 temporaries when a nested FUNCTION throws.
+        self.emit("    fninit")
+        self.emit(f"    jmp {destination}")
+        self.emit(f"{no_error}:")
+
+    def emit_build_exception_object(self, class_key: str, *, preinit_code=False) -> None:
+        # A derived backend may instantiate a real native object here.
+        # The final _DBaseCodeGenerator supplies that implementation.
+        self.emit("    mov dword ptr [__dbase_exception_object_ptr], 0")
+
+    def emit_throw(self, statement: DBaseThrowStatement) -> None:
+        if statement.variable or not statement.class_name:
+            name = statement.variable.casefold() if statement.variable else ""
+            prefix = next((binding[name] for binding in reversed(self._caught_bindings)
+                           if name in binding), "") if name else (
+                next(iter(self._caught_bindings[-1].values()))
+                if self._caught_bindings else "")
+            if not prefix:
+                raise AssertionError("THROW ohne sichtbare CATCH-Variable")
+            self.emit_copy_exception_pair(prefix + "_message", "__dbase_exception_message")
+            self.emit(f"    mov eax, dword ptr [{prefix}_id_num]")
+            self.emit("    mov dword ptr [__dbase_exception_id], eax")
+            self.emit(f"    fld qword ptr [{prefix}_code_num]")
+            self.emit("    fistp dword ptr [__dbase_exception_code]")
+            if self.is64:
+                self.emit(f"    mov rax, qword ptr [{prefix}_object_ptr]")
+                self.emit("    mov qword ptr [__dbase_exception_object_ptr], rax")
+            else:
+                self.emit(f"    mov eax, dword ptr [{prefix}_object_ptr]")
+                self.emit("    mov dword ptr [__dbase_exception_object_ptr], eax")
+        else:
+            key = statement.class_name.casefold()
+            name, _parent, class_id = self.exception_types[key]
+            if statement.message is not None:
+                self.emit_store_expression_to_slot(statement.message, "__dbase_exception_message")
+            else:
+                self.emit_static_text_to_slot("Error.", "string", "__dbase_exception_message")
+            self.emit_static_text_to_slot(name, "string", "__dbase_exception_class")
+            self.emit(f"    mov dword ptr [__dbase_exception_id], {class_id}")
+            self.emit("    mov dword ptr [__dbase_exception_code], 0")
+            # Stage 640: real JitVmt/TObject instance, not class/message-only
+            # metadata.  The concrete generator chooses the native factory.
+            self.emit_build_exception_object(key)
+        destination = self._exception_destination()
+        if not destination:
+            raise AssertionError("Exception-Fallback fehlt")
+        self.emit(f"    jmp {destination}")
+
+    def emit_try_statement(
+        self, statement: DBaseTryStatement, *,
+        routine_end_label: str, routine_result_label: str,
+        format_target: str, debug_override: Optional[bool], debug_visible: bool,
+    ) -> None:
+        """Typed dispatch and lexical cleanup, with routine-call propagation."""
+        outer_targets = self._exception_targets
+        outer_finalizers = self._dbase_finalizers
+        dispatch = self.new_label("catch_dispatch")
+        finally_label = self.new_label("exception_finally")
+        after_label = self.new_label("exception_after")
+        self._exception_targets = outer_targets + (dispatch,)
+        if statement.finally_body:
+            self._dbase_finalizers = outer_finalizers + (
+                (statement.finally_body, len(outer_targets)),)
+        try:
+            self._emit_statement_sequence(
+                statement.try_body, routine_end_label=routine_end_label,
+                routine_result_label=routine_result_label,
+                format_target=format_target, debug_override=debug_override,
+                debug_visible=debug_visible)
+        finally:
+            self._exception_targets = outer_targets
+            self._dbase_finalizers = outer_finalizers
+        self.emit(f"    jmp {finally_label}")
+        self.emit(f"{dispatch}:")
+        for clause in statement.catches:
+            handler = self.new_label("catch_handler")
+            candidates = []
+            for key, (_name, _parent, class_id) in self.exception_types.items():
+                ancestor = key
+                while ancestor in self.exception_types:
+                    if ancestor == clause.class_name.casefold():
+                        candidates.append(class_id)
+                        break
+                    ancestor = self.exception_types[ancestor][1].casefold()
+            for class_id in candidates:
+                self.emit(f"    cmp dword ptr [__dbase_exception_id], {class_id}")
+                self.emit(f"    je {handler}")
+            # Dispatch falls through to the next typed handler on mismatch.
+            next_catch = self.new_label("catch_next")
+            self.emit(f"    jmp {next_catch}")
+            prefix = _dbase_catch_prefix(clause)
+            self.emit(f"{handler}:")
+            self.emit_copy_exception_pair("__dbase_exception_message", prefix + "_message")
+            if self.is64:
+                self.emit("    mov rax, qword ptr [__dbase_exception_object_ptr]")
+                self.emit(f"    mov qword ptr [{prefix}_object_ptr], rax")
+                self.emit("    mov qword ptr [__dbase_exception_object_ptr], 0")
+            else:
+                self.emit("    mov eax, dword ptr [__dbase_exception_object_ptr]")
+                self.emit(f"    mov dword ptr [{prefix}_object_ptr], eax")
+                self.emit("    mov dword ptr [__dbase_exception_object_ptr], 0")
+            self.emit("    mov eax, dword ptr [__dbase_exception_id]")
+            self.emit(f"    mov dword ptr [{prefix}_id_num], eax")
+            self.emit("    fild dword ptr [__dbase_exception_code]")
+            self.emit(f"    fstp qword ptr [{prefix}_code_num]")
+            self.emit(f"    mov dword ptr [{prefix}_code_type], {_TYPE_NUMBER}")
+            self.emit("    mov dword ptr [__dbase_exception_id], 0")
+            self._caught_bindings.append({clause.variable.casefold(): prefix})
+            self._exception_targets = outer_targets + (finally_label,)
+            if statement.finally_body:
+                self._dbase_finalizers = outer_finalizers + (
+                    (statement.finally_body, len(outer_targets)),)
+            try:
+                self._emit_statement_sequence(
+                    clause.body, routine_end_label=routine_end_label,
+                    routine_result_label=routine_result_label,
+                    format_target=format_target, debug_override=debug_override,
+                    debug_visible=debug_visible)
+            finally:
+                self._caught_bindings.pop()
+                self._exception_targets = outer_targets
+                self._dbase_finalizers = outer_finalizers
+            self.emit(f"    jmp {finally_label}")
+            self.emit(f"{next_catch}:")
+        self.emit(f"{finally_label}:")
+        self._emit_statement_sequence(
+            statement.finally_body, routine_end_label=routine_end_label,
+            routine_result_label=routine_result_label,
+            format_target=format_target, debug_override=debug_override,
+            debug_visible=debug_visible)
+        self.emit_exception_check()  # unhandled / thrown from CATCH / FINALLY
+        self.emit(f"{after_label}:")
+
+    def emit_pending_finalizers(
+        self, *, routine_end_label: str, routine_result_label: str,
+        format_target: str, debug_override: Optional[bool], debug_visible: bool,
+    ) -> None:
+        stack = self._dbase_finalizers
+        targets = self._exception_targets
+        try:
+            for depth in range(len(stack) - 1, -1, -1):
+                body, target_depth = stack[depth]
+                self._dbase_finalizers = stack[:depth]
+                self._exception_targets = targets[:target_depth]
+                self._emit_statement_sequence(
+                    body, routine_end_label=routine_end_label,
+                    routine_result_label=routine_result_label,
+                    format_target=format_target, debug_override=debug_override,
+                    debug_visible=debug_visible)
+        finally:
+            self._dbase_finalizers = stack
+            self._exception_targets = targets
+
     def _emit_statement_sequence(
         self,
         sequence: Tuple[object, ...],
@@ -6104,7 +6994,22 @@ class _DBaseCodeGenerator:
             elif isinstance(statement, DBaseSetBorderColorStatement):
                 self.emit_border_color(statement)
             elif isinstance(statement, DBaseCallStatement):
-                self.emit_call_statement(statement)
+                if statement.call.name.casefold() == "win32checkfile":
+                    self.emit_win32_check_file(statement)
+                elif statement.call.name.casefold() in _WIN32_RAISE_BUILTINS:
+                    self.emit_win32_raise(statement)
+                elif statement.call.name.casefold() == "exitprocess":
+                    self.emit_exitprocess(statement)
+                else:
+                    self.emit_call_statement(statement)
+            elif isinstance(statement, DBaseThrowStatement):
+                self.emit_throw(statement)
+            elif isinstance(statement, DBaseTryStatement):
+                self.emit_try_statement(
+                    statement, routine_end_label=routine_end_label,
+                    routine_result_label=routine_result_label,
+                    format_target=format_target, debug_override=debug_override,
+                    debug_visible=debug_visible)
             elif isinstance(statement, DBaseIfStatement):
                 self.emit_if_statement(
                     statement,
@@ -6130,11 +7035,16 @@ class _DBaseCodeGenerator:
                     if not routine_result_label:
                         raise AssertionError("PROCEDURE mit Rueckgabewert")
                     self.emit_store_expression_to_slot(statement.expression, routine_result_label)
+                self.emit_pending_finalizers(
+                    routine_end_label=routine_end_label,
+                    routine_result_label=routine_result_label,
+                    format_target=format_target, debug_override=debug_override,
+                    debug_visible=debug_visible)
                 self.emit(f"    jmp {routine_end_label}")
             else:
                 raise AssertionError(type(statement))
 
-            if not isinstance(statement, DBaseReturnStatement):
+            if not isinstance(statement, (DBaseReturnStatement, DBaseThrowStatement)):
                 self.emit_shutdown_guard(routine_end_label)
         return format_target, debug_override, debug_visible
 
@@ -6142,6 +7052,7 @@ class _DBaseCodeGenerator:
         previous_info = self.current_expression_info
         previous_calls = self.current_call_bindings
         previous_instance = self.current_instance
+        previous_fallback = self._exception_fallback
         self.current_expression_info = instance.expression_info
         self.current_call_bindings = instance.call_bindings
         self.current_instance = instance
@@ -6149,6 +7060,7 @@ class _DBaseCodeGenerator:
             self.emit()
             self.emit(f"{instance.label}:")
             end_label = f"{instance.label}_end"
+            self._exception_fallback = end_label
             self._emit_statement_sequence(
                 instance.definition.body,
                 routine_end_label=end_label,
@@ -6160,6 +7072,7 @@ class _DBaseCodeGenerator:
             self.current_expression_info = previous_info
             self.current_call_bindings = previous_calls
             self.current_instance = previous_instance
+            self._exception_fallback = previous_fallback
 
     def _emit_value_slot_data(self, label: str) -> None:
         # Stage 223: zero-initialized runtime slots belong to .bss.  The PE
@@ -6474,6 +7387,10 @@ class _DBaseCodeGenerator:
         self.emit('import __dbase_memcpy, "msvcrt.dll", "memcpy"')
         self.emit('import __dbase_memcmp, "msvcrt.dll", "memcmp"')
         self.emit('import ExitProcess, "kernel32.dll", "ExitProcess"')
+        if self._uses_win32_errors:
+            self.emit('import FormatMessageA, "kernel32.dll", "FormatMessageA"')
+        if self._uses_win32_file_check:
+            self.emit('import DBaseQtVfsCheckOpenRead, "libd64_qt5.dll", "DBaseQtVfsCheckOpenRead"')
         # Stage 446: Native dBASE console management is provided by the
         # architecture-matched c64_dbase_runtime.dll (no embedded Win32 API).
         from .char_case_runtime import CASE_EXPORTS
@@ -6553,7 +7470,22 @@ class _DBaseCodeGenerator:
         self.emit_qt_call0("DBaseQtProcessEvents")
         self.emit_shutdown_guard()
 
+        unhandled_label = self.new_label("exception_unhandled")
+        continue_label = self.new_label("exception_continue")
+        self._exception_fallback = unhandled_label
         self._emit_statement_sequence(self.statements)
+        self.emit(f"    jmp {continue_label}")
+        self.emit(f"{unhandled_label}:")
+        label, count = self.text_literal("Unbehandelte Exception: ")
+        self.emit_write_static(label, count, "runtime")
+        self.emit_write_variable_text("__dbase_exception_class", "runtime")
+        label, count = self.text_literal(": ")
+        self.emit_write_static(label, count, "runtime")
+        self.emit_write_variable_text("__dbase_exception_message", "runtime")
+        label, count = self.text_literal("\r\n")
+        self.emit_write_static(label, count, "runtime")
+        self.emit_qt_call0("DBaseQtProcessEvents")
+        self.emit(f"{continue_label}:")
 
         self.emit_qt_call0("DBaseQtMarkProgramFinished")
         self.emit_qt_call0("DBaseQtExec")
@@ -6640,7 +7572,15 @@ class _DBaseCodeGenerator:
             "__dbase_exit_code:", "    resd 1",
             "__dbase_output_debug_visible:", "    resd 1",
             "__dbase_console_number_len:", "    resd 1",
+            "__dbase_exception_id:", "    resd 1",
+            "__dbase_exception_code:", "    resd 1",
         ]
+        self.extra_storage_slots.extend(("__dbase_exception_message", "__dbase_exception_class",
+                                         "__dbase_exception_object", "__dbase_exception_cstr"))
+        if self._uses_win32_errors:
+            self.bss_lines.extend(("__dbase_win32_message_buffer:", "    resb 1024"))
+        if self._uses_win32_file_check:
+            self.extra_storage_slots.append("__dbase_win32_file_path")
         if self.uses_speech:
             self.bss_lines.extend(("__dbase_speech_ready:", "    resd 1"))
         for label in empty_string_bss:
@@ -6726,6 +7666,8 @@ def compile_dbase_to_assembly(
     - PROCEDURE/FUNCTION mit beliebig vielen Parametern und nativen Member-Aufrufen
     - PROCEDURE endet ausschliesslich mit RETURN; FUNCTION mit RETURN <expr>
     - verschachtelte IF/ELSEIF/ELSE/ENDIF-Bloecke mit < <= = == > >= <> # und !=
+    - TRY/CATCH/FINALLY/ENDTRY, THROW und typisierte dBL-Exceptions
+    - ExitProcess(<code>) als expliziter Win32-Systemaufruf (sofortige Prozessbeendigung)
     - polymorphe FUNCTION-Spezialisierung nach Parameter-Typen (Zahl/String/Char)
     - no-arg Funktionsaufrufe als externe numerische Symbole
     - C-artige Makros: #define/#undef/#if/#ifdef/#ifndef/#elif/#else/#endif/#include, ## und #pragma link
@@ -6753,6 +7695,7 @@ def compile_dbase_to_assembly(
         return any(isinstance(item, (DBaseSetSpeechStatement, DBaseSayStatement))
                    or isinstance(item, DBaseRoutineDefinition) and speech_used(item.body)
                    or isinstance(item, DBaseIfStatement) and any(speech_used(branch.body) for branch in item.branches)
+                   or isinstance(item, DBaseTryStatement) and (speech_used(item.try_body) or speech_used(item.finally_body) or any(speech_used(c.body) for c in item.catches))
                    for item in seq)
     if frontend.target == "pe64" and speech_used(statements):
         raise DBaseCompilerError(
@@ -6807,6 +7750,8 @@ def compile_dbase_to_assembly(
             "PROCEDURE endet ausschliesslich mit RETURN ohne Wert; FUNCTION ausschliesslich mit RETURN <expr>.",
             "ENDPROC/ENDPROCEDURE/ENDFUNC/ENDFUNCTION sind nicht mehr Bestandteil der dBase-Syntax.",
             "IF/ELSEIF/ELSE/ENDIF ist beliebig verschachtelbar; Operatoren: <, <=, =, ==, >, >=, <>, # und !=.",
+            "Stage 639: TRY/CATCH/FINALLY/ENDTRY und THROW; alter Abschluss END wird abgewiesen.",
+            "Stage 638: ExitProcess(code) ist ein expliziter sofortiger Win32-Prozessabbruch; er ist kein Exception-Handler und beendet auch die Qt5-Konsole.",
             "Innerhalb einer IF-Bedingung bedeutet '=' Gleichheit; ausserhalb bleibt '=' der Zuweisungsoperator.",
             "Numerische/Hex/Float-Werte werden numerisch, String/Char-Werte lexikographisch verglichen.",
             "Member-Parameterlisten sind nicht kuenstlich begrenzt; Aufrufe werden in Value-Slots uebergeben.",
@@ -6892,6 +7837,7 @@ __all__ = [
     "DBaseCondition",
     "DBaseIfBranch",
     "DBaseIfStatement",
+    "DBaseTryStatement", "DBaseCatchClause", "DBaseThrowStatement",
     "DBaseRoutineDefinition",
     "DBaseClassDefinition",
     "DBaseVariableInfo",
@@ -7102,6 +8048,9 @@ _DBASE_NATIVE_METHOD_RE = re.compile(
     rf"(?i)^\s*(?:(\?)\s*|STORE\s+)?"
     rf"({_DBASE_OBJECT_PATH_TEXT})\.([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)?\s*\)"
     rf"\s*(?:TO\s+([A-Za-z_]\w*))?\s*$"
+)
+_DBASE_NATIVE_USER_METHOD_RE = re.compile(
+    rf"(?i)^\s*({_DBASE_OBJECT_PATH_TEXT})\.([A-Za-z_]\w*)\s*\((.*)\)\s*$"
 )
 _DBASE_NATIVE_ASSIGN_RE = re.compile(
     rf"(?i)^\s*([A-Za-z_]\w*)\s*=\s*({_DBASE_OBJECT_PATH_TEXT})\."
@@ -7337,6 +8286,10 @@ def _dbase_constant_function_value(
                     filename=filename,
                     call_stack=call_stack + (key,),
                 )
+            if isinstance(statement, (DBaseTryStatement, DBaseThrowStatement)):
+                raise DBaseCompilerError(
+                    "_app.menuFile kann TRY/CATCH/THROW nicht statisch auswerten.",
+                    line=statement.line, column=statement.column, filename=filename)
             if isinstance(statement, DBaseIfStatement):
                 branch_taken = False
                 for branch in statement.branches:
@@ -7646,7 +8599,7 @@ def _extract_dbase_class_definitions(source: str, *, filename: str):
                     kind, name, param = signature.groups()
                     active = {'kind': kind.casefold(), 'name': name,
                               'parameters': (param,) if param else (), 'line': lineno,
-                              'body': [], 'if_depth': 0, 'pending': '', 'pending_line': lineno}
+                              'body': [], 'if_depth': 0, 'try_depth': 0, 'pending': '', 'pending_line': lineno}
                 elif property_line is not None and (
                     '=' in code or re.match(r'^(?:PUBLIC|PRIVATE|PROPERTY)\b', code, re.I)
                 ):
@@ -7662,6 +8615,16 @@ def _extract_dbase_class_definitions(source: str, *, filename: str):
                         'Klassenmember: PUBLIC/PRIVATE, PROPERTY, PROCEDURE oder FUNCTION erwartet.',
                         line=lineno, column=1, filename=filename)
         else:
+            # Stage 647: an operator at the beginning of a physical line
+            # continues the previous complete native-class expression.
+            # Preserve its first source line in the diagnostic and do not
+            # turn '+ ...' into an independent method statement.
+            if code.startswith('+') and not active['pending'] and active['body']:
+                previous_line, previous_stmt = active['body'][-1]
+                active['body'][-1] = (previous_line, previous_stmt + ' ' + code)
+                eol = raw[len(raw.rstrip("\r\n")):]
+                masked[index] = _dbase_mask_line(raw.rstrip("\r\n")) + eol
+                continue
             # Continuations of nested FFI calls, including multiline arguments.
             if active['pending']:
                 active['pending'] += ' ' + code
@@ -7686,10 +8649,18 @@ def _extract_dbase_class_definitions(source: str, *, filename: str):
                         raise DBaseCompilerError("ENDIF ohne IF in Klassenmethode.", line=lineno, column=1, filename=filename)
                 elif keyword == 'else' and active['if_depth'] <= 0:
                     raise DBaseCompilerError("ELSE ohne IF in Klassenmethode.", line=lineno, column=1, filename=filename)
+                elif keyword == 'try':
+                    active['try_depth'] += 1
+                elif keyword == 'endtry':
+                    active['try_depth'] -= 1
+                    if active['try_depth'] < 0:
+                        raise DBaseCompilerError("ENDTRY ohne TRY in Klassenmethode.", line=lineno, column=1, filename=filename)
+                elif keyword in ('catch', 'finally') and active['try_depth'] == 0:
+                    raise DBaseCompilerError(f"{keyword.upper()} ohne TRY in Klassenmethode.", line=lineno, column=1, filename=filename)
                 elif keyword in ('procedure', 'function') and signatures.fullmatch(pending):
                     raise DBaseCompilerError(f"RETURN fehlt in {current['name']}.{active['name']}.", line=lineno, column=1, filename=filename)
                 active['body'].append((line_start, pending))
-                if keyword == 'return' and active['if_depth'] == 0:
+                if keyword == 'return' and active['if_depth'] == 0 and active['try_depth'] == 0:
                     content = tuple(active['body'])
                     type_hint = ''
                     # Backward compatibility: Stage 600 used RETURN PVOID as
@@ -7738,6 +8709,8 @@ def parse_dbase_statements(
     events: list[tuple[int, int, object, Tuple[object, ...]]] = []
     event_serial = 0
     native_object_type_map = {}
+    user_native_calls: dict[int, DBaseNativeClassCallStatement] = {}
+    inline_native_statements: dict[int, object] = {}
     for declaration in class_definitions:
         events.append((declaration.line, event_serial, declaration, ()))
         event_serial += 1
@@ -7785,6 +8758,7 @@ def parse_dbase_statements(
                 max(1, raw.lower().find('local') + 1))
             masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
             events.append((line_no, event_serial, statement, ()))
+            native_object_type_map[(local_class.group(1).casefold(),)] = native_classes[local_class.group(2).casefold()]
             event_serial += 1
             i += 1
             continue
@@ -7805,9 +8779,11 @@ def parse_dbase_statements(
                 target_path, native_classes[new_class.group(2).casefold()],
                 _dbase_parent_path(target_path), line_no, 1, constructor_args)
             native_object_type_map[target_path.canonical_parts] = statement.class_name
-            masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
-            events.append((line_no, event_serial, statement, ()))
-            event_serial += 1
+            # A harmless placeholder keeps NEW in its lexical TRY/IF body.
+            # The AST rewrite below swaps it for the real native statement.
+            inline_native_statements[line_no] = statement
+            eol = raw_with_nl[len(raw):]
+            masked[i] = f'? "__DBASE_NATIVE_OBJECT_{line_no}__"' + eol
             i += 1
             continue
 
@@ -7825,11 +8801,46 @@ def parse_dbase_statements(
                 statement = DBaseNativeMethodStatement(
                     _dbase_object_path(object_name, line_no), method_name,
                     argument_name or '', result_name or '', printable, line_no, 1)
-                masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
-                events.append((line_no, event_serial, statement, ()))
-                event_serial += 1
+                # Keep the built-in native method at its lexical location too.
+                inline_native_statements[line_no] = statement
+                masked[i] = f'? "__DBASE_NATIVE_OBJECT_{line_no}__"' + raw_with_nl[len(raw):]
                 i += 1
                 continue
+
+        # Stage 641: user-defined native CLASS methods must also be callable
+        # from .prg code (and therefore propagate THROW back into TRY/CATCH).
+        user_method = _DBASE_NATIVE_USER_METHOD_RE.fullmatch(raw)
+        if user_method:
+            path = _dbase_object_path(user_method.group(1), line_no)
+            owner_class = native_object_type_map.get(path.canonical_parts)
+            if owner_class:
+                class_index = {item.name.casefold(): item for item in class_definitions}
+                visited = set()
+                current = class_index.get(owner_class.casefold())
+                found = None
+                declaring_class = ''
+                while current is not None and current.name.casefold() not in visited:
+                    visited.add(current.name.casefold())
+                    found = next((method for method in current.methods
+                                  if method.name.casefold() == user_method.group(2).casefold()), None)
+                    if found is not None:
+                        declaring_class = current.name
+                        break
+                    current = class_index.get(current.parent.casefold())
+                if found is not None:
+                    arg_raw = user_method.group(3).strip()
+                    argument = (_dbase_parse_property_expression(
+                        arg_raw, raw_line=raw, parse_source=parse_source,
+                        line_start_offset=sum(len(piece) for piece in lines[:i]),
+                        line=line_no, filename=filename) if arg_raw else None)
+                    statement = DBaseNativeClassCallStatement(
+                        path, declaring_class, found.name, argument, line_no, 1)
+                    # Keep the original token in the Stage-12 parser so the
+                    # call is placed *inside* its lexical TRY/IF/routine.
+                    # Replace its parsed DBaseCallStatement recursively below.
+                    user_native_calls[line_no] = statement
+                    i += 1
+                    continue
 
         read_property = _DBASE_NATIVE_PROPERTY_READ_RE.fullmatch(raw)
         write_property = _DBASE_NATIVE_PROPERTY_WRITE_RE.fullmatch(raw)
@@ -7866,9 +8877,9 @@ def parse_dbase_statements(
                 statement = DBaseNativePropertyStatement(
                     object_path, prop.name, owner, typ, expression,
                     bool(read_property), line_no, 1)
-                masked[i] = _dbase_mask_line(raw) + raw_with_nl[len(raw):]
-                events.append((line_no, event_serial, statement, ()))
-                event_serial += 1
+                # Keep property reads/writes in enclosing TRY/IF blocks.
+                inline_native_statements[line_no] = statement
+                masked[i] = f'? "__DBASE_NATIVE_OBJECT_{line_no}__"' + raw_with_nl[len(raw):]
                 i += 1
                 continue
 
@@ -8156,6 +9167,34 @@ def parse_dbase_statements(
         else:
             result.append(base_items[bi][2])
             bi += 1
+    if user_native_calls or inline_native_statements:
+        from dataclasses import replace
+        def replace_native_calls(items):
+            converted = []
+            for item in items:
+                if isinstance(item, DBasePrintStatement) and item.line in inline_native_statements:
+                    converted.append(inline_native_statements[item.line])
+                    continue
+                if isinstance(item, DBaseCallStatement) and item.line in user_native_calls:
+                    call = user_native_calls[item.line]
+                    if item.call.name.casefold() == (call.target.dotted + '.' + call.method_name).casefold():
+                        converted.append(call)
+                        continue
+                if isinstance(item, DBaseTryStatement):
+                    converted.append(replace(item,
+                        try_body=replace_native_calls(item.try_body),
+                        catches=tuple(replace(c, body=replace_native_calls(c.body)) for c in item.catches),
+                        finally_body=replace_native_calls(item.finally_body)))
+                elif isinstance(item, DBaseIfStatement):
+                    converted.append(replace(item, branches=tuple(
+                        replace(branch, body=replace_native_calls(branch.body))
+                        for branch in item.branches)))
+                elif isinstance(item, DBaseRoutineDefinition):
+                    converted.append(replace(item, body=replace_native_calls(item.body)))
+                else:
+                    converted.append(item)
+            return tuple(converted)
+        return replace_native_calls(result)
     return tuple(result)
 
 
@@ -8420,7 +9459,7 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
     def _without_menu(sequence: Tuple[object, ...]) -> Tuple[object, ...]:
         return tuple(
             statement for statement in sequence
-            if not isinstance(statement, (DBaseClassDefinition, DBaseNativeMethodStatement, DBaseLocalObjectDeclaration, DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseNativePropertyStatement, DBaseObjectPropertyStatement, DBaseObjectMethodStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
+            if not isinstance(statement, (DBaseClassDefinition, DBaseNativeClassCallStatement, DBaseNativeMethodStatement, DBaseLocalObjectDeclaration, DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseNativePropertyStatement, DBaseObjectPropertyStatement, DBaseObjectMethodStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
         )
 
     def _analyze_top_sequence(self, sequence, globals_work):
@@ -8479,6 +9518,26 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
                     if statement.value_type == 'number' and info.kind not in ('number', 'logical'):
                         raise DBaseCompilerError('Numerische PROPERTY erwartet Zahl.',
                                                  line=statement.line, filename=self.filename)
+                continue
+            if isinstance(statement, DBaseNativeClassCallStatement):
+                object_key = self._object_key(statement.target)
+                if object_key not in self.object_classes:
+                    raise DBaseCompilerError(
+                        f"Objekt '{statement.target.dotted}' wurde vor Methodenaufruf nicht erzeugt.",
+                        line=statement.line, filename=self.filename)
+                known = self.native_class_names
+                if self.object_classes[object_key].casefold() not in known:
+                    raise DBaseCompilerError("Benutzer-Methode erwartet native CLASS-Instanz.",
+                                             line=statement.line, filename=self.filename)
+                if statement.argument is not None:
+                    info = self.analyze_expression(
+                        statement.argument, symbols=globals_work,
+                        expression_info=self.expression_info,
+                        call_bindings=self.call_bindings)
+                    if info.kind not in _STRING_KINDS | {"number"}:
+                        raise DBaseCompilerError(
+                            "Klassenmethode erwartet einen String oder numerischen Parameter.",
+                            line=statement.line, filename=self.filename)
                 continue
             if isinstance(statement, DBaseNativeMethodStatement):
                 from .object_abi import METHOD_BY_NAME
@@ -8539,6 +9598,7 @@ class _DBaseProgramAnalyzer(_Stage12ProgramAnalyzer):
 def _analyze_program(statements: Tuple[object, ...], *, filename: str, ffi_prototypes=()) -> _DBaseAnalysis:
     runtime_statements = tuple(s for s in statements if not isinstance(s, DBaseClassDefinition))
     analyzer = _DBaseProgramAnalyzer(runtime_statements, filename=filename, ffi_prototypes=ffi_prototypes)
+    analyzer.exception_types = _dbase_exception_hierarchy(statements)
     from .object_abi import native_class_definitions
     native_definitions = native_class_definitions(
         tuple(s for s in statements if isinstance(s, DBaseClassDefinition)))
@@ -8584,12 +9644,418 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
         # Klassen-Metadaten bleiben verfuegbar fuer die VMT-Ausgabe nach der
         # normalen Programmgenerierung; nur Top-Level-Code wird gefiltert.
         from .object_abi import native_class_definitions
-        self.native_class_definitions = native_class_definitions(
-            tuple(s for s in statements if isinstance(s, DBaseClassDefinition)))
+        explicit_classes = tuple(s for s in statements if isinstance(s, DBaseClassDefinition))
+        self.native_class_definitions = native_class_definitions(explicit_classes)
+        def contains_exceptions(sequence):
+            for item in sequence:
+                if isinstance(item, (DBaseTryStatement, DBaseThrowStatement)):
+                    return True
+                if isinstance(item, DBaseCallStatement) and item.call.name.casefold() in (*_WIN32_RAISE_BUILTINS, "win32checkfile"):
+                    return True
+                if isinstance(item, DBaseClassDefinition) and any(
+                        any(re.match(r'(?i)^\s*(?:try|throw)\b', raw)
+                            for _line, raw in method.body)
+                        for method in item.methods):
+                    return True
+                if isinstance(item, DBaseRoutineDefinition) and contains_exceptions(item.body):
+                    return True
+                if isinstance(item, DBaseIfStatement) and any(
+                        contains_exceptions(branch.body) for branch in item.branches):
+                    return True
+            return False
+        self._has_managed_exceptions = contains_exceptions(statements)
+        def uses_win32_errors(sequence):
+            for item in sequence:
+                if isinstance(item, DBaseCallStatement) and item.call.name.casefold() in (*_WIN32_RAISE_BUILTINS, "win32checkfile"):
+                    return True
+                if isinstance(item, DBaseRoutineDefinition) and uses_win32_errors(item.body):
+                    return True
+                if isinstance(item, DBaseTryStatement) and (uses_win32_errors(item.try_body) or
+                        any(uses_win32_errors(c.body) for c in item.catches) or
+                        uses_win32_errors(item.finally_body)):
+                    return True
+                if isinstance(item, DBaseIfStatement) and any(uses_win32_errors(b.body) for b in item.branches):
+                    return True
+            return False
+        self._uses_win32_errors = uses_win32_errors(statements)
+        def uses_win32_file_check(sequence):
+            for item in sequence:
+                if isinstance(item, DBaseCallStatement) and item.call.name.casefold() == "win32checkfile":
+                    return True
+                if isinstance(item, DBaseRoutineDefinition) and uses_win32_file_check(item.body):
+                    return True
+                if isinstance(item, DBaseTryStatement) and (uses_win32_file_check(item.try_body) or
+                        any(uses_win32_file_check(c.body) for c in item.catches) or
+                        uses_win32_file_check(item.finally_body)):
+                    return True
+                if isinstance(item, DBaseIfStatement) and any(uses_win32_file_check(b.body) for b in item.branches):
+                    return True
+            return False
+        self._uses_win32_file_check = uses_win32_file_check(statements)
+        if self._has_managed_exceptions:
+            from .object_abi import NativeClassProperty
+            native_by_name = {c.name.casefold(): c for c in self.native_class_definitions}
+            # For a standalone .prg without #include System.SysUtils, make the
+            # same real TObject-compatible VMT available for base exceptions.
+            synthetic = []
+            if 'exception' not in native_by_name:
+                synthetic.append(DBaseClassDefinition(
+                    'Exception', 'TObject', False, 0, 0,
+                    properties=(NativeClassProperty('Message', 'public', '"Error."'),
+                                NativeClassProperty('Code', 'public', '0'))))
+            if 'dbexception' not in native_by_name:
+                synthetic.append(DBaseClassDefinition('DbException', 'Exception', False, 0, 0))
+            if 'win32exception' not in native_by_name:
+                synthetic.append(DBaseClassDefinition('Win32Exception', 'Exception', False, 0, 0))
+            if 'win32fileexception' not in native_by_name:
+                synthetic.append(DBaseClassDefinition('Win32FileException', 'Win32Exception', False, 0, 0))
+            self.native_class_definitions += tuple(synthetic)
         self.native_class_names = {s.name.casefold() for s in self.native_class_definitions}
         runtime_statements = tuple(s for s in statements if not isinstance(s, DBaseClassDefinition))
         super().__init__(runtime_statements, analysis, **kwargs)
+        self.exception_types = _dbase_exception_hierarchy(tuple(statements))
         self.object_slots: Dict[Tuple[str, ...], str] = {}
+
+    def _native_method_raise_helpers(self) -> tuple[str, str]:
+        """C-ABI bridge from native CLASS methods to Stage-640 TObject throws.
+
+        The message argument is an ANSI NUL-terminated string.  Reuse the
+        existing exception-object builder so ownership, Message, and cleanup
+        stay identical to a PRG-level THROW NEW statement.
+        """
+        reg = "rax" if self.is64 else "eax"
+        ptr = "qword ptr" if self.is64 else "dword ptr"
+        start = len(self.lines)
+        emit = lambda *lines: self.lines.extend(lines)
+        data = []
+        class_keys = {cls.name.casefold() for cls in self.native_class_definitions}
+        for key, (class_name, _parent, type_id) in self.exception_types.items():
+            if key not in class_keys:
+                continue
+            class_label = f"__dbase_native_throw_class_{key}"
+            literal = class_name.encode("cp1252")
+            data.extend((f"{class_label}:",
+                         "    db " + ", ".join(str(byte) for byte in literal + b"\0")))
+            begin = f"__dbase_raise_{key}"
+            emit(f"{begin}:", "    push rbp" if self.is64 else "    push ebp",
+                      "    mov rbp, rsp" if self.is64 else "    mov ebp, esp")
+            if self.is64:
+                emit("    sub rsp, 72", "    mov qword ptr [rbp-8], rcx",
+                          "    mov rax, qword ptr [rbp-8]")
+            else:
+                emit("    mov eax, dword ptr [ebp+8]")
+            is_valid = self.new_label("method_throw_text")
+            emit(f"    test {reg}, {reg}", f"    jnz {is_valid}",
+                      f"    mov {reg}, __dbase_cls_empty", f"{is_valid}:")
+            emit(f"    mov {ptr} [__dbase_exception_message_ptr], {reg}")
+            if self.is64:
+                emit("    mov rcx, rax", "    sub rsp, 40",
+                          "    call __dbase_exc_strlenA", "    add rsp, 40")
+            else:
+                emit("    push eax", "    call __dbase_exc_strlenA", "    add esp, 4")
+            emit("    mov dword ptr [__dbase_exception_message_len], eax")
+            if self.is64:
+                emit(f"    mov rax, {class_label}",
+                     "    mov qword ptr [__dbase_exception_class_ptr], rax")
+            else:
+                emit(f"    mov dword ptr [__dbase_exception_class_ptr], {class_label}")
+            emit(f"    mov dword ptr [__dbase_exception_class_len], {len(literal)}",
+                 f"    mov dword ptr [__dbase_exception_id], {type_id}",
+                 "    mov dword ptr [__dbase_exception_code], 0",
+                 f"    mov {ptr} [__dbase_exception_object_ptr], 0")
+            self.emit_build_exception_object(key)
+            emit("    mov rsp, rbp" if self.is64 else "    mov esp, ebp",
+                      "    pop rbp" if self.is64 else "    pop ebp", "    ret")
+        generated = tuple(self.lines[start:])
+        del self.lines[start:]
+        return "\n".join(generated), "\n".join(data)
+
+    def _emit_exception_cstr(self, source_slot="__dbase_exception_message") -> None:
+        """Create a zero-terminated temporary copy for the native constructor.
+
+        dBL string value slots are not NUL-terminated; passing them directly to
+        the JitVmt string constructor would read past their bounds.
+        """
+        if self.is64:
+            self.emit(f"    mov ecx, dword ptr [{source_slot}_len]")
+            self.emit("    inc rcx")
+            self.emit("    sub rsp, 40")
+            self.emit("    call __dbase_malloc")
+            self.emit("    add rsp, 40")
+            self.emit("    mov qword ptr [__dbase_exception_cstr_ptr], rax")
+            skip = self.new_label("exception_oom")
+            self.emit("    test rax, rax")
+            self.emit(f"    je {skip}")
+            self.emit("    mov rcx, rax")
+            self.emit(f"    mov rdx, qword ptr [{source_slot}_ptr]")
+            self.emit(f"    mov r8d, dword ptr [{source_slot}_len]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call __dbase_memcpy")
+            self.emit("    add rsp, 40")
+            self.emit("    mov r11, qword ptr [__dbase_exception_cstr_ptr]")
+            self.emit(f"    mov eax, dword ptr [{source_slot}_len]")
+            self.emit("    mov byte ptr [r11+rax], 0")
+            self.emit(f"{skip}:")
+        else:
+            self.emit(f"    mov ecx, dword ptr [{source_slot}_len]")
+            self.emit("    inc ecx")
+            self.emit("    push ecx")
+            self.emit("    call __dbase_malloc")
+            self.emit("    add esp, 4")
+            self.emit("    mov dword ptr [__dbase_exception_cstr_ptr], eax")
+            skip = self.new_label("exception_oom")
+            self.emit("    test eax, eax")
+            self.emit(f"    je {skip}")
+            self.emit(f"    push dword ptr [{source_slot}_len]")
+            self.emit(f"    push dword ptr [{source_slot}_ptr]")
+            self.emit("    push eax")
+            self.emit("    call __dbase_memcpy")
+            self.emit("    add esp, 12")
+            self.emit("    mov edx, dword ptr [__dbase_exception_cstr_ptr]")
+            self.emit(f"    mov eax, dword ptr [{source_slot}_len]")
+            self.emit("    mov byte ptr [edx+eax], 0")
+            self.emit(f"{skip}:")
+
+    def _exception_native_constructor(self, class_key: str):
+        """Nearest inherited __ini__ signature used by the native factory."""
+        definitions = {c.name.casefold(): c for c in self.native_class_definitions}
+        current = definitions.get(class_key)
+        visited = set()
+        while current and current.name.casefold() not in visited:
+            visited.add(current.name.casefold())
+            for method in getattr(current, 'methods', ()):
+                if method.name.casefold() == '__ini__':
+                    return method
+            current = definitions.get(current.parent.casefold())
+        return None
+
+    def emit_build_exception_object(self, class_key: str, *, preinit_code=False) -> None:
+        """Build a JitVmt instance using the real native class factory.
+
+        THROW e moves exactly this pointer back into the pending slot; object
+        identity therefore survives catch/rethrow and typed subclass dispatch.
+        """
+        from .object_abi import method_label
+        native = {c.name.casefold(): c for c in self.native_class_definitions}
+        if class_key not in native:
+            raise AssertionError(f"Missing exception class factory: {class_key}")
+        ctor = self._exception_native_constructor(class_key)
+        has_arg = ctor is not None and len(ctor.parameters) == 1
+        if ctor is not None and len(ctor.parameters) > 1:
+            raise DBaseCompilerError("Exception.__ini__ unterstuetzt maximal eine Meldung.",
+                                     filename=self.filename)
+        self._emit_exception_cstr()
+        # Synthetic built-in Win32 exception classes can have no __ini__.
+        # They use the default factory followed by the ordinary Code setter.
+        preinit_code = bool(preinit_code and has_arg and class_key in
+                             {'win32exception', 'win32fileexception'})
+        factory = method_label(native[class_key].name,
+            'create_with_code' if preinit_code else 'create')
+        if self.is64:
+            if has_arg:
+                self.emit("    mov rcx, qword ptr [__dbase_exception_cstr_ptr]")
+            if preinit_code:
+                self.emit("    mov edx, dword ptr [__dbase_exception_code]")
+            self.emit("    sub rsp, 40")
+            self.emit(f"    call {factory}")
+            self.emit("    add rsp, 40")
+            self.emit("    mov qword ptr [__dbase_exception_object_ptr], rax")
+        else:
+            if preinit_code:
+                self.emit("    push dword ptr [__dbase_exception_code]")
+            if has_arg:
+                self.emit("    push dword ptr [__dbase_exception_cstr_ptr]")
+            self.emit(f"    call {factory}")
+            if has_arg or preinit_code:
+                self.emit(f"    add esp, {4 * (int(has_arg) + int(preinit_code))}")
+            self.emit("    mov dword ptr [__dbase_exception_object_ptr], eax")
+        if not has_arg:
+            # If no constructor is declared, still initialize Message through
+            # the real inherited native setter (which creates an owned copy).
+            if self.is64:
+                self.emit("    mov rcx, qword ptr [__dbase_exception_object_ptr]")
+                skip = self.new_label("exception_no_object")
+                self.emit("    test rcx, rcx")
+                self.emit(f"    jz {skip}")
+                self.emit("    mov rdx, qword ptr [__dbase_exception_cstr_ptr]")
+                self.emit("    sub rsp, 40")
+                self.emit(f"    call {method_label('Exception', 'set_Message')}")
+                self.emit("    add rsp, 40")
+                self.emit(f"{skip}:")
+            else:
+                skip = self.new_label("exception_no_object")
+                self.emit("    cmp dword ptr [__dbase_exception_object_ptr], 0")
+                self.emit(f"    je {skip}")
+                self.emit("    push dword ptr [__dbase_exception_cstr_ptr]")
+                self.emit("    push dword ptr [__dbase_exception_object_ptr]")
+                self.emit(f"    call {method_label('Exception', 'set_Message')}")
+                self.emit("    add esp, 8")
+                self.emit(f"{skip}:")
+        # Sync the managed text view with the native Message property. If the
+        # user-provided __ini__ decorates the message, CATCH sees that result.
+        # Fallback keeps the original text if allocation failed.
+        end = self.new_label("exception_message_ready")
+        if self.is64:
+            self.emit("    mov rcx, qword ptr [__dbase_exception_object_ptr]")
+            self.emit("    test rcx, rcx")
+            self.emit(f"    jz {end}")
+            self.emit("    sub rsp, 40")
+            self.emit(f"    call {method_label('Exception', 'get_Message')}")
+            self.emit("    add rsp, 40")
+            self.emit("    test rax, rax")
+            self.emit(f"    jz {end}")
+            self.emit("    mov qword ptr [__dbase_exception_message_ptr], rax")
+            self.emit("    mov rcx, rax")
+            self.emit("    sub rsp, 40")
+            self.emit("    call __dbase_exc_strlenA")
+            self.emit("    add rsp, 40")
+            self.emit("    mov dword ptr [__dbase_exception_message_len], eax")
+        else:
+            self.emit("    cmp dword ptr [__dbase_exception_object_ptr], 0")
+            self.emit(f"    je {end}")
+            self.emit("    push dword ptr [__dbase_exception_object_ptr]")
+            self.emit(f"    call {method_label('Exception', 'get_Message')}")
+            self.emit("    add esp, 4")
+            self.emit("    test eax, eax")
+            self.emit(f"    jz {end}")
+            self.emit("    mov dword ptr [__dbase_exception_message_ptr], eax")
+            self.emit("    push eax")
+            self.emit("    call __dbase_exc_strlenA")
+            self.emit("    add esp, 4")
+            self.emit("    mov dword ptr [__dbase_exception_message_len], eax")
+        self.emit(f"{end}:")
+        # Register the instance for deterministic destruction at program
+        # cleanup. CATCH can rethrow the very same pointer, so releasing it on
+        # handler exit would invalidate nested exceptions.
+        self._emit_track_exception_object()
+        # Free only the temporary argument buffer. The exception object owns
+        # its own string and is intentionally retained while CATCH is active.
+        if self.is64:
+            self.emit("    mov rcx, qword ptr [__dbase_exception_cstr_ptr]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call __dbase_exc_free")
+            self.emit("    add rsp, 40")
+            self.emit("    mov qword ptr [__dbase_exception_cstr_ptr], 0")
+        else:
+            self.emit("    push dword ptr [__dbase_exception_cstr_ptr]")
+            self.emit("    call __dbase_exc_free")
+            self.emit("    add esp, 4")
+            self.emit("    mov dword ptr [__dbase_exception_cstr_ptr], 0")
+
+    def _emit_track_exception_object(self) -> None:
+        skip = self.new_label("exception_track_done")
+        if self.is64:
+            self.emit("    cmp qword ptr [__dbase_exception_object_ptr], 0")
+            self.emit(f"    je {skip}")
+            self.emit("    mov ecx, 16")
+            self.emit("    sub rsp, 40")
+            self.emit("    call __dbase_malloc")
+            self.emit("    add rsp, 40")
+            self.emit("    test rax, rax")
+            self.emit(f"    jz {skip}")
+            self.emit("    mov r11, qword ptr [__dbase_exception_object_ptr]")
+            self.emit("    mov qword ptr [rax], r11")
+            self.emit("    mov r11, qword ptr [__dbase_exception_objects_head]")
+            self.emit("    mov qword ptr [rax+8], r11")
+            self.emit("    mov qword ptr [__dbase_exception_objects_head], rax")
+        else:
+            self.emit("    cmp dword ptr [__dbase_exception_object_ptr], 0")
+            self.emit(f"    je {skip}")
+            self.emit("    push 8")
+            self.emit("    call __dbase_malloc")
+            self.emit("    add esp, 4")
+            self.emit("    test eax, eax")
+            self.emit(f"    jz {skip}")
+            self.emit("    mov ecx, dword ptr [__dbase_exception_object_ptr]")
+            self.emit("    mov dword ptr [eax], ecx")
+            self.emit("    mov ecx, dword ptr [__dbase_exception_objects_head]")
+            self.emit("    mov dword ptr [eax+4], ecx")
+            self.emit("    mov dword ptr [__dbase_exception_objects_head], eax")
+        self.emit(f"{skip}:")
+
+    @staticmethod
+    def _exception_cleanup_asm(is64: bool) -> str:
+        if is64:
+            return "\n".join((
+                "__dbase_exception_cleanup_all:",
+                "    push rbp", "    mov rbp, rsp", "    sub rsp, 64",
+                "__dbase_exception_cleanup_next:",
+                "    mov rax, qword ptr [__dbase_exception_objects_head]",
+                "    test rax, rax", "    jz __dbase_exception_cleanup_done",
+                "    mov qword ptr [rbp-8], rax",
+                "    mov rdx, qword ptr [rax+8]",
+                "    mov qword ptr [__dbase_exception_objects_head], rdx",
+                "    mov rcx, qword ptr [rax]",
+                "    test rcx, rcx", "    jz __dbase_exception_cleanup_node",
+                "    call __dbase_exc_object_free",
+                "__dbase_exception_cleanup_node:",
+                "    mov rcx, qword ptr [rbp-8]", "    call __dbase_exc_free",
+                "    jmp __dbase_exception_cleanup_next",
+                "__dbase_exception_cleanup_done:",
+                "    mov rsp, rbp", "    pop rbp", "    ret",
+            ))
+        return "\n".join((
+            "__dbase_exception_cleanup_all:",
+            "    push ebp", "    mov ebp, esp", "    push ebx",
+            "__dbase_exception_cleanup_next:",
+            "    mov ebx, dword ptr [__dbase_exception_objects_head]",
+            "    test ebx, ebx", "    jz __dbase_exception_cleanup_done",
+            "    mov eax, dword ptr [ebx+4]",
+            "    mov dword ptr [__dbase_exception_objects_head], eax",
+            "    mov eax, dword ptr [ebx]",
+            "    test eax, eax", "    jz __dbase_exception_cleanup_node",
+            "    push eax", "    call __dbase_exc_object_free", "    add esp, 4",
+            "__dbase_exception_cleanup_node:",
+            "    push ebx", "    call __dbase_exc_free", "    add esp, 4",
+            "    jmp __dbase_exception_cleanup_next",
+            "__dbase_exception_cleanup_done:",
+            "    pop ebx", "    mov esp, ebp", "    pop ebp", "    ret",
+        ))
+
+    def emit_assignment(self, statement: DBaseAssignmentStatement) -> None:
+        super().emit_assignment(statement)
+        # A caught variable is a real exception object, not only a snapshot
+        # of its Message property. Keep the native TObject field in sync when
+        # assigning e.Message/e.error from dBL source.
+        name = statement.name.casefold()
+        if "." not in name:
+            return
+        variable, member = name.split(".", 1)
+        if member not in {"message", "error"}:
+            return
+        prefix = next((context[variable] for context in reversed(self._caught_bindings)
+                       if variable in context), None)
+        if prefix is None:
+            return
+        self._emit_exception_cstr(prefix + "_message")
+        skip = self.new_label("exception_set_skip")
+        from .object_abi import method_label
+        if self.is64:
+            self.emit(f"    mov rcx, qword ptr [{prefix}_object_ptr]")
+            self.emit("    test rcx, rcx")
+            self.emit(f"    jz {skip}")
+            self.emit("    mov rdx, qword ptr [__dbase_exception_cstr_ptr]")
+            self.emit("    sub rsp, 40")
+            self.emit(f"    call {method_label('Exception', 'set_Message')}")
+            self.emit("    add rsp, 40")
+            self.emit(f"{skip}:")
+            self.emit("    mov rcx, qword ptr [__dbase_exception_cstr_ptr]")
+            self.emit("    sub rsp, 40")
+            self.emit("    call __dbase_exc_free")
+            self.emit("    add rsp, 40")
+            self.emit("    mov qword ptr [__dbase_exception_cstr_ptr], 0")
+        else:
+            self.emit(f"    cmp dword ptr [{prefix}_object_ptr], 0")
+            self.emit(f"    je {skip}")
+            self.emit("    push dword ptr [__dbase_exception_cstr_ptr]")
+            self.emit(f"    push dword ptr [{prefix}_object_ptr]")
+            self.emit(f"    call {method_label('Exception', 'set_Message')}")
+            self.emit("    add esp, 8")
+            self.emit(f"{skip}:")
+            self.emit("    push dword ptr [__dbase_exception_cstr_ptr]")
+            self.emit("    call __dbase_exc_free")
+            self.emit("    add esp, 4")
+            self.emit("    mov dword ptr [__dbase_exception_cstr_ptr], 0")
 
     def emit_user_call(self, expression: DBaseCallExpression) -> _DBaseCallBinding:
         binding = self._binding(expression)
@@ -8789,6 +10255,80 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             self.emit("    call DBaseQtSetColorNormal")
             self.emit("    add esp, 8")
 
+    def emit_native_class_call(self, statement: DBaseNativeClassCallStatement) -> None:
+        """Call user CLASS method with Self and forward pending managed exceptions."""
+        from .object_abi import method_label
+        object_slot = self._object_slot(statement.target)
+        native = {cls.name.casefold(): cls for cls in self.native_class_definitions}
+        owner = native[statement.declaring_class.casefold()]
+        method = next(m for m in owner.methods
+                      if m.name.casefold() == statement.method_name.casefold())
+        if bool(method.parameters) != (statement.argument is not None):
+            raise DBaseCompilerError(
+                f"Methode {method.name} erwartet {len(method.parameters)} Parameter.",
+                line=statement.line, filename=self.filename)
+        text_arg, value_slot, pointer_slot = False, '', ''
+        if statement.argument is not None:
+            info = self.current_expression_info[statement.argument]
+            value_slot = self.new_storage_slot('class_call_arg')
+            self.emit_store_expression_to_slot(statement.argument, value_slot)
+            if info.kind in _STRING_KINDS:
+                # Methods use NUL-terminated ANSI strings, whereas the PRG
+                # evaluator stores counted strings.  Save the owned temporary
+                # in an independent slot: a nested THROW may reuse the global
+                # exception cstr scratch variable.
+                text_arg = True
+                pointer_slot = self.new_storage_slot('class_call_cstr')
+                self._emit_exception_cstr(value_slot)
+                if self.is64:
+                    self.emit('    mov rax, qword ptr [__dbase_exception_cstr_ptr]')
+                    self.emit(f'    mov qword ptr [{pointer_slot}_ptr], rax')
+                else:
+                    self.emit('    mov eax, dword ptr [__dbase_exception_cstr_ptr]')
+                    self.emit(f'    mov dword ptr [{pointer_slot}_ptr], eax')
+            else:
+                self.emit(f'    fld qword ptr [{value_slot}_num]')
+                self.emit('    fistp dword ptr [__dbase_temp_number]')
+        skipped = self.new_label('native_class_no_object')
+        finished = self.new_label('native_class_return')
+        if self.is64:
+            self.emit(f'    mov rcx, qword ptr [{object_slot}]')
+            self.emit('    test rcx, rcx')
+            self.emit(f'    jz {skipped}')
+            if statement.argument is not None:
+                if text_arg:
+                    self.emit(f'    mov rdx, qword ptr [{pointer_slot}_ptr]')
+                else:
+                    self.emit('    movsxd rdx, dword ptr [__dbase_temp_number]')
+            self.emit('    sub rsp, 40')
+            self.emit(f'    call {method_label(owner.name, method.name)}')
+            self.emit('    add rsp, 40')
+        else:
+            self.emit(f'    cmp dword ptr [{object_slot}], 0')
+            self.emit(f'    je {skipped}')
+            if statement.argument is not None:
+                if text_arg:
+                    self.emit(f'    push dword ptr [{pointer_slot}_ptr]')
+                else:
+                    self.emit('    push dword ptr [__dbase_temp_number]')
+            self.emit(f'    push dword ptr [{object_slot}]')
+            self.emit(f'    call {method_label(owner.name, method.name)}')
+            self.emit(f'    add esp, {8 if statement.argument is not None else 4}')
+        self.emit(f'{skipped}:')
+        if text_arg:
+            if self.is64:
+                self.emit(f'    mov rcx, qword ptr [{pointer_slot}_ptr]')
+                self.emit('    sub rsp, 40')
+                self.emit('    call __dbase_exc_free')
+                self.emit('    add rsp, 40')
+            else:
+                self.emit(f'    push dword ptr [{pointer_slot}_ptr]')
+                self.emit('    call __dbase_exc_free')
+                self.emit('    add esp, 4')
+        if self._has_managed_exceptions:
+            self.emit_exception_check()
+        self.emit(f'{finished}:')
+
     def emit_native_method(self, statement: DBaseNativeMethodStatement) -> None:
         """Dispatch via VMT on the real runtime object pointer (Self)."""
         from .object_abi import METHOD_BY_NAME, vmt_label
@@ -8869,6 +10409,8 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
         if statement.print_result:
             label, length = self.text_literal('\r\n')
             self.emit_write_static(label, length, 'console')
+        if self._has_managed_exceptions:
+            self.emit_exception_check()
 
     def emit_new_object(self, statement: DBaseNewObjectStatement) -> None:
         target_slot = self._object_slot(statement.target)
@@ -8905,6 +10447,8 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
                     self.emit(f'    mov qword ptr [{target_slot}], rax')
                 else:
                     self.emit(f'    mov dword ptr [{target_slot}], eax')
+            if self._has_managed_exceptions:
+                self.emit_exception_check()
             return
         else:
             raise DBaseCompilerError(
@@ -9216,6 +10760,10 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
                 flush()
                 self.emit_native_property(statement)
                 self.emit_shutdown_guard(routine_end_label)
+            elif isinstance(statement, DBaseNativeClassCallStatement):
+                flush()
+                self.emit_native_class_call(statement)
+                self.emit_shutdown_guard(routine_end_label)
             elif isinstance(statement, DBaseNativeMethodStatement):
                 flush()
                 self.emit_native_method(statement)
@@ -9250,6 +10798,14 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
 
     def build(self) -> str:
         assembly = super().build()
+        if self.native_class_definitions and any(
+                any(any(re.match(r'(?i)^\s*throw\b', text) for _ln, text in method.body)
+                    for method in cls.methods)
+                for cls in self.native_class_definitions):
+            native_text, native_data = self._native_method_raise_helpers()
+            if native_text:
+                assembly = assembly.replace('section .data\n',
+                                            native_text + '\nsection .data\n' + native_data + '\n', 1)
         marker = 'import DBaseQtShutdown, "libd64_qt5.dll", "DBaseQtShutdown"\n'
         extra = "".join(
             f'import {symbol}, "libd64_qt5.dll", "{symbol}"\n'
@@ -9269,6 +10825,25 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             if show_marker in assembly and default_call not in assembly:
                 assembly = assembly.replace(show_marker, default_call + show_marker, 1)
 
+        if self.native_class_definitions and any(
+            name in self.native_class_names for name in ('exception',)):
+            marker = 'import __dbase_malloc, "msvcrt.dll", "malloc"\n'
+            imports = ('import __dbase_exc_free, "msvcrt.dll", "free"\n'
+                       'import __dbase_exc_strlenA, "kernel32.dll", "lstrlenA"\n'
+                       'import __dbase_exc_object_free, "libd64_runtime.dll", "jit_object_free"\n')
+            # The factory and setter use the C ABI, not the packed dBL slots.
+            assembly = assembly.replace(marker, marker + imports, 1)
+            # Emit the cleanup before the VMT-injection pass so object symbols
+            # are in .text and the head pointer is a zero-filled .bss slot.
+            assembly = assembly.replace('section .data\n',
+                        self._exception_cleanup_asm(self.is64) + '\nsection .data\n', 1)
+            assembly = assembly.rstrip() + ('\n__dbase_exception_objects_head:\n'
+                                          '    resq 1\n' if self.is64 else
+                                          '\n__dbase_exception_objects_head:\n    resd 1\n')
+            # This is reached once, after DBaseQtExec and before DLL shutdown.
+            assembly = assembly.replace('    call DBaseConsoleShutdown\n',
+                                        '    call __dbase_exception_cleanup_all\n'
+                                        '    call DBaseConsoleShutdown\n', 1)
         if self.native_class_definitions:
             from .object_abi import inject_class_assembly
             assembly = inject_class_assembly(assembly, self.native_class_definitions, target=self.target, ffi_prototypes=self.ffi_prototypes, filename=self.filename)
@@ -9285,7 +10860,7 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
 
 # Öffentliche Exportliste der additiven Stage-13-Klassen.
 for _name in (
-    "DBaseObjectPath", "DBaseNewObjectStatement", "DBaseNativePropertyStatement", "DBaseSessionLoginStatement",
+    "DBaseObjectPath", "DBaseNewObjectStatement", "DBaseNativeClassCallStatement", "DBaseNativePropertyStatement", "DBaseSessionLoginStatement",
     "DBaseLocalObjectDeclaration", "DBaseObjectPropertyStatement", "DBaseObjectMethodStatement", "DBaseMenuFileStatement",
     "DBaseAppColorStatement", "DBASE_SYSTEM_COLOR_NAMES",
     "DBaseSetColorStatement", "DBaseSetBackgroundStatement", "DBaseClearScreenStatement", "DBaseSetBorderColorStatement",
@@ -9305,9 +10880,15 @@ def evaluate_dbase_statements(
 ) -> str:
     filtered = tuple(
         statement for statement in statements
-        if not isinstance(statement, (DBaseClassDefinition, DBaseNativeMethodStatement, DBaseLocalObjectDeclaration, DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseNativePropertyStatement, DBaseObjectPropertyStatement, DBaseObjectMethodStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
+        if not isinstance(statement, (DBaseClassDefinition, DBaseNativeClassCallStatement, DBaseNativeMethodStatement, DBaseLocalObjectDeclaration, DBaseNewObjectStatement, DBaseSessionLoginStatement, DBaseNativePropertyStatement, DBaseObjectPropertyStatement, DBaseObjectMethodStatement, DBaseWithStatement, DBaseMenuFileStatement, DBaseAppColorStatement))
     )
-    return _stage12_evaluate_dbase_statements(filtered, filename=filename)
+    evaluator = _DBaseEvaluator(filtered, filename=filename)
+    evaluator.exception_types = _dbase_exception_hierarchy(statements)
+    evaluator.exception_class_definitions = {
+        item.name.casefold(): item for item in statements
+        if isinstance(item, DBaseClassDefinition)
+    }
+    return evaluator.run()
 
 _stage12_compile_dbase_to_assembly = compile_dbase_to_assembly
 

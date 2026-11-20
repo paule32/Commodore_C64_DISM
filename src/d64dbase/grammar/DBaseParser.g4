@@ -22,6 +22,8 @@ classMemberDefinition
 topLevelItem
     : statement
     | ifStatement
+    | tryStatement
+    | throwStatement
     | menuObjectStatement
     | sessionObjectStatement
     | sessionLoginStatement
@@ -56,7 +58,10 @@ parameterClause
 
 routineBodyItem
     : statement NEWLINE+
+    | returnStatement NEWLINE+
     | ifStatement NEWLINE*
+    | tryStatement NEWLINE*
+    | throwStatement NEWLINE*
     ;
 
 ifStatement
@@ -71,6 +76,19 @@ ifBodyItem
     : statement NEWLINE+
     | returnStatement NEWLINE+
     | ifStatement NEWLINE*
+    | tryStatement NEWLINE*
+    | throwStatement NEWLINE*
+    ;
+
+tryStatement
+    : TRY NEWLINE+ (routineBodyItem)*
+      (CATCH LPAREN IDENTIFIER IDENTIFIER RPAREN NEWLINE+ (routineBodyItem)*)*
+      (FINALLY NEWLINE+ (routineBodyItem)*)?
+      ENDTRY
+    ;
+
+throwStatement
+    : THROW (NEW IDENTIFIER LPAREN expression? RPAREN | expression)?
     ;
 
 returnStatement

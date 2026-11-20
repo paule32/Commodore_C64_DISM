@@ -19,6 +19,7 @@ SOURCES += d64qt5_bridge.cpp   \
            d64_workstation.cpp
 
 HEADERS += d64_turbo_editor.hpp \
+           d64_turbo_help_window.hpp \
            d64_debug_context_menu.hpp \
            d64_debug_title_surface.hpp \
            d64_debug_navy_scrollbar.hpp \

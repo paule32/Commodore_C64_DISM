@@ -6,8 +6,10 @@
 // Keine MOC-/Q_OBJECT-Abhaengigkeit.
 
 #include <QApplication>
+#include <QAbstractScrollArea>
 #include <QCoreApplication>
 #include <QKeySequence>
+#include <QKeyEvent>
 #include <QPaintEvent>
 #include <QRegularExpression>
 #include <QResizeEvent>
@@ -15,9 +17,15 @@
 #include <QCryptographicHash>
 #include <QDialog>
 #include <QDir>
+#include <QDateTime>
+#include <QEventLoop>
+#include <QHeaderView>
+#include <QFrame>
+#include <QTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QFontMetrics>
+#include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -31,6 +39,7 @@
 #include <QSaveFile>
 #include <QScrollBar>
 #include <QSplitter>
+#include <QSplitterHandle>
 #include <QStandardPaths>
 #include <QStyle>
 #include <QTextBlock>
@@ -42,6 +51,7 @@
 #include <QMenu>
 #include <QToolButton>
 #include <QCloseEvent>
+#include <QContextMenuEvent>
 #include <QTimer>
 #include <QAction>
 #include <QPalette>
@@ -50,13 +60,14 @@
 #include "d64_turbo_messagebox.hpp"
 #include "d64_turbo_context_menu.hpp"
 
+// Stage 643: Die Dateisystem-Wurzel ist virtuell. Ausschliesslich
+// /Alle Benutzer und /Dokumente sind sichtbar. Host-Benutzernamen oder
+// die echten /Benutzer/<hash>-Verzeichnisse sind nie navigierbar.
 class D64ApplicationVfs final
 {
 public:
     bool initialize()
     {
-        // Derselbe EXE-Pfad bekommt ueber Programmstarts hinweg dasselbe
-        // eigene Host-Verzeichnis; verschiedene EXEs werden getrennt.
         const QString exe = QDir::cleanPath(QCoreApplication::applicationFilePath());
         const QByteArray digest = QCryptographicHash::hash(
             exe.toUtf8(), QCryptographicHash::Sha256).toHex().left(16);
@@ -67,61 +78,120 @@ public:
         if (local.isEmpty()) return false;
         root_ = QDir(local).filePath(QStringLiteral("dBase2Many/Anwendungen/")
                                      + appName + QLatin1Char('-') + QString::fromLatin1(digest));
-        if (!QDir().mkpath(QDir(root_).filePath(QStringLiteral("Dokumente")))) {
-            root_.clear();
-            return false;
-        }
+        if (!QDir().mkpath(root_)) { root_.clear(); return false; }
         root_ = QDir(root_).canonicalPath();
-        return !root_.isEmpty();
+        if (root_.isEmpty()) return false;
+        const QString account = qEnvironmentVariable("USERDOMAIN") + QLatin1Char('\\')
+                              + qEnvironmentVariable("USERNAME") + QLatin1Char(':')
+                              + QDir::homePath();
+        if (!setUserIdentity(QStringLiteral("Host:") + account)) return false;
+        // Stage-626-Altdaten aus dem bisherigen EXE-Verzeichnis gehen nicht
+        // verloren: nur beim Host-Fallback in das private Dokumente-Mount
+        // migrieren, nicht fuer spaetere dBASE-SESSION-Identitaeten freigeben.
+        const QString legacy = QDir(root_).filePath(QStringLiteral("Dokumente"));
+        QDir oldFiles(legacy);
+        if (oldFiles.exists()) {
+            const QFileInfoList entries = oldFiles.entryInfoList(
+                QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+            for (const QFileInfo &old : entries) {
+                if (old.isSymLink()) continue;
+                const QString dest = QDir(personalRoot_).filePath(old.fileName());
+                if (!QFileInfo::exists(dest)) QDir().rename(old.filePath(), dest);
+            }
+        }
+        return true;
     }
 
+    bool setUserIdentity(const QString &identity)
+    {
+        if (root_.isEmpty() || identity.trimmed().isEmpty()) return false;
+        const QByteArray hash = QCryptographicHash::hash(
+            identity.trimmed().toCaseFolded().toUtf8(), QCryptographicHash::Sha256).toHex();
+        const QString shared = QDir(root_).filePath(QStringLiteral("_Alle_Benutzer"));
+        const QString personal = QDir(root_).filePath(QStringLiteral("_Benutzer/")
+                                + QString::fromLatin1(hash) + QStringLiteral("/Dokumente"));
+        if (!QDir().mkpath(shared) || !QDir().mkpath(personal)) return false;
+        const QString canonShared = QDir(shared).canonicalPath();
+        const QString canonPersonal = QDir(personal).canonicalPath();
+        if (!isInsideRoot(canonShared) || !isInsideRoot(canonPersonal)) return false;
+        sharedRoot_ = canonShared;
+        personalRoot_ = canonPersonal;
+        identityHash_ = QString::fromLatin1(hash);
+        return true;
+    }
+
+    QString userToken() const { return identityHash_; }
     QString hostRoot() const { return root_; }
     QString documents() const { return QStringLiteral("Dokumente"); }
+    QString shared() const { return QStringLiteral("Alle Benutzer"); }
 
-    // Nur virtuelle, relative Pfade. Keine absoluten Host-Pfade, kein '..',
-    // keine Symlinks/Junctions innerhalb des gemappten Baums.
+    // Virtuelle Wurzel: ausschliesslich zwei sichtbare Mountpoints.
+    QStringList mountPoints() const
+    { return {shared(), documents()}; }
+
+    static bool safeName(const QString &name)
+    {
+        if (name.isEmpty() || name == QLatin1String(".") || name == QLatin1String("..")
+            || name.endsWith(QLatin1Char(' ')) || name.endsWith(QLatin1Char('.'))
+            || name.contains(QLatin1Char('/')) || name.contains(QLatin1Char('\\'))
+            || name.contains(QLatin1Char(':')) || name.contains(QChar(0))
+            || name.contains(QRegularExpression(QStringLiteral("[<>\\\"|?*\\x00-\\x1f]"))))
+            return false;
+        const QString stem = name.section(QLatin1Char('.'), 0, 0).toUpper();
+        return stem != QLatin1String("CON") && stem != QLatin1String("PRN")
+            && stem != QLatin1String("AUX") && stem != QLatin1String("NUL")
+            && !QRegularExpression(QStringLiteral("^(COM|LPT)[1-9]$")).match(stem).hasMatch();
+    }
+
     QString hostPath(const QString &virtualPath) const
     {
-        if (root_.isEmpty()) return QString();
-        const QString source = virtualPath.trimmed();
-        if (QDir::isAbsolutePath(source) || source.contains(QLatin1Char('\\'))
-            || source.contains(QLatin1Char(':')) || source.contains(QChar(0)))
-            return QString();
-        const QStringList components = source.split(QLatin1Char('/'), Qt::SkipEmptyParts);
-        QString probe = root_;
-        for (const QString &component : components) {
-            if (component == QLatin1String(".") || component == QLatin1String("..")
-                || component.isEmpty())
-                return QString();
-            probe = QDir(probe).filePath(component);
+        if (root_.isEmpty() || virtualPath.startsWith(QLatin1Char('/'))
+            || QDir::isAbsolutePath(virtualPath)) return QString();
+        if (virtualPath.isEmpty()) return root_;
+        const QString &source = virtualPath;
+        if (QDir::isAbsolutePath(source)) return QString();
+        const QStringList parts = source.split(QLatin1Char('/'), Qt::KeepEmptyParts);
+        if (parts.isEmpty()) return QString();
+        QString base;
+        if (parts.first() == shared()) base = sharedRoot_;
+        else if (parts.first() == documents()) base = personalRoot_;
+        else return QString();
+        if (base.isEmpty()) return QString();
+        QString probe = base;
+        for (int i=1; i<parts.size(); ++i) {
+            if (!safeName(parts.at(i))) return QString();
+            probe = QDir(probe).filePath(parts.at(i));
             const QFileInfo info(probe);
             if (info.isSymLink()) return QString();
             if (info.exists()) {
                 const QString canonical = info.canonicalFilePath();
-                if (!isInside(canonical)) return QString();
+                if (!isInsideMount(canonical, base)) return QString();
             }
         }
-        const QString candidate = QDir::cleanPath(probe);
-        if (!isInside(candidate)) return QString();
-        return candidate;
+        const QString result = QDir::cleanPath(probe);
+        return isInsideMount(result, base) ? result : QString();
     }
 
     QString existingDirectory(const QString &virtualPath) const
     {
+        if (virtualPath.isEmpty()) return root_;
         const QString path = hostPath(virtualPath);
         return !path.isEmpty() && QFileInfo(path).isDir() ? path : QString();
     }
 
     QString readableFile(const QString &virtualPath) const
     {
+        if (virtualPath.isEmpty() || !virtualPath.contains(QLatin1Char('/')))
+            return QString();
         const QString path = hostPath(virtualPath);
         const QFileInfo info(path);
-        return !path.isEmpty() && info.isFile() && !info.isSymLink()
-            ? path : QString();
+        return !path.isEmpty() && info.isFile() && !info.isSymLink() ? path : QString();
     }
 
     QString writableFile(const QString &virtualPath) const
     {
+        if (virtualPath.isEmpty() || !virtualPath.contains(QLatin1Char('/')))
+            return QString();
         const QString path = hostPath(virtualPath);
         if (path.isEmpty()) return QString();
         const QFileInfo info(path);
@@ -131,110 +201,221 @@ public:
         return path;
     }
 
+    bool createDirectory(const QString &virtualParent, const QString &name)
+    {
+        if (!safeName(name) || virtualParent.isEmpty()) return false;
+        if (existingDirectory(virtualParent).isEmpty()) return false;
+        const QString child = join(virtualParent, name);
+        const QString path = hostPath(child);
+        if (path.isEmpty() || QFileInfo::exists(path)) return false;
+        return QDir().mkdir(path);
+    }
+
+    bool removeEntry(const QString &virtualPath)
+    {
+        if (virtualPath.isEmpty() || !virtualPath.contains(QLatin1Char('/')))
+            return false; // Mountpoints bleiben unveraenderlich.
+        const QString path = hostPath(virtualPath);
+        if (path.isEmpty()) return false;
+        const QFileInfo info(path);
+        if (info.isSymLink()) return false;
+        if (info.isDir()) return QDir().rmdir(path); // nur leere Ordner
+        if (info.isFile()) return QFile::remove(path);
+        return false;
+    }
+
     static QString parentVirtual(const QString &relative)
     {
-        const QString result = QFileInfo(relative).path();
-        return result == QLatin1String(".") ? QString() : result;
+        if (relative.isEmpty()) return QString();
+        const int slash = relative.lastIndexOf(QLatin1Char('/'));
+        return slash < 0 ? QString() : relative.left(slash);
     }
-
     static QString join(const QString &directory, const QString &name)
-    {
-        return directory.isEmpty() ? name : directory + QLatin1Char('/') + name;
-    }
+    { return directory.isEmpty() ? name : directory + QLatin1Char('/') + name; }
 
 private:
-    bool isInside(const QString &path) const
+    bool isInsideRoot(const QString &path) const { return isInsideMount(path, root_); }
+    static bool isInsideMount(const QString &path, const QString &base)
     {
-        if (root_.isEmpty()) return false;
+        if (base.isEmpty() || path.isEmpty()) return false;
 #ifdef _WIN32
-        const Qt::CaseSensitivity sensitivity = Qt::CaseInsensitive;
+        const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
 #else
-        const Qt::CaseSensitivity sensitivity = Qt::CaseSensitive;
+        const Qt::CaseSensitivity cs = Qt::CaseSensitive;
 #endif
-        return path.compare(root_, sensitivity) == 0
-            || path.startsWith(root_ + QLatin1Char('/'), sensitivity);
+        return path.compare(base, cs) == 0 || path.startsWith(base + QLatin1Char('/'), cs);
     }
     QString root_;
+    QString sharedRoot_;
+    QString personalRoot_;
+    QString identityHash_;
 };
 
-class D64VirtualFileDialog final : public QDialog
+// Reiner Qt::Widget-Dialog im DOS-Viewport: nie ein eigenes Windows-Fenster.
+class D64VirtualFileDialog final : public QWidget
 {
 public:
     enum Mode { OpenFile, SaveFile };
+    enum { Rejected=0, Accepted=1 };
 
     explicit D64VirtualFileDialog(D64ApplicationVfs *vfs, Mode mode,
                                    const QString &previousFile, QWidget *parent, bool darkMode = true)
-        : QDialog(parent), vfs_(vfs), mode_(mode)
+        : QWidget(parent), vfs_(vfs), mode_(mode), darkMode_(darkMode)
     {
+        setWindowFlags(Qt::Widget);
         setObjectName(QStringLiteral("dbaseVirtualFileDialog"));
-        setWindowTitle(mode == SaveFile ? QStringLiteral("Datei speichern unter")
-                                         : QStringLiteral("Datei öffnen"));
-        setMinimumSize(600, 370);
-        resize(820, 510);
-        setStyleSheet(QStringLiteral(
-            "QDialog#dbaseVirtualFileDialog{background:#0000aa;color:white;}"
-            "QLabel{color:white;}"
+        setFocusPolicy(Qt::StrongFocus);
+        setContextMenuPolicy(Qt::NoContextMenu);
+        setCursor(Qt::ArrowCursor);
+        setMouseTracking(true);
+        // Stage 644: exakt drei Pixel schmaler als Stage 643.
+        setMinimumSize(557, 330);
+        resize(767, 490);
+        setStyleSheet(darkMode ? QStringLiteral(
+            "QWidget#dbaseVirtualFileDialog{background:#0000aa;color:#ffffff;border:2px solid #ffff55;}"
+            "QLabel{color:#ffffff;}"
             "QListWidget,QTreeWidget,QLineEdit{background:#000080;color:white;"
             "border:1px solid #ffff55;selection-background-color:#aaaa00;selection-color:black;}"
             "QHeaderView::section{background:#0000aa;color:#ffff55;border:1px solid #ffff55;}"
             "QPushButton{background:#0000aa;color:#ffff55;border:1px solid #ffff55;"
-            "padding:5px 15px;min-width:80px;}"
+            "padding:5px 11px;min-width:60px;}"
             "QPushButton:hover{background:#3333cc;}"
-            "QSplitter::handle{background:#ffff55;}"));
-        if (!darkMode) {
-            setStyleSheet(QStringLiteral(
-                "QDialog#dbaseVirtualFileDialog{background:#f0f2f8;color:#1e2130;}"
-                "QLabel{color:#1e2130;}"
-                "QListWidget,QTreeWidget,QLineEdit{background:#ffffff;color:#182440;"
-                "border:1px solid #5474ae;selection-background-color:#acc1ed;}"
-                "QHeaderView::section{background:#dfe7f7;color:#233b66;border:1px solid #5474ae;}"
-                "QPushButton{background:#dfe7f7;color:#233b66;border:1px solid #5474ae;"
-                "padding:5px 15px;min-width:80px;}"
-                "QSplitter::handle{background:#5474ae;}"));
-        }
+            "QSplitter::handle{background:#ffff55;}") : QStringLiteral(
+            "QWidget#dbaseVirtualFileDialog{background:#f0f2f8;color:#1e2130;border:2px solid #5474ae;}"
+            "QLabel{color:#1e2130;}"
+            "QListWidget,QTreeWidget,QLineEdit{background:#ffffff;color:#182440;"
+            "border:1px solid #5474ae;selection-background-color:#acc1ed;}"
+            "QHeaderView::section{background:#dfe7f7;color:#233b66;border:1px solid #5474ae;}"
+            "QPushButton{background:#dfe7f7;color:#233b66;border:1px solid #5474ae;"
+            "padding:5px 11px;min-width:60px;}"
+            "QSplitter::handle{background:#5474ae;}"));
         auto *outer = new QVBoxLayout(this);
-        auto *intro = new QLabel(QStringLiteral("Virtuelles Dateisystem – Zugriff nur innerhalb der Anwendung"), this);
-        outer->addWidget(intro);
+        outer->setContentsMargins(9, 7, 9, 8);
+        // Turbo-Vision-Titelleiste mit Schliessen links oben. Kein
+        // eigenes OS-Fenster; der gesamte Dialog bleibt in der Modalschicht.
+        titleBar_ = new QWidget(this);
+        titleBar_->setObjectName(QStringLiteral("dbaseVirtualFileTitleBar"));
+        titleBar_->setStyleSheet(darkMode_ ? QStringLiteral(
+            "QWidget#dbaseVirtualFileTitleBar{background:#2256cf;}")
+            : QStringLiteral("QWidget#dbaseVirtualFileTitleBar{background:#c4d7f4;}"));
+        titleBar_->setCursor(Qt::ArrowCursor);
+        titleBar_->setMouseTracking(true);
+        auto *titleRow = new QHBoxLayout(titleBar_);
+        titleRow->setContentsMargins(2, 1, 2, 1);
+        titleRow->setSpacing(3);
+        closeButton_ = new QToolButton(titleBar_);
+        closeButton_->setObjectName(QStringLiteral("dbaseVirtualFileClose"));
+        closeButton_->setText(QStringLiteral("×"));
+        closeButton_->setToolTip(QStringLiteral("Schließen / Abbrechen"));
+        closeButton_->setFixedSize(22, 20);
+        closeButton_->setFocusPolicy(Qt::NoFocus);
+        closeButton_->setStyleSheet(darkMode_ ? QStringLiteral(
+            "QToolButton#dbaseVirtualFileClose{color:#ffff55;background:#163b9c;"
+            "border:1px solid #ffff55;font-weight:bold;padding:0;}"
+            "QToolButton#dbaseVirtualFileClose:hover{background:#355de0;}")
+            : QStringLiteral(
+            "QToolButton#dbaseVirtualFileClose{color:#15284a;background:#dce6f5;"
+            "border:1px solid #5474ae;font-weight:bold;padding:0;}"));
+        title_ = new QLabel(mode == OpenFile ? QStringLiteral("Datei öffnen")
+                                            : QStringLiteral("Datei speichern unter"), titleBar_);
+        title_->setObjectName(QStringLiteral("dbaseVirtualFileTitle"));
+        title_->setAlignment(Qt::AlignCenter);
+        title_->setCursor(Qt::ArrowCursor);
+        title_->setMouseTracking(true);
+        title_->setStyleSheet(darkMode_ ? QStringLiteral(
+            "QLabel#dbaseVirtualFileTitle{font-weight:bold;background:transparent;color:#ffffff;}")
+            : QStringLiteral(
+            "QLabel#dbaseVirtualFileTitle{font-weight:bold;background:transparent;color:#1e2130;}"));
+        titleBalance_ = new QWidget(titleBar_);
+        titleBalance_->setFixedWidth(22);
+        titleBalance_->setCursor(Qt::ArrowCursor);
+        titleRow->addWidget(closeButton_);
+        titleRow->addWidget(title_, 1);
+        titleRow->addWidget(titleBalance_);
+        outer->addWidget(titleBar_);
+        titleBar_->installEventFilter(this);
+        title_->installEventFilter(this);
+        titleBalance_->installEventFilter(this);
+        QObject::connect(closeButton_, &QToolButton::clicked, this,
+                         [this]() { finish(Rejected); });
         location_ = new QLabel(this);
-        location_->setObjectName(QStringLiteral("dbaseVirtualFileLocation"));
+        location_->setObjectName(QStringLiteral("dbaseVirtualFilePath"));
         outer->addWidget(location_);
         auto *searchRow = new QHBoxLayout();
-        searchRow->addWidget(new QLabel(QStringLiteral("Suche:"), this));
+        searchRow->addWidget(new QLabel(QStringLiteral("Suchen"), this));
         search_ = new QLineEdit(this);
         search_->setObjectName(QStringLiteral("dbaseVirtualFileSearch"));
-        search_->setPlaceholderText(QStringLiteral("Dateinamen im aktuellen Verzeichnis suchen ..."));
         searchRow->addWidget(search_, 1);
         outer->addLayout(searchRow);
-
         splitter_ = new QSplitter(Qt::Horizontal, this);
         splitter_->setObjectName(QStringLiteral("dbaseVirtualFileSplitter"));
         splitter_->setChildrenCollapsible(false);
         folders_ = new QListWidget(splitter_);
         folders_->setObjectName(QStringLiteral("dbaseVirtualFolders"));
-        folders_->setMinimumWidth(170);
-        folders_->setCursor(Qt::PointingHandCursor);
+        folders_->setMinimumWidth(155);
+        folders_->setCursor(Qt::ArrowCursor);
         files_ = new QTreeWidget(splitter_);
         files_->setObjectName(QStringLiteral("dbaseVirtualFiles"));
-        files_->setHeaderLabels({QStringLiteral("Dateiname"), QStringLiteral("Typ"),
-                                 QStringLiteral("Groesse")});
+        files_->setHeaderLabels({QStringLiteral("Name"), QStringLiteral("Datum"), QStringLiteral("Größe")});
+        files_->header()->setObjectName(QStringLiteral("dbaseVirtualFileHeader"));
         files_->setRootIsDecorated(false);
-        files_->setAlternatingRowColors(false);
-        files_->setMinimumWidth(250);
+        files_->setMinimumWidth(265);
+        // Stage 645: Alle vier Leisten erhalten die Turbo-Vision-Zeichnung.
+        // Die gemeinsame Geometrie aus Stage 630 trennt Thumb und Pfeilfelder
+        // auch in den beiden Endpositionen und beim Ziehen strikt voneinander.
+        auto installFileScrollbars = [](QAbstractScrollArea *view) {
+            auto *vertical = new D64TurboArrowScrollBar(Qt::Vertical, view);
+            vertical->setObjectName(QStringLiteral("dbaseVirtualVerticalScroll"));
+            vertical->setTurboEditorTheme();
+            vertical->setFixedWidth(15);
+            vertical->setCursor(Qt::ArrowCursor);
+            view->setVerticalScrollBar(vertical);
+
+            auto *horizontal = new D64TurboArrowScrollBar(Qt::Horizontal, view);
+            horizontal->setObjectName(QStringLiteral("dbaseVirtualHorizontalScroll"));
+            horizontal->setTurboEditorTheme();
+            horizontal->setFixedHeight(15);
+            horizontal->setCursor(Qt::ArrowCursor);
+            view->setHorizontalScrollBar(horizontal);
+        };
+        installFileScrollbars(folders_);
+        installFileScrollbars(files_);
+        // Handcursor nur auf tatsächlichen Einträgen, niemals auf Leerraum.
+        folders_->viewport()->setMouseTracking(true);
+        files_->viewport()->setMouseTracking(true);
+        folders_->viewport()->setCursor(Qt::ArrowCursor);
+        files_->viewport()->setCursor(Qt::ArrowCursor);
+        folders_->viewport()->installEventFilter(this);
+        files_->viewport()->installEventFilter(this);
         splitter_->addWidget(folders_);
         splitter_->addWidget(files_);
         splitter_->setStretchFactor(0, 1);
         splitter_->setStretchFactor(1, 3);
-        splitter_->setSizes({230, 590});
+        splitter_->setSizes({235, 530});
+        // Splitter-Handle und Spalten-Grenzen sind echte Sizer-Zonen.
+        // Nach dem generellen Cursor-Reset am Konstruktorende erneut setzen.
+        files_->header()->setMouseTracking(true);
+        files_->header()->viewport()->setMouseTracking(true);
+        files_->header()->viewport()->installEventFilter(this);
         outer->addWidget(splitter_, 1);
-
-        auto *filenameRow = new QHBoxLayout();
-        filenameRow->addWidget(new QLabel(QStringLiteral("Dateiname:"), this));
+        auto *fileRow = new QHBoxLayout();
+        fileRow->addWidget(new QLabel(QStringLiteral("Dateiname"), this));
         filename_ = new QLineEdit(this);
         filename_->setObjectName(QStringLiteral("dbaseVirtualFilename"));
-        filenameRow->addWidget(filename_, 1);
-        outer->addLayout(filenameRow);
-
+        fileRow->addWidget(filename_, 1);
+        outer->addLayout(fileRow);
+        info_ = new QLabel(this);
+        info_->setObjectName(QStringLiteral("dbaseVirtualFileStatus"));
+        info_->setWordWrap(true);
+        info_->setMinimumHeight(16);
+        outer->addWidget(info_);
         auto *buttons = new QHBoxLayout();
+        auto *add = new QPushButton(QStringLiteral("Verz. Hinzufügen"), this);
+        auto *remove = new QPushButton(QStringLiteral("Löschen"), this);
+        add->setObjectName(QStringLiteral("dbaseVirtualAddDirectory"));
+        remove->setObjectName(QStringLiteral("dbaseVirtualDelete"));
+        buttons->addWidget(add);
+        buttons->addWidget(remove);
         buttons->addStretch(1);
         auto *ok = new QPushButton(QStringLiteral("OK"), this);
         auto *cancel = new QPushButton(QStringLiteral("Abbrechen"), this);
@@ -242,149 +423,523 @@ public:
         ok->setObjectName(QStringLiteral("dbaseVirtualFileOK"));
         cancel->setObjectName(QStringLiteral("dbaseVirtualFileCancel"));
         help->setObjectName(QStringLiteral("dbaseVirtualFileHelp"));
-        buttons->addWidget(ok);
-        buttons->addWidget(cancel);
-        buttons->addWidget(help);
+        buttons->addWidget(ok); buttons->addWidget(cancel); buttons->addWidget(help);
         outer->addLayout(buttons);
 
         QObject::connect(ok, &QPushButton::clicked, this, [this]() { acceptSelection(); });
-        QObject::connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
+        QObject::connect(cancel, &QPushButton::clicked, this, [this]() { finish(Rejected); });
         QObject::connect(help, &QPushButton::clicked, this, [this]() {
-            QMessageBox::information(this, QStringLiteral("Hilfe – Dateiauswahl"),
-                QStringLiteral("Links: Meine Dokumente und Verzeichnisse oeffnen. "
-                               "Rechts: Dateien ansehen und per Doppelklick auswaehlen. "
-                               "Die Suche filtert Dateinamen im aktuellen Ordner. "
-                               "Der Trenner zwischen beiden Listen ist verschiebbar. "
-                               "Dateinamen unten eingeben und mit OK bestaetigen. "
-                               "Dateien duerfen nur innerhalb des dieser Anwendung fest zugeordneten "
-                               "virtuellen Verzeichnisses geoeffnet und gespeichert werden.\n\nHost-Verzeichnis:\n%1")
-                    .arg(vfs_ ? vfs_->hostRoot() : QString()));
+            status(QStringLiteral("Links: virtuelle Ordner und '..' zum Zurückgehen. "
+                "Rechts: Dateien (Name, Datum, Größe), Doppelklick zum Öffnen. "
+                "Die Suche filtert Namen. Verzeichnisse können nur in 'Alle Benutzer' "
+                "oder den eigenen 'Dokumente' angelegt werden."));
         });
+        QObject::connect(add, &QPushButton::clicked, this, [this]() { addDirectory(); });
+        QObject::connect(remove, &QPushButton::clicked, this, [this]() { deleteSelection(); });
         QObject::connect(folders_, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
-            if (item) showDirectory(item->data(Qt::UserRole).toString());
+            if (!item || !vfs_) return;
+            const QString selected = item->data(Qt::UserRole).toString();
+            selectedEntry_ = selected;
+            if (!vfs_->existingDirectory(selected).isEmpty()) showDirectory(selected);
+            else if (!vfs_->readableFile(selected).isEmpty())
+                filename_->setText(QFileInfo(selected).fileName());
         });
-        QObject::connect(files_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *item, int) {
-            if (item) filename_->setText(item->data(0, Qt::UserRole).toString());
-        });
-        QObject::connect(files_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item, int) {
-            if (item) {
-                filename_->setText(item->data(0, Qt::UserRole).toString());
+        QObject::connect(folders_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
+            if (!item || !vfs_) return;
+            const QString selected = item->data(Qt::UserRole).toString();
+            if (!vfs_->existingDirectory(selected).isEmpty()) showDirectory(selected);
+            else if (!vfs_->readableFile(selected).isEmpty()) {
+                filename_->setText(QFileInfo(selected).fileName());
                 acceptSelection();
             }
         });
-        QObject::connect(search_, &QLineEdit::textChanged, this, [this](const QString &value) {
-            if (!files_) return;
-            for (int i = 0; i < files_->topLevelItemCount(); ++i) {
-                QTreeWidgetItem *item = files_->topLevelItem(i);
-                if (item)
-                    item->setHidden(!item->text(0).contains(value, Qt::CaseInsensitive));
+        QObject::connect(files_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *item, int) {
+            if (!item) return;
+            const QString value = item->data(0, Qt::UserRole).toString();
+            selectedEntry_ = item->data(0, Qt::UserRole + 1).toString() == QLatin1String("file")
+                ? D64ApplicationVfs::join(currentDirectory_, value) : value;
+            if (item->data(0, Qt::UserRole + 1).toString() == QLatin1String("file"))
+                filename_->setText(value);
+        });
+        QObject::connect(files_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item, int) {
+            if (!item) return;
+            const QString value = item->data(0, Qt::UserRole).toString();
+            const QString type = item->data(0, Qt::UserRole + 1).toString();
+            if (type == QLatin1String("dir")) showDirectory(value);
+            else if (type == QLatin1String("file")) {
+                filename_->setText(value); acceptSelection();
             }
         });
+        QObject::connect(search_, &QLineEdit::textChanged, this, [this](const QString &) { filterFiles(); });
         QObject::connect(filename_, &QLineEdit::returnPressed, this, [this]() { acceptSelection(); });
-        const QString priorDirectory = D64ApplicationVfs::parentVirtual(previousFile);
-        const QString initial = vfs_ && !vfs_->existingDirectory(priorDirectory).isEmpty()
-            ? priorDirectory : (vfs_ ? vfs_->documents() : QString());
+        // Stage 646: Path und beide Dateilisten erhalten dieselbe Schrift.
+        // Qt5-/Windows-Fallback wie bei der internen Turbo-MessageBox.
+        QFontDatabase availableFonts;
+        QString fileFontFamily = QStringLiteral("Courier");
+        for (const QString &candidate : {QStringLiteral("Consolas"),
+                                         QStringLiteral("Courier New"),
+                                         QStringLiteral("Courier")}) {
+            if (availableFonts.hasFamily(candidate)) {
+                fileFontFamily = candidate;
+                break;
+            }
+        }
+        QFont fileFont = font();
+        fileFont.setFamily(fileFontFamily);
+        fileFont.setStyleHint(QFont::TypeWriter);
+        fileFont.setStyleStrategy(QFont::PreferMatch);
+        const QString fileFontStyle = QStringLiteral("font-family:'%1';").arg(fileFontFamily);
+        for (QWidget *item : {static_cast<QWidget *>(location_),
+                              static_cast<QWidget *>(folders_),
+                              static_cast<QWidget *>(files_),
+                              static_cast<QWidget *>(files_->header())}) {
+            item->setFont(fileFont);
+            // Lokales QSS erzwingt die gewählte Familie auch gegenüber
+            // einem globalen Anwendungs-Stylesheet (analog MessageBox).
+            item->setStyleSheet(fileFontStyle);
+        }
+
+        const QString initial = vfs_ && !vfs_->existingDirectory(
+            D64ApplicationVfs::parentVirtual(previousFile)).isEmpty()
+            ? D64ApplicationVfs::parentVirtual(previousFile) : QString();
         showDirectory(initial);
         if (!previousFile.isEmpty()) filename_->setText(QFileInfo(previousFile).fileName());
+        // Keine nativen Qt-Kontextmenüs (auch nicht in QLineEdit oder
+        // den Scroll-Viewports). Nur Einträge und Aktionsbuttons zeigen Hand.
+        for (QWidget *widget : findChildren<QWidget *>()) {
+            widget->setContextMenuPolicy(Qt::NoContextMenu);
+            widget->setCursor(Qt::ArrowCursor);
+            widget->installEventFilter(this);
+        }
+        for (QPushButton *button : {add, remove, ok, cancel, help})
+            button->setCursor(Qt::PointingHandCursor);
+        closeButton_->setCursor(Qt::PointingHandCursor);
+        // Titel ist eine Verschiebezone; Schließen bleibt Handcursor.
+        // Unbedingt nach dem generellen Kindwidget-Reset zuweisen.
+        for (QWidget *dragSurface : {titleBar_, static_cast<QWidget *>(title_), titleBalance_})
+            dragSurface->setCursor(Qt::SizeAllCursor);
+        // Die Ruecksetzung fuer die normalen Dialogflaechen darf die
+        // Sizer- und Scrollbar-Cursor nicht ueberschreiben.
+        if (QSplitterHandle *handle = splitter_->handle(1))
+            handle->setCursor(Qt::SplitHCursor);
+        files_->header()->viewport()->setCursor(Qt::ArrowCursor);
+        for (QAbstractScrollArea *view : {static_cast<QAbstractScrollArea *>(folders_),
+                                          static_cast<QAbstractScrollArea *>(files_)}) {
+            view->verticalScrollBar()->setCursor(Qt::ArrowCursor);
+            view->horizontalScrollBar()->setCursor(Qt::ArrowCursor);
+        }
     }
 
     QString selectedVirtualPath() const { return selected_; }
 
+    // Die innere Eventloop startet erst nach der Qt-Menueaktion.
+    int exec()
+    {
+        QWidget *desktop = D64TurboMessageBox::consoleDesktop(parentWidget());
+        if (!desktop) return Rejected;
+        if (QWidget *popup = QApplication::activePopupWidget()) popup->close();
+        QWidget *owner = parentWidget();
+        D64TurboModalLayer layer(desktop);
+        layer.setGeometry(desktop->rect());
+        layer_ = &layer;
+        setParent(&layer, Qt::Widget);
+        const int dialogWidth = qMax(557,
+            qMin(qMax(280, desktop->width() - 20), 820) - 3);
+        const int dialogHeight = qMin(qMax(200, desktop->height() - 16), 525);
+        resize(dialogWidth, dialogHeight);
+        const QSize cell = d64_turbo_message_grid::cellSize(desktop);
+        const QPoint centered = d64_turbo_message_grid::clampCells(
+            d64_turbo_message_grid::roundCells((desktop->width() - dialogWidth) / 2,
+                                               cell.width()),
+            d64_turbo_message_grid::roundCells((desktop->height() - dialogHeight) / 2,
+                                               cell.height()), desktop);
+        setGridPosition(centered);
+        QEventLoop loop;
+        result_ = Rejected;
+        running_ = true;
+        finished_ = [&loop]() { loop.quit(); };
+        layer.setEscapeHandler([this]() { finish(Rejected); });
+        layer.show(); layer.raise();
+        show(); raise(); setFocus(Qt::OtherFocusReason);
+        loop.exec(QEventLoop::AllEvents);
+        if (dragging_) {
+            if (dragWidget_) dragWidget_->releaseMouse();
+            dragging_ = false;
+            dragWidget_ = nullptr;
+        }
+        hide(); finished_ = {};
+        running_ = false;
+        layer_ = nullptr;
+        setParent(owner, Qt::Widget);
+        return result_;
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (!event) return QWidget::eventFilter(watched, event);
+        // Unterdrückt Qt-Standardkontextmenüs auch in den Kind-Widgets.
+        if (event->type() == QEvent::ContextMenu) {
+            event->accept();
+            return true;
+        }
+        // Der Spalten-Sizer liegt innerhalb von +/- 5 Pixeln der rechten
+        // Spaltenkante. Nur dort den Split-Cursor; auf Header-Text normal.
+        if (watched == files_->header()->viewport()) {
+            auto *area = files_->header()->viewport();
+            if (event->type() == QEvent::MouseMove) {
+                const int x = static_cast<QMouseEvent *>(event)->pos().x();
+                const QHeaderView *header = files_->header();
+                bool atDivider = false;
+                for (int section = 0; section < header->count(); ++section) {
+                    if (header->isSectionHidden(section)) continue;
+                    const int right = header->sectionViewportPosition(section)
+                                    + header->sectionSize(section);
+                    if (qAbs(x - right) <= 5) { atDivider = true; break; }
+                }
+                area->setCursor(atDivider ? Qt::SplitHCursor : Qt::ArrowCursor);
+            } else if (event->type() == QEvent::Leave) {
+                area->setCursor(Qt::ArrowCursor);
+            }
+        }
+        if (watched == folders_->viewport() || watched == files_->viewport()) {
+            QWidget *area = static_cast<QWidget *>(watched);
+            if (event->type() == QEvent::MouseMove) {
+                const QPoint pos = static_cast<QMouseEvent *>(event)->pos();
+                const bool overEntry = watched == folders_->viewport()
+                    ? folders_->itemAt(pos) != nullptr
+                    : files_->itemAt(pos) != nullptr;
+                area->setCursor(overEntry ? Qt::PointingHandCursor : Qt::ArrowCursor);
+            } else if (event->type() == QEvent::Leave) {
+                area->setCursor(Qt::ArrowCursor);
+            }
+        }
+        if (watched == titleBar_ || watched == title_ || watched == titleBalance_) {
+            switch (event->type()) {
+            case QEvent::MouseButtonPress: {
+                auto *mouse = static_cast<QMouseEvent *>(event);
+                if (mouse->button() != Qt::LeftButton) break;
+                dragging_ = true;
+                dragStartGlobal_ = mouse->globalPos();
+                QWidget *desktop = layer_ ? layer_->parentWidget() : nullptr;
+                if (desktop) {
+                    const QSize cell = d64_turbo_message_grid::cellSize(desktop);
+                    dragStartCells_ = d64_turbo_message_grid::clampCells(
+                        d64_turbo_message_grid::roundCells(x(), cell.width()),
+                        d64_turbo_message_grid::roundCells(y(), cell.height()),
+                        desktop);
+                    // Auch nach einer Zoom-/Viewport-Aenderung ohne Sprung
+                    // exakt bei der aktuellen sichtbaren Zellposition starten.
+                    setGridPosition(dragStartCells_);
+                } else {
+                    dragStartCells_ = QPoint(gridColumn_, gridRow_);
+                }
+                dragWidget_ = static_cast<QWidget *>(watched);
+                dragWidget_->grabMouse();
+                raise();
+                mouse->accept();
+                return true;
+            }
+            case QEvent::MouseMove: {
+                if (!dragging_) break;
+                auto *mouse = static_cast<QMouseEvent *>(event);
+                if (mouse->buttons() & Qt::LeftButton)
+                    updateDragPosition(mouse->globalPos());
+                else
+                    endTitleDrag();
+                mouse->accept();
+                return true;
+            }
+            case QEvent::MouseButtonRelease: {
+                auto *mouse = static_cast<QMouseEvent *>(event);
+                if (!dragging_ || mouse->button() != Qt::LeftButton) break;
+                updateDragPosition(mouse->globalPos());
+                endTitleDrag();
+                mouse->accept();
+                return true;
+            }
+            default: break;
+            }
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+    void contextMenuEvent(QContextMenuEvent *event) override
+    { event->accept(); }
+    void keyPressEvent(QKeyEvent *e) override
+    {
+        if (e->key() == Qt::Key_Escape) { finish(Rejected); return; }
+        QWidget::keyPressEvent(e);
+    }
+    void closeEvent(QCloseEvent *event) override
+    {
+        if (running_) { finish(Rejected); event->ignore(); return; }
+        QWidget::closeEvent(event);
+    }
+
 private:
+    void setGridPosition(const QPoint &cells)
+    {
+        QWidget *desktop = layer_ ? layer_->parentWidget()
+                                   : D64TurboMessageBox::consoleDesktop(parentWidget());
+        if (!desktop) return;
+        const QPoint clamped = d64_turbo_message_grid::clampCells(
+            cells.x(), cells.y(), desktop);
+        gridColumn_ = clamped.x();
+        gridRow_ = clamped.y();
+        setProperty("d64GridCol", gridColumn_);
+        setProperty("d64GridRow", gridRow_);
+        move(d64_turbo_message_grid::gridPixels(clamped, desktop));
+    }
+    void updateDragPosition(const QPoint &global)
+    {
+        QWidget *desktop = layer_ ? layer_->parentWidget() : nullptr;
+        if (!desktop) return;
+        const QSize cell = d64_turbo_message_grid::cellSize(desktop);
+        const QPoint delta = global - dragStartGlobal_;
+        setGridPosition(QPoint(
+            dragStartCells_.x() + d64_turbo_message_grid::roundCells(delta.x(), cell.width()),
+            dragStartCells_.y() + d64_turbo_message_grid::roundCells(delta.y(), cell.height())));
+    }
+    void endTitleDrag()
+    {
+        dragging_ = false;
+        if (dragWidget_) dragWidget_->releaseMouse();
+        dragWidget_ = nullptr;
+    }
+    void finish(int result)
+    {
+        if (!running_) return;
+        if (dragging_) endTitleDrag();
+        result_ = result;
+        if (finished_) finished_();
+    }
+    void status(const QString &message) { if (info_) info_->setText(message); }
+    void filterFiles()
+    {
+        const QString value = search_->text();
+        for (int i = 0; i < files_->topLevelItemCount(); ++i) {
+            auto *item = files_->topLevelItem(i);
+            if (!item) continue;
+            item->setHidden(!item->text(0).contains(value, Qt::CaseInsensitive)
+                            && item->data(0, Qt::UserRole).toString() != QLatin1String(".."));
+        }
+    }
+
+    void addTreeEntry(const QString &label, const QString &virtualName,
+                      const QString &type, const QFileInfo &info)
+    {
+        auto *item = new QTreeWidgetItem(files_);
+        item->setText(0, label);
+        item->setData(0, Qt::UserRole, virtualName);
+        item->setData(0, Qt::UserRole + 1, type);
+        item->setIcon(0, style()->standardIcon(type == QLatin1String("dir")
+                            ? QStyle::SP_DirIcon : QStyle::SP_FileIcon));
+        if (info.exists()) {
+            item->setText(1, info.lastModified().toString(QStringLiteral("dd.MM.yyyy HH:mm")));
+            if (type == QLatin1String("file")) item->setText(2, QString::number(info.size()));
+        }
+    }
+
     void showDirectory(const QString &virtualDirectory)
     {
         if (!vfs_) return;
         const QString host = vfs_->existingDirectory(virtualDirectory);
-        if (host.isEmpty()) return;
+        if (host.isEmpty()) { status(QStringLiteral("Verzeichnis nicht zugänglich.")); return; }
         currentDirectory_ = virtualDirectory;
+        selectedEntry_.clear();
         location_->setText(QStringLiteral("Pfad: /") + virtualDirectory);
-        folders_->clear();
-        files_->clear();
-        auto addFolder = [this](const QString &label, const QString &path, QStyle::StandardPixmap icon) {
-            auto *entry = new QListWidgetItem(style()->standardIcon(icon), label, folders_);
-            entry->setData(Qt::UserRole, path);
-            entry->setToolTip(QStringLiteral("Verzeichnis öffnen: /") + path);
+        folders_->clear(); files_->clear(); filename_->clear();
+        auto addFolder = [this](const QString &caption, const QString &path,
+                                QStyle::StandardPixmap icon) {
+            auto *item = new QListWidgetItem(style()->standardIcon(icon), caption, folders_);
+            item->setData(Qt::UserRole, path);
         };
-        addFolder(QStringLiteral("Meine Dokumente"), vfs_->documents(), QStyle::SP_DirHomeIcon);
         if (!virtualDirectory.isEmpty()) {
-            addFolder(QStringLiteral(".. (Übergeordnet)"),
-                      D64ApplicationVfs::parentVirtual(virtualDirectory), QStyle::SP_ArrowUp);
+            const QString parent = D64ApplicationVfs::parentVirtual(virtualDirectory);
+            addFolder(QStringLiteral(".."), parent, QStyle::SP_ArrowUp);
+            addTreeEntry(QStringLiteral(".."), parent, QStringLiteral("dir"), QFileInfo());
         }
-        const QFileInfoList dirs = QDir(host).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot
-                                                           | QDir::Readable, QDir::Name);
-        for (const QFileInfo &dir : dirs) {
-            const QString virtualChild = D64ApplicationVfs::join(virtualDirectory, dir.fileName());
-            if (dir.isSymLink() || vfs_->existingDirectory(virtualChild).isEmpty()) continue;
-            addFolder(dir.fileName(), virtualChild, QStyle::SP_DirIcon);
-        }
-        const QFileInfoList entries = QDir(host).entryInfoList(QDir::Files | QDir::Readable,
-                                                                QDir::Name | QDir::IgnoreCase);
-        for (const QFileInfo &file : entries) {
-            if (file.isSymLink() || vfs_->readableFile(
-                D64ApplicationVfs::join(virtualDirectory, file.fileName())).isEmpty()) continue;
-            auto *item = new QTreeWidgetItem(files_);
-            item->setText(0, file.fileName());
-            item->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
-            item->setText(1, file.suffix().isEmpty() ? QStringLiteral("Datei")
-                                                       : file.suffix().toUpper());
-            item->setText(2, QString::number(file.size()));
-            item->setData(0, Qt::UserRole, file.fileName());
+        if (virtualDirectory.isEmpty()) {
+            for (const QString &mount : vfs_->mountPoints()) {
+                addFolder(mount, mount, QStyle::SP_DirHomeIcon);
+                addTreeEntry(mount, mount, QStringLiteral("dir"), QFileInfo());
+            }
+        } else {
+            const QFileInfoList folders = QDir(host).entryInfoList(
+                QDir::Dirs | QDir::NoDotAndDotDot | QDir::Readable, QDir::Name);
+            for (const QFileInfo &folder : folders) {
+                const QString virtualChild = D64ApplicationVfs::join(virtualDirectory, folder.fileName());
+                if (folder.isSymLink() || vfs_->existingDirectory(virtualChild).isEmpty()) continue;
+                addFolder(folder.fileName(), virtualChild, QStyle::SP_DirIcon);
+                addTreeEntry(folder.fileName(), virtualChild, QStringLiteral("dir"), folder);
+            }
+            const QFileInfoList entries = QDir(host).entryInfoList(QDir::Files | QDir::Readable,
+                                                                    QDir::Name | QDir::IgnoreCase);
+            for (const QFileInfo &file : entries) {
+                if (file.isSymLink()) continue;
+                if (vfs_->readableFile(D64ApplicationVfs::join(virtualDirectory, file.fileName())).isEmpty())
+                    continue;
+                const QString virtualFile = D64ApplicationVfs::join(virtualDirectory, file.fileName());
+                addFolder(file.fileName(), virtualFile, QStyle::SP_FileIcon);
+                addTreeEntry(file.fileName(), file.fileName(), QStringLiteral("file"), file);
+            }
         }
         files_->resizeColumnToContents(0);
-        search_->clear();
-        filename_->clear();
+        // Genau 24 zusätzliche Pixel zwischen dem durch Qt gemessenen
+        // Namensinhalt (inklusive Icon/Einrückung) und der Datum-Spalte.
+        // Nach jedem Ordnerwechsel erneut anwenden.
+        files_->setColumnWidth(0, files_->columnWidth(0) + 24);
+        filterFiles();
+        status(QString());
     }
 
     void acceptSelection()
     {
         if (!vfs_) return;
         const QString name = filename_->text().trimmed();
-        if (name.isEmpty() || name == QLatin1String(".") || name == QLatin1String("..")
-            || name.contains(QLatin1Char('/')) || name.contains(QLatin1Char('\\'))
-            || name.contains(QLatin1Char(':'))) {
-            QMessageBox::warning(this, QStringLiteral("Ungueltiger Name"),
-                                 QStringLiteral("Bitte einen Dateinamen ohne Pfadtrenner angeben."));
+        if (!D64ApplicationVfs::safeName(name) || currentDirectory_.isEmpty()) {
+            status(QStringLiteral("Bitte eine Datei in 'Dokumente' oder 'Alle Benutzer' auswählen."));
             return;
         }
-#ifdef _WIN32
-        // Win32-Geraetenamen sind keine regulaeren Dateien, auch mit Suffix.
-        const QString base = name.section(QLatin1Char('.'), 0, 0).toUpper();
-        if (base == QLatin1String("CON") || base == QLatin1String("PRN")
-            || base == QLatin1String("AUX") || base == QLatin1String("NUL")
-            || QRegularExpression(QStringLiteral("^(COM|LPT)[1-9]$")).match(base).hasMatch()
-            || name.endsWith(QLatin1Char('.'))) {
-            QMessageBox::warning(this, QStringLiteral("Reservierter Dateiname"),
-                QStringLiteral("Der gewaehlte Name ist unter Windows reserviert."));
-            return;
-        }
-#endif
         const QString relative = D64ApplicationVfs::join(currentDirectory_, name);
         const QString host = mode_ == OpenFile ? vfs_->readableFile(relative)
                                                 : vfs_->writableFile(relative);
         if (host.isEmpty()) {
-            QMessageBox::warning(this, QStringLiteral("Dateizugriff nicht erlaubt"),
-                QStringLiteral("Die Datei ist nicht vorhanden oder liegt ausserhalb des "
-                               "zugeordneten Verzeichnisses."));
+            status(QStringLiteral("Dateizugriff verweigert oder Datei nicht vorhanden."));
             return;
         }
-        if (mode_ == SaveFile && QFileInfo::exists(host)
-            && QMessageBox::question(this, QStringLiteral("Datei ueberschreiben"),
-                 QStringLiteral("Die Datei existiert bereits. Ueberschreiben?"),
-                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        if (mode_ == SaveFile && QFileInfo::exists(host) &&
+            !inputPrompt(QStringLiteral("Datei '%1' überschreiben?").arg(name),
+                         QString(), nullptr, true))
             return;
         selected_ = relative;
-        accept();
+        finish(Accepted);
     }
 
+    // Eingabe- und Bestaetigungsdialoge sind eingebettete Widgets IN dieser
+    // Datei-Dialogebene, keine nativen QMessageBox-/QInputDialog-Fenster.
+    bool inputPrompt(const QString &title, const QString &initial, QString *value,
+                     bool confirmOnly = false)
+    {
+        QWidget blocker(this);
+        blocker.setObjectName(QStringLiteral("dbaseVirtualInputBlocker"));
+        blocker.setGeometry(rect());
+        blocker.setStyleSheet(QStringLiteral("QWidget#dbaseVirtualInputBlocker{background:rgba(0,0,0,75);}"));
+        QWidget panel(&blocker);
+        panel.setObjectName(QStringLiteral("dbaseVirtualInputPanel"));
+        panel.setStyleSheet(darkMode_ ? QStringLiteral(
+            "QWidget#dbaseVirtualInputPanel{background:#0000aa;color:white;border:2px solid #ffff55;}"
+            "QLabel{color:white;}QLineEdit{background:#000080;color:white;border:1px solid yellow;}"
+            "QPushButton{background:#0000aa;color:yellow;border:1px solid yellow;padding:6px;}")
+            : QStringLiteral(
+            "QWidget#dbaseVirtualInputPanel{background:#dddddd;color:black;border:2px solid #555555;}"
+            "QLabel{color:black;}QLineEdit{background:white;color:black;}"
+            "QPushButton{background:#cccccc;color:black;border:1px solid #666666;padding:6px;}"));
+        const int w = qMin(440, qMax(270, width()-30));
+        const int h = confirmOnly ? 155 : 180;
+        panel.setGeometry(qMax(0,(width()-w)/2), qMax(0,(height()-h)/2), w, h);
+        auto *layout = new QVBoxLayout(&panel);
+        layout->addWidget(new QLabel(title, &panel));
+        QLineEdit *edit = nullptr;
+        if (!confirmOnly) {
+            edit = new QLineEdit(initial, &panel);
+            edit->setObjectName(QStringLiteral("dbaseVirtualInputName"));
+            layout->addWidget(edit);
+        }
+        auto *row = new QHBoxLayout();
+        row->addStretch();
+        auto *ok = new QPushButton(QStringLiteral("OK"), &panel);
+        auto *cancel = new QPushButton(QStringLiteral("Abbrechen"), &panel);
+        auto *help = new QPushButton(QStringLiteral("Hilfe"), &panel);
+        row->addWidget(ok); row->addWidget(cancel); row->addWidget(help);
+        layout->addLayout(row);
+        bool accepted = false;
+        QEventLoop loop;
+        auto done = [&](bool success) { accepted = success; loop.quit(); };
+        QObject::connect(ok, &QPushButton::clicked, &panel, [&]() { done(true); });
+        QObject::connect(cancel, &QPushButton::clicked, &panel, [&]() { done(false); });
+        QObject::connect(help, &QPushButton::clicked, &panel, [&]() {
+            if (edit) edit->setPlaceholderText(QStringLiteral("Neuer Verzeichnisname ohne /, \\, .."));
+        });
+        if (edit) QObject::connect(edit, &QLineEdit::returnPressed, &panel, [&]() { done(true); });
+        blocker.setContextMenuPolicy(Qt::NoContextMenu);
+        panel.setContextMenuPolicy(Qt::NoContextMenu);
+        for (QWidget *widget : blocker.findChildren<QWidget *>()) {
+            widget->setContextMenuPolicy(Qt::NoContextMenu);
+            widget->setCursor(Qt::ArrowCursor);
+        }
+        for (QPushButton *button : {ok, cancel, help})
+            button->setCursor(Qt::PointingHandCursor);
+        // Bisherige Escape-Weitergabe wird fuer den Unterdialog temporär blockiert.
+        if (layer_) layer_->setEscapeHandler([&]() { done(false); });
+        blocker.show(); blocker.raise(); panel.show(); panel.raise();
+        if (edit) edit->setFocus(Qt::OtherFocusReason);
+        else ok->setFocus(Qt::OtherFocusReason);
+        loop.exec(QEventLoop::AllEvents);
+        if (layer_) layer_->setEscapeHandler([this]() { finish(Rejected); });
+        if (accepted && value && edit) *value = edit->text().trimmed();
+        return accepted;
+    }
+
+    void addDirectory()
+    {
+        if (!vfs_ || currentDirectory_.isEmpty()) {
+            status(QStringLiteral("Bitte zuerst 'Dokumente' oder 'Alle Benutzer' öffnen."));
+            return;
+        }
+        QString name;
+        if (!inputPrompt(QStringLiteral("Neues Verzeichnis:"), QString(), &name)) return;
+        if (!vfs_->createDirectory(currentDirectory_, name)) {
+            status(QStringLiteral("Verzeichnis konnte nicht erstellt werden: ungültiger Name oder Zugriff verweigert."));
+            return;
+        }
+        showDirectory(currentDirectory_);
+    }
+
+    void deleteSelection()
+    {
+        if (!vfs_ || currentDirectory_.isEmpty()) return;
+        const QString selected = selectedEntry_;
+        if (selected.isEmpty() || selected == currentDirectory_ ||
+            selected == vfs_->shared() || selected == vfs_->documents() ||
+            selected == D64ApplicationVfs::parentVirtual(currentDirectory_)) {
+            status(QStringLiteral("Kein löschbarer Eintrag gewählt.")); return;
+        }
+        if (!inputPrompt(QStringLiteral("'%1' wirklich löschen?").arg(selected), QString(), nullptr, true))
+            return;
+        if (!vfs_->removeEntry(selected)) {
+            status(QStringLiteral("Löschen nicht möglich (Verzeichnis muss leer sein)."));
+            return;
+        }
+        showDirectory(currentDirectory_);
+    }
+
+    QWidget *titleBar_ = nullptr;
+    QWidget *titleBalance_ = nullptr;
+    QLabel *title_ = nullptr;
+    QToolButton *closeButton_ = nullptr;
+    bool dragging_ = false;
+    QWidget *dragWidget_ = nullptr;
+    QPoint dragStartGlobal_;
+    QPoint dragStartCells_;
+    int gridColumn_ = 0;
+    int gridRow_ = 0;
     D64ApplicationVfs *vfs_ = nullptr;
     Mode mode_ = OpenFile;
+    bool darkMode_ = true;
+    bool running_ = false;
+    int result_ = Rejected;
+    std::function<void()> finished_;
+    D64TurboModalLayer *layer_ = nullptr;
     QSplitter *splitter_ = nullptr;
     QListWidget *folders_ = nullptr;
     QTreeWidget *files_ = nullptr;
     QLineEdit *filename_ = nullptr;
     QLineEdit *search_ = nullptr;
     QLabel *location_ = nullptr;
+    QLabel *info_ = nullptr;
     QString currentDirectory_;
+    QString selectedEntry_;
     QString selected_;
 };
 
@@ -609,10 +1164,21 @@ public:
         if (!confirmDiscard() || !vfs_) return false;
         D64VirtualFileDialog dialog(vfs_, D64VirtualFileDialog::OpenFile,
                                     relativeFile_, this, darkMode_);
-        if (dialog.exec() != QDialog::Accepted) return false;
-        const QString relative = dialog.selectedVirtualPath();
+        if (dialog.exec() != D64VirtualFileDialog::Accepted) return false;
+        return loadVirtualDocument(dialog.selectedVirtualPath());
+    }
+
+    bool loadVirtualDocument(const QString &relative)
+    {
+        if (!vfs_) return false;
         const QString host = vfs_->readableFile(relative);
         if (host.isEmpty()) return false;
+        const QFileInfo selectedInfo(host);
+        if (selectedInfo.size() > 16 * 1024 * 1024) {
+            showError(QStringLiteral("Datei zu groß"),
+                      QStringLiteral("Der Editor öffnet Textdateien bis 16 MiB."));
+            return false;
+        }
         QFile file(host);
         if (!file.open(QIODevice::ReadOnly)) {
             showError(QStringLiteral("Öffnen fehlgeschlagen"), file.errorString());
@@ -623,7 +1189,12 @@ public:
             showError(QStringLiteral("Lesefehler"), file.errorString());
             return false;
         }
-        edit_->setPlainText(QString::fromUtf8(data));
+        QString content = QString::fromUtf8(data);
+        // Bestehende dBASE-.prg/.wfm-Dateien koennen noch CP1252/ANSI
+        // enthalten. Nur bei ungueltigem UTF-8 auf die Systemcodepage fallen.
+        if (content.contains(QChar::ReplacementCharacter))
+            content = QString::fromLocal8Bit(data);
+        edit_->setPlainText(content);
         relativeFile_ = relative;
         edit_->document()->setModified(false);
         updateTitle();
@@ -638,7 +1209,7 @@ public:
         if (forceDialog || destination.isEmpty()) {
             D64VirtualFileDialog dialog(vfs_, D64VirtualFileDialog::SaveFile,
                                         relativeFile_, this, darkMode_);
-            if (dialog.exec() != QDialog::Accepted) return false;
+            if (dialog.exec() != D64VirtualFileDialog::Accepted) return false;
             destination = dialog.selectedVirtualPath();
         }
         const QString host = vfs_->writableFile(destination);
@@ -919,10 +1490,8 @@ private:
 
     void showError(const QString &title, const QString &description)
     {
-        QMessageBox box(QMessageBox::Warning, title, description,
-                        QMessageBox::Ok, this);
-        box.setStyleSheet(modalStyle());
-        box.exec();
+        D64TurboMessageBox::showMessage(this, title, description,
+            {{QStringLiteral("OK"), D64TurboMessageBox::Ok}});
     }
 
     bool confirmDiscard()

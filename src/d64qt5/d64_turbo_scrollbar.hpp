@@ -38,6 +38,38 @@ public:
         update();
     }
 
+    // Stage 656: Cyan theme, including always-visible arrow buttons, for the
+    // Turbo Help viewer. Drawing and hit-testing use the *same* geometry.
+    void setTurboHelpTheme()
+    {
+        arrowColor_ = QColor(QStringLiteral("#003f60"));
+        arrowBackground_ = QColor(QStringLiteral("#73edf1"));
+        grooveBackground_ = QColor(QStringLiteral("#009ba9"));
+        grooveDot_ = QColor(QStringLiteral("#b9faff"));
+        thumbBackground_ = QColor(QStringLiteral("#c6ffff"));
+        thumbLight_ = QColor(QStringLiteral("#ffffff"));
+        thumbDark_ = QColor(QStringLiteral("#06677b"));
+        borderColor_ = QColor(QStringLiteral("#07566b"));
+        dottedGroove_ = false;
+        update();
+    }
+
+    // Stage 656: The DEBUG tab retains its dark styling but has true arrow
+    // buttons and an independent groove bounded by them.
+    void setTurboDebugTheme()
+    {
+        arrowColor_ = QColor(QStringLiteral("#d3d3d3"));
+        arrowBackground_ = QColor(QStringLiteral("#202020"));
+        grooveBackground_ = QColor(QStringLiteral("#090909"));
+        grooveDot_ = QColor(QStringLiteral("#606060"));
+        thumbBackground_ = QColor(QStringLiteral("#555555"));
+        thumbLight_ = QColor(QStringLiteral("#888888"));
+        thumbDark_ = QColor(QStringLiteral("#292929"));
+        borderColor_ = QColor(QStringLiteral("#5b5b5b"));
+        dottedGroove_ = false;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *event) override
     {

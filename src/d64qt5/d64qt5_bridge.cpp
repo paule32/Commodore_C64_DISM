@@ -64,6 +64,7 @@
 # include <QResizeEvent>
 # include <QShowEvent>
 # include <QScrollBar>
+# include <QShortcut>
 # include <QScreen>
 # include <QSettings>
 # include <QSize>
@@ -106,6 +107,8 @@
 # include "d64_debug_navy_scrollbar.hpp"
 # include "d64_debug_context_menu.hpp"
 # include "d64_turbo_output.hpp"
+# include "d64_turbo_scrollbar.hpp"
+# include "d64_turbo_help_window.hpp"
 # include "d64_turbo_editor.hpp"
 # include "d64_turbo_tools.hpp"
 # include "d64_dbase_runtime.hpp"
@@ -185,6 +188,7 @@ QStatusBar      * g_status_bar      = nullptr;
 
 QPlainTextEdit  * g_console         = nullptr;
 D64TurboOutputWidget * g_turbo_output = nullptr;
+QPointer<D64TurboHelpWindow> g_turbo_help_window;
 D64ApplicationVfs g_editor_vfs;
 D64TurboEditorWidget * g_turbo_editor = nullptr;
 QList<QPointer<D64TurboEditorWidget>> g_turbo_editors; // Stage 628: mehrere Fenster
@@ -1933,6 +1937,47 @@ D64TurboEditorWidget *create_turbo_editor()
     return editor;
 }
 
+// Benutzerwechsel: Offene Texteditoren duerfen nach dem Login niemals
+// Inhalte oder Pfade eines anderen VFS-Benutzers weitergeben.
+// Bei einer abgebrochenen Speicherabfrage bleibt die alte Anmeldung bestehen.
+bool activate_turbo_vfs_identity(const QString &identity)
+{
+    if (identity.trimmed().isEmpty()) return false;
+    const auto oldEditors = g_turbo_editors;
+    for (const QPointer<D64TurboEditorWidget> &editor : oldEditors) {
+        if (editor && !editor->close()) return false;
+    }
+    g_turbo_editor = nullptr;
+    g_turbo_focused_window.clear();
+    return g_editor_vfs.setUserIdentity(QStringLiteral("Session:") + identity);
+}
+
+void open_turbo_vfs_file()
+{
+    if (!g_console || !g_console->viewport()) return;
+    // Keine Editorinstanz vor dem Dateidialog erstellen.
+    D64VirtualFileDialog dialog(&g_editor_vfs, D64VirtualFileDialog::OpenFile,
+                                QString(), g_console, g_debug_theme_mode != 1);
+    if (dialog.exec() != D64VirtualFileDialog::Accepted) return;
+    const QString path = dialog.selectedVirtualPath();
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    // Native Textdateien innerhalb des VFS; andere Dateitypen werden
+    // nicht versehentlich als unlesbarer Text in einen Editor geladen.
+    const QStringList editable = {QStringLiteral("prg"), QStringLiteral("wfm"),
+        QStringLiteral("txt"), QStringLiteral("ini"), QStringLiteral("json"),
+        QStringLiteral("sql"), QStringLiteral("pas"), QStringLiteral("md"),
+        QStringLiteral("h"), QStringLiteral("cpp"), QStringLiteral("c")};
+    if (!editable.contains(suffix)) {
+        D64TurboMessageBox::information(g_console,
+            QStringLiteral("Für den Dateityp .%1 ist kein Texteditor registriert.").arg(suffix),
+            QStringLiteral("Information"));
+        return;
+    }
+    if (D64TurboEditorWidget *editor = create_turbo_editor()) {
+        if (!editor->loadVirtualDocument(path)) editor->close();
+    }
+}
+
 void create_standard_menu()
 {
     if (!g_menu_bar || g_default_menu_created)
@@ -1968,9 +2013,8 @@ void create_standard_menu()
         create_turbo_editor();
     });
     hookFile(QStringLiteral("Öffnen..."), QKeySequence::Open, []() {
-        if (D64TurboEditorWidget *editor = create_turbo_editor()) {
-            if (!editor->openDocument()) editor->close();
-        }
+        // QMenu darf den nativen Mouse-Grab vor dem internen Dialog abgeben.
+        QTimer::singleShot(0, g_window, []() { open_turbo_vfs_file(); });
     });
     hookFile(QStringLiteral("Speichern"), QKeySequence::Save, []() {
         if (D64TurboEditorWidget *editor = active_turbo_editor())
@@ -2041,13 +2085,29 @@ void create_standard_menu()
 
     auto *helpMenu = new AsciiPopupMenu(QStringLiteral("Hilfe"), g_menu_bar);
     helpMenu->setObjectName(QStringLiteral("dbaseTurboHelpMenu"));
+    // Stage 652: Compiler verbleibt in dBase2Many. Laufzeit-Hilfe als App.hlp.
+    QAction *contentsAction = helpMenu->addAction(QStringLiteral("Inhalt"));
+    QObject::connect(contentsAction, &QAction::triggered, helpMenu, [](bool) {
+        DBaseQtHelpShowMo(nullptr); // <EXE-Stamm>.hlp im EXE-Verzeichnis
+    });
+    // Global F1 in the generated Qt5 DEBUG application, independent of focus.
+    // QAction is installed on the main bridge window to survive menu popup hiding.
+    auto *helpF1 = new QShortcut(QKeySequence(Qt::Key_F1), g_window);
+    helpF1->setObjectName(QStringLiteral("dbaseTurboHelpGlobalF1"));
+    helpF1->setContext(Qt::ApplicationShortcut);
+    helpF1->setAutoRepeat(false); // F1 aus Konsole, DEBUG oder Eingabefeld: ein Hilfeaufruf
+    QObject::connect(helpF1, &QShortcut::activated, g_window, []() {
+        DBaseQtHelpShowMo(nullptr); // App.hlp direkt aus dem EXE-Verzeichnis
+    });
+    helpMenu->addSeparator();
     QAction *aboutAction = helpMenu->addAction(QStringLiteral("Über ..."));
     QObject::connect(aboutAction, &QAction::triggered, helpMenu, [](bool) {
         D64TurboMessageBox::information(g_console ? g_console->viewport() : g_window,
-            QStringLiteral("dBase2Many · dBL / Turbo Vision\n"
-                           "Taschenrechner, CP437-Zeichentabelle und 15-Puzzle\n"
-                           "Stage 631 – Qt5-Runtime"),
-            QStringLiteral("Information"));
+            QStringLiteral("Turbo Vision  -  dBASE\n"
+                           "Copyright (c) 2026 Jens Kallup - paule32\n"
+                           "Alle Rechte vorbehalten.\n\n"
+                           "Built with: Python and Qt5 Framework,"),
+            QStringLiteral("Information"), Qt::AlignCenter);
     });
     g_menu_bar->addMenu(helpMenu);
 
@@ -7319,6 +7379,9 @@ void apply_output_font()
 
     if (g_console)
         g_console->setFont(font);
+    // Stage 657: Hilfe bleibt beim Font-Zoom an DOS-Zellen ausgerichtet.
+    if (g_turbo_help_window)
+        g_turbo_help_window->setGridCellSize(current_console_cell_size());
     if (g_turbo_output)
         g_turbo_output->setGridFont(font);
     for (const QPointer<D64TurboEditorWidget> &editor : g_turbo_editors)
@@ -7600,7 +7663,8 @@ void append_text(QPlainTextEdit *editor, const char *text, int length)
     QTextCursor cursor = editor->textCursor();
     cursor.movePosition(QTextCursor::End);
     QTextCharFormat format;
-    format.setForeground(g_output_foreground);
+    format.setForeground(editor == g_debug ? QColor(QStringLiteral("#d3d3d3"))
+                                           : g_output_foreground);
     format.setBackground(g_output_background);
     cursor.insertText(value, format);
     editor->setTextCursor(cursor);
@@ -8569,7 +8633,8 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
     g_menu_bar->setContentsMargins(0, 0, 0, 0);
     console_layout->addWidget(g_menu_bar, 0);
 
-    // Scrollbarer Mittelbereich. Kein Padding, kein Margin, kein eigener
+    // Konsolen-Mittelbereich: ohne sichtbare Scrollleisten. Kein Padding,
+    // kein Margin, kein eigener
     // Rahmen; der QTextDocument-Innenrand ist exakt 0 Pixel. Die
     // QAbstractScrollArea-Viewport-Margins bleiben beim Qt-Default 0;
     // Der protected Viewport-Margin-Setter wird hier bewusst nicht
@@ -8581,6 +8646,8 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
     g_console->setContentsMargins(0, 0, 0, 0);
     g_console->document()->setDocumentMargin(0.0);
     g_console->setLineWrapMode(QPlainTextEdit::NoWrap);
+    // Stage 656: The console itself has NO scrollbars. Child windows
+    // (Turbo Help, editors, output windows) keep their own scrollbars.
     g_console->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     g_console->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     g_console->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -8643,8 +8710,20 @@ extern "C" D64QT5_API int DBaseQtInitialize(const char *title)
     g_debug->setContentsMargins(0, 0, 0, 0);
     g_debug->document()->setDocumentMargin(0.0);
     g_debug->setLineWrapMode(QPlainTextEdit::NoWrap);
-    g_debug->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    g_debug->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // Stage 656: DEBUG remains scrollable; its arrow/slider travel is
+    // restricted to the groove between the arrow-button regions.
+    auto *debugHScroll = new D64TurboArrowScrollBar(Qt::Horizontal, g_debug);
+    debugHScroll->setTurboDebugTheme();
+    debugHScroll->setFixedHeight(16);
+    g_debug->setHorizontalScrollBar(debugHScroll);
+    auto *debugVScroll = new D64TurboArrowScrollBar(Qt::Vertical, g_debug);
+    debugVScroll->setTurboDebugTheme();
+    debugVScroll->setFixedWidth(16);
+    g_debug->setVerticalScrollBar(debugVScroll);
+    g_debug->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    g_debug->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    g_debug->setStyleSheet(QStringLiteral(
+        "QPlainTextEdit#dbaseDebug{color:#d3d3d3;background:#000000;}"));
     g_debug->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     debug_layout->addWidget(g_debug, 1);
 
@@ -8789,6 +8868,63 @@ extern "C" D64QT5_API void DBaseQtShowWindow(void)
     if (g_workstation_mode_enabled && D64WorkstationIsVisible())
         D64WorkstationInstallKeyboardGuard(workstation_hwnd);
 #endif
+}
+
+// Stage 653: Native HLP viewer belongs to libd64_qt5.dll, not a separate EXE.
+// nullptr / "" selects a sidecar beside the RUNNING application executable:
+//   <EXE-Stamm>.hlp (GNU-MO payload with .hlp extension).
+// A relative path also resolves against the EXE directory, NEVER cwd.
+// A supplied absolute path remains supported for other in-process callers.
+// This function reads GNU MO only; the help compiler/menu editor stay Python.
+extern "C" D64QT5_API int DBaseQtHelpShowMo(const char *utf8File)
+{
+    if (!g_app || !g_window || !g_console || !g_console->viewport())
+        return 0;
+    const QFileInfo exeInfo(QCoreApplication::applicationFilePath());
+    const QDir exeDir = exeInfo.absoluteDir();
+    const QString requested = utf8File ? QString::fromUtf8(utf8File).trimmed()
+                                       : QString();
+    QStringList candidates;
+    if (!requested.isEmpty()) {
+        const QFileInfo candidate(requested);
+        candidates << (candidate.isAbsolute() ? candidate.absoluteFilePath()
+                                               : exeDir.filePath(requested));
+    } else {
+        candidates << exeDir.filePath(exeInfo.completeBaseName() + QStringLiteral(".hlp"));
+    }
+    QString resolved;
+    for (const QString &path : candidates) {
+        if (QFileInfo(path).isFile()) { resolved = path; break; }
+    }
+    if (resolved.isEmpty()) {
+        g_debug->appendPlainText(QStringLiteral("HELP: HLP-Hilfedatei nicht gefunden neben EXE: ")
+                                 + exeDir.absolutePath()
+                                 + QStringLiteral(" (gesucht: ") + candidates.join(QStringLiteral(", "))
+                                 + QStringLiteral(")"));
+        // No tab change for a missing help file; diagnostics stay in DEBUG.
+        return 0;
+    }
+    // The viewer is a child of the Konsole viewport, never of DEBUG.
+    select_console();
+    if (g_app) g_app->processEvents();
+    if (!g_turbo_help_window)
+        g_turbo_help_window = new D64TurboHelpWindow(g_console->viewport());
+    else if (g_turbo_help_window->parentWidget() != g_console->viewport())
+        g_turbo_help_window->setParent(g_console->viewport());
+    // Die tatsaechlichen Konsolenzellen (Schriftart, Zoom und DPI) uebernehmen.
+    g_turbo_help_window->setGridCellSize(current_console_cell_size());
+    QString error;
+    if (!g_turbo_help_window->openMo(resolved, &error)) {
+        if (g_debug)
+            g_debug->appendPlainText(QStringLiteral("HELP: ") + error);
+        return 0;
+    }
+    g_turbo_help_window->show();
+    g_turbo_help_window->raise();
+    g_turbo_help_window->setFocus(Qt::OtherFocusReason);
+    g_window->raise();
+    if (g_app) g_app->processEvents();
+    return 1;
 }
 
 extern "C" D64QT5_API void DBaseQtProcessEvents(void)
@@ -9228,6 +9364,8 @@ extern "C" D64QT5_API int DBaseQtSessionLogin(
     if (!accepted)
         return 0;
 
+    if (!activate_turbo_vfs_identity(usernameText))
+        return 0;
     session->authenticated = true;
     session->username = usernameText;
     session->group = groupText;
@@ -9345,6 +9483,60 @@ extern "C" D64QT5_API int DBaseQtDatabaseCommit(void *handle)
     if (!database || !g_database_nodes.contains(database))
         return 0;
     return database_commit_internal(database, true);
+}
+
+// Stage 646: synchronous, VFS-confined Win32 file-open error probe.
+// It does not open an editor and never returns a native HANDLE to dBL.
+// A failed CreateFileW is converted into its GetLastError DWORD *inside*
+// this call (before Qt or the generated code can overwrite LastError).
+extern "C" D64QT5_API unsigned int DBaseQtVfsCheckOpenRead(
+    const char *virtualPath, int pathLength)
+{
+    if (!virtualPath || pathLength <= 0 || pathLength > 32767)
+        return 87u;  // ERROR_INVALID_PARAMETER
+    if (!g_app || g_editor_vfs.hostRoot().isEmpty())
+        return 21u;  // ERROR_NOT_READY
+
+    // dBL strings are length-delimited, 8-bit CP1252/Windows ANSI; not NUL.
+    const QString virtualName = QString::fromLocal8Bit(virtualPath, pathLength);
+    const QString hostPath = g_editor_vfs.hostPath(virtualName);
+    if (hostPath.isEmpty() || !virtualName.contains(QLatin1Char('/')))
+        return 5u;  // ERROR_ACCESS_DENIED (virtual escape / mount root)
+    const QFileInfo candidate(hostPath);
+    // Refuse an existing reparse point/directory, but DO NOT use Qt's
+    // exists() to classify open failures. An ACL-denied file can look
+    // nonexistent to QFileInfo; CreateFileW supplies the real Win32 code.
+    if (candidate.isSymLink() || (candidate.exists() && !candidate.isFile()))
+        return 5u;
+#ifdef _WIN32
+    HANDLE handle = ::CreateFileW(
+        reinterpret_cast<LPCWSTR>(hostPath.utf16()), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return static_cast<unsigned int>(::GetLastError());
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!::GetFileInformationByHandle(handle, &info)) {
+        const DWORD error = ::GetLastError();
+        ::CloseHandle(handle);
+        return static_cast<unsigned int>(error);
+    }
+    // Reparse points must not allow crossing another user's private mount.
+    if ((info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+        ::CloseHandle(handle);
+        return 5u;
+    }
+    if (!::CloseHandle(handle))
+        return static_cast<unsigned int>(::GetLastError());
+    return 0u;
+#else
+    if (g_editor_vfs.readableFile(virtualName).isEmpty()) return 2u;
+    QFile probe(hostPath);
+    if (!probe.open(QIODevice::ReadOnly)) return 5u;
+    probe.close();
+    return 0u;
+#endif
 }
 
 extern "C" D64QT5_API void DBaseQtEnsureDefaultMenu(void)
@@ -11235,6 +11427,7 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
     g_turbo_tools.clear();
     g_turbo_focused_window = nullptr;
     g_turbo_windows_menu = nullptr;
+    g_turbo_help_window.clear(); // Kind des Konsole-Viewports
     g_turbo_output = nullptr; // Kind von g_window / g_console-Viewport
     delete g_window;
     g_window = nullptr;

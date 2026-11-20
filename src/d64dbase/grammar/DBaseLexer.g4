@@ -32,6 +32,12 @@ LINE_COMMENT_AMP
 PROCEDURE : [Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee];
 FUNCTION  : [Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn];
 RETURN    : [Rr][Ee][Tt][Uu][Rr][Nn];
+TRY       : [Tt][Rr][Yy];
+CATCH     : [Cc][Aa][Tt][Cc][Hh];
+THROW     : [Tt][Hh][Rr][Oo][Ww];
+ENDTRY    : [Ee][Nn][Dd][Tt][Rr][Yy];
+FINALLY   : [Ff][Ii][Nn][Aa][Ll][Ll][Yy];
+END       : [Ee][Nn][Dd];
 IF        : [Ii][Ff];
 ELSEIF    : [Ee][Ll][Ss][Ee][Ii][Ff];
 ELSE      : [Ee][Ll][Ss][Ee];

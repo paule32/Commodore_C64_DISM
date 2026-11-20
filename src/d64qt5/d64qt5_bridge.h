@@ -100,6 +100,14 @@ D64QT5_API int DBaseQtRuntimeStartup(
 D64QT5_API void DBaseQtRuntimeShutdown(void **formatBuffer);
 D64QT5_API void DBaseQtShowWindow(void);
 D64QT5_API void DBaseQtProcessEvents(void);
+/* Stage 653: Native Turbo-Vision help viewer resides in libd64_qt5.dll.
+ * The legacy export name DBaseQtHelpShowMo is preserved for ABI compatibility.
+ * The catalog is a GNU-MO payload stored with the .hlp extension.
+ * Absolute paths are read as given; relative paths refer to the EXE folder.
+ * NULL or empty string opens <EXE-stem>.hlp alongside the running executable.
+ * F1 is installed with Qt::ApplicationShortcut for the Qt5 console/DEBUG UI.
+ * No external turbo_help_host.exe or independent viewer is used. */
+D64QT5_API int DBaseQtHelpShowMo(const char *utf8File);
 D64QT5_API void DBaseQtSetDebugVisible(int visible);
 D64QT5_API void DBaseQtAppendConsole(const char *text, int length);
 D64QT5_API void DBaseQtAppendDebug(const char *text, int length);
@@ -126,6 +134,8 @@ D64QT5_API void DBaseQtDatabaseSetPassword(void *handle, const char *text, int l
 D64QT5_API void DBaseQtDatabaseSetAlias(void *handle, const char *text, int length);
 D64QT5_API void DBaseQtDatabaseSetSession(void *handle, void *sessionHandle);
 D64QT5_API int  DBaseQtDatabaseSetActive(void *handle, int active);
+/* Virtual documents/shared mount only. 0=readable, otherwise a Win32 DWORD. */
+D64QT5_API unsigned int DBaseQtVfsCheckOpenRead(const char *virtualPath, int pathLength);
 D64QT5_API int  DBaseQtDatabaseOpen(void *handle);
 D64QT5_API void DBaseQtDatabaseClose(void *handle);
 D64QT5_API int  DBaseQtDatabaseCommit(void *handle);

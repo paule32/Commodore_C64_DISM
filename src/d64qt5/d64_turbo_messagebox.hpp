@@ -233,7 +233,8 @@ public:
     using ButtonSpec = QPair<QString, int>;
 
     explicit D64TurboMessageBox(QWidget *parent, const QString &title,
-                                const QString &message, const QList<ButtonSpec> &buttons)
+                                const QString &message, const QList<ButtonSpec> &buttons,
+                                Qt::Alignment textAlignment = Qt::AlignLeft | Qt::AlignVCenter)
         : QWidget(parent)
     {
         // WICHTIG: Qt::Widget ohne Window-/Dialog-Flags. QDialog wuerde auch
@@ -342,7 +343,20 @@ public:
         content->setObjectName(QStringLiteral("dbaseTurboMessageText"));
         content->setFont(mono);
         content->setWordWrap(true);
+        // Optional zentrierter Text fuer Hilfe -> Ueber; die uebrigen
+        // MessageBoxen behalten ihre bisherige linksbuendige Ausrichtung.
+        content->setAlignment(textAlignment);
         content->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        // Stage 651: Im zentrierten "Hilfe -> Über ..."-Dialog weder ein
+        // Textauswahl-Kontextmenü noch ein geerbtes QWidget-Kontextmenü.
+        // Andere MessageBoxen behalten ihr bisheriges Verhalten.
+        if (textAlignment & Qt::AlignHCenter) {
+            setContextMenuPolicy(Qt::NoContextMenu);
+            frame->setContextMenuPolicy(Qt::NoContextMenu);
+            heading->setContextMenuPolicy(Qt::NoContextMenu);
+            title_->setContextMenuPolicy(Qt::NoContextMenu);
+            content->setContextMenuPolicy(Qt::NoContextMenu);
+        }
         content->setMinimumHeight(78);
         layout->addWidget(content, 1);
         auto *row = new QHBoxLayout();
@@ -414,7 +428,8 @@ public:
     }
 
     static int showMessage(QWidget *parent, const QString &title,
-                           const QString &message, const QList<ButtonSpec> &buttons)
+                           const QString &message, const QList<ButtonSpec> &buttons,
+                           Qt::Alignment textAlignment = Qt::AlignLeft | Qt::AlignVCenter)
     {
         QWidget *desktop = consoleDesktop(parent);
         if (!desktop) return Cancel;
@@ -431,7 +446,7 @@ public:
         layer.setGeometry(desktop->rect());
         layer.show();
         layer.raise();
-        D64TurboMessageBox box(&layer, title, message, buttons);
+        D64TurboMessageBox box(&layer, title, message, buttons, textAlignment);
         const int availableWidth = qMax(1, layer.width() - 12);
         const int availableHeight = qMax(1, layer.height() - 12);
         box.setMinimumWidth(qMin(box.minimumWidth(), availableWidth));
@@ -457,9 +472,10 @@ public:
         return box.result();
     }
     static void information(QWidget *parent, const QString &message,
-                            const QString &title = QStringLiteral("Information"))
+                            const QString &title = QStringLiteral("Information"),
+                            Qt::Alignment textAlignment = Qt::AlignLeft | Qt::AlignVCenter)
     {
-        showMessage(parent, title, message, {{QStringLiteral("OK"), Ok}});
+        showMessage(parent, title, message, {{QStringLiteral("OK"), Ok}}, textAlignment);
     }
     static int confirmSave(QWidget *parent)
     {

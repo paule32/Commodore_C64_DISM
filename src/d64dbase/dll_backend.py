@@ -43,6 +43,18 @@ def compile_dbase_class_library(
             "Für reine PROCEDURE/FUNCTION-DLLs ist noch ein separates Backend erforderlich.",
             filename=filename,
         )
+    # The managed exception status is currently part of the linked dBASE
+    # executable. A CLASS DLL needs a process-wide exception ABI before its
+    # THROW/CATCH may interoperate with the caller; never emit unresolved
+    # executable-global status references into an independent DLL.
+    for definition in native_classes:
+        for method in getattr(definition, 'methods', ()):
+            for number, raw in getattr(method, 'body', ()):
+                if str(raw).strip().split(None, 1)[0].casefold() in {'try', 'throw'}:
+                    raise DBaseCompilerError(
+                        'TRY/THROW in einer eigenstaendigen Klassen-DLL benoetigt eine '
+                        'gemeinsame Exception-Runtime-ABI; derzeit nur in dBASE-EXE-Klassenmethoden.',
+                        line=number, filename=filename)
     if unsupported:
         item = unsupported[0]
         raise DBaseCompilerError(

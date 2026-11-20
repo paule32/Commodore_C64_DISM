@@ -80,3 +80,4 @@ EXPORTS
     DBaseQtPrologShutdown @1004
     DBaseQtWfmSessionInvoke @1015
     DBaseQtFillBackground @1016
+    DBaseQtHelpShowMo @1017

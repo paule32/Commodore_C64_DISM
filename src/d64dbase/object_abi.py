@@ -435,7 +435,13 @@ def emit_classes(classes, *, target: str, ffi_prototypes=(), filename="<dBase>",
     for cls in present.values():
         if cls.name.casefold() == 'tobject':
             continue
-        if not (getattr(cls, 'methods', ()) or getattr(cls, 'properties', ())):
+        # Stage 640: a field-less subclass still has its parent's instance
+        # fields and must run inherited field initializers/finalizers.  The
+        # old one-pointer instance_size corrupted the heap when an inherited
+        # property (e.g. Exception.Message) was accessed.
+        from .derived_class_abi import field_layout
+        if not (getattr(cls, 'methods', ()) or getattr(cls, 'properties', ())
+                or field_layout(cls.name, present, ptr_size)):
             continue
         imports_part, text_part, data_part, fields_part, strings_part = emit_derived_class(
             cls, classes=present, target=target,

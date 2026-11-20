@@ -150,8 +150,21 @@ class DerivedMethodEmitter(_NativeSourceEmitter):
         self.literal_data = []
         self.concat_needed = False
 
+    def _field_reference(self, name, line):
+        """Resolve a field against Self or the immediate parent's ancestry."""
+        parts = str(name).split('.', 1)
+        qualifier = parts[0].casefold() if len(parts) == 2 else ''
+        key = parts[1] if qualifier in {'self', 'this', 'super'} else name
+        field = self.fields.get(key.casefold())
+        if qualifier == 'super':
+            if not self.cls.parent or self.cls.parent.casefold() not in self.classes:
+                self.error('SUPER() ist nur in einer abgeleiteten CLASS verfuegbar.', line)
+            if field is None or field[1].casefold() == self.cls.name.casefold():
+                self.error(f'SUPER().{key} ist kein geerbtes PROPERTY.', line)
+        return field
+
     def _load(self, name, line):
-        field = self.fields.get(name.casefold())
+        field = self._field_reference(name, line)
         if field is not None:
             prop, owner, offset, _typ = field
             if owner.casefold() != self.cls.name.casefold() and prop.visibility == 'private':
@@ -160,6 +173,36 @@ class DerivedMethodEmitter(_NativeSourceEmitter):
             self.emit(f'    mov {self.reg}, {self.ptr} [{self.reg}+{offset}]')
         else:
             super()._load(name, line)
+
+    def _is_numeric_concat_part(self, expr):
+        from .compiler import DBaseLiteralExpression, DBaseIdentifierExpression
+        if isinstance(expr, DBaseLiteralExpression):
+            return expr.value_type == 'number'
+        if isinstance(expr, DBaseIdentifierExpression):
+            field = self._field_reference(expr.name, expr.line)
+            return field is not None and field[3] == 'number'
+        return False
+
+    def _emit_uint32_to_text(self):
+        # __dbase_cls_u32toa returns an allocated ANSI buffer in EAX/RAX.
+        if self.is64:
+            pad = 8 if self.stack_words % 2 else 0
+            self.emit('    mov ecx, eax', f'    sub rsp, {32 + pad}',
+                      '    call __dbase_cls_u32toa', f'    add rsp, {32 + pad}')
+        else:
+            self.emit('    push eax', '    call __dbase_cls_u32toa', '    add esp, 4')
+
+    def _free_concat_stack_part(self, offset):
+        size = 8 if self.is64 else 4
+        if self.is64:
+            pad = 8 if self.stack_words % 2 else 0
+            self.emit(f'    mov rcx, qword ptr [rsp+{size * offset}]',
+                      f'    sub rsp, {32 + pad}',
+                      '    call __dbase_cls_api_LocalFree',
+                      f'    add rsp, {32 + pad}')
+        else:
+            self.emit(f'    push dword ptr [esp+{size * offset}]',
+                      '    call __dbase_cls_api_LocalFree')
 
     def _emit_expr(self, expr, line):
         from .compiler import DBaseLiteralExpression, DBaseBinaryExpression
@@ -177,39 +220,44 @@ class DerivedMethodEmitter(_NativeSourceEmitter):
                 else:
                     parts.append(node)
             flatten(expr)
-            if not 2 <= len(parts) <= 3:
-                self.error('String-Verkettung in nativen Klassen: zwei bis drei Teile erlaubt.', line)
             self.concat_needed = True
-            if self.is64:
-                # Native x64: hold prior argument pointers in preserved stack
-                # slots while evaluating remaining expressions.
-                self._emit_expr(parts[0], line)
-                self._push()
-                self._emit_expr(parts[1], line)
-                self._push()
-                if len(parts) == 3:
-                    self._emit_expr(parts[2], line)
+            # Preserve ownership of each temporary. Conversions of numeric
+            # Code values and intermediate concatenations are heap strings;
+            # LocalFree them after the next join, never before lstrcatA.
+            prior_owned = False
+            for index, part in enumerate(parts):
+                self._emit_expr(part, line)
+                own = self._is_numeric_concat_part(part)
+                if own:
+                    self._emit_uint32_to_text()
+                self._push()  # current part, or accumulated text
+                if index == 0:
+                    prior_owned = own
+                    continue
+                if self.is64:
+                    self.emit('    mov rcx, qword ptr [rsp+8]',
+                              '    mov rdx, qword ptr [rsp]',
+                              '    mov r8, __dbase_cls_empty',
+                              '    sub rsp, 32', '    call __dbase_cls_concat3',
+                              '    add rsp, 32')
                 else:
-                    self.emit(f'    mov {self.reg}, __dbase_cls_empty')
-                self.emit('    mov r8, rax')
-                self.emit('    pop rdx', '    pop rcx')
-                self.stack_words -= 2
-                self.emit('    sub rsp, 32', '    call __dbase_cls_concat3', '    add rsp, 32')
-            else:
-                self._emit_expr(parts[0], line)
-                self._push()
-                self._emit_expr(parts[1], line)
-                if len(parts) == 3:
-                    self._push()
-                    self._emit_expr(parts[2], line)
-                    self.emit('    pop edx', '    pop ecx')
-                    self.stack_words -= 2
-                    self.emit('    push eax', '    push edx', '    push ecx')
-                else:
-                    self.emit('    pop edx')
-                    self.stack_words -= 1
-                    self.emit('    push __dbase_cls_empty', '    push eax', '    push edx')
-                self.emit('    call __dbase_cls_concat3', '    add esp, 12')
+                    self.emit('    mov edx, dword ptr [esp+4]',
+                              '    mov ecx, dword ptr [esp]',
+                              '    push __dbase_cls_empty',
+                              '    push ecx', '    push edx',
+                              '    call __dbase_cls_concat3', '    add esp, 12')
+                self._push()  # new owned result, saved during LocalFree
+                if prior_owned:
+                    self._free_concat_stack_part(2)
+                if own:
+                    self._free_concat_stack_part(1)
+                self.emit(f'    pop {self.reg}',
+                          f'    add {self.sp}, {16 if self.is64 else 8}')
+                self.stack_words -= 3
+                self._push()  # carry new result to the following join
+                prior_owned = True
+            self.emit('    pop ' + self.reg)
+            self.stack_words -= 1
             return
         super()._emit_expr(expr, line)
 
@@ -481,10 +529,26 @@ def emit_derived_class(cls, *, classes, target, prototypes, filename,
     code, data = [], []
     uses_strings = False
     methods = {method.name.casefold(): method for method in getattr(cls, 'methods', ())}
+    # Existing plain CLASS methods retain their unchanged ABI and assembly.
+    # Only a program containing managed TRY/THROW needs status propagation
+    # through every native method, including intermediate callers.
+    managed_exceptions = any(
+        re.match(r'(?i)^\s*(?:try|throw)\b', raw)
+        for definition in classes.values()
+        for member in getattr(definition, 'methods', ())
+        for _line, raw in member.body)
     for method in getattr(cls, 'methods', ()):
-        emitter = DerivedMethodEmitter(cls, method, target=target,
-            prototypes=prototypes, filename=filename, classes=classes,
-            optimize_null_comparisons=optimize_null_comparisons)
+        if managed_exceptions:
+            from .native_method_exceptions import NativeExceptionMethodEmitter
+            from .compiler import _dbase_exception_hierarchy
+            emitter = NativeExceptionMethodEmitter(cls, method, target=target,
+                prototypes=prototypes, filename=filename, classes=classes,
+                exception_types=_dbase_exception_hierarchy(tuple(classes.values())),
+                optimize_null_comparisons=optimize_null_comparisons)
+        else:
+            emitter = DerivedMethodEmitter(cls, method, target=target,
+                prototypes=prototypes, filename=filename, classes=classes,
+                optimize_null_comparisons=optimize_null_comparisons)
         emitted, strings, concat = emitter.compile()
         code.extend(emitted)
         data.extend(strings)
@@ -613,7 +677,23 @@ def emit_derived_class(cls, *, classes, target, prototypes, filename,
                          '    mov edx, dword ptr [esp+8]',
                          f'    mov dword ptr [eax+{offset}], edx', '    ret']
 
+    # Stage 640: derived classes inherit their nearest __ini__ constructor,
+    # including its single string parameter.  A DbException subclass which
+    # declares no constructor must still run Exception.__ini__(AMessage).
     ctor = methods.get('__ini__')
+    ctor_owner = cls.name
+    if ctor is None:
+        visited = {cls.name.casefold()}
+        ancestor = str(cls.parent or '').casefold()
+        while ancestor and ancestor in classes and ancestor not in visited:
+            visited.add(ancestor)
+            parent_class = classes[ancestor]
+            ctor = next((m for m in getattr(parent_class, 'methods', ())
+                         if m.name.casefold() == '__ini__'), None)
+            if ctor is not None:
+                ctor_owner = parent_class.name
+                break
+            ancestor = str(getattr(parent_class, 'parent', '') or '').casefold()
     factory = method_label(cls.name, 'create')
     code += [f'global {factory}', f'{factory}:']
     if ctor is not None and ctor.parameters:
@@ -625,7 +705,7 @@ def emit_derived_class(cls, *, classes, target, prototypes, filename,
                      '    mov qword ptr [rbp-16], rax',
                      '    test rax, rax', f'    jz {factory}_done',
                      '    mov rcx, rax', '    mov rdx, qword ptr [rbp-8]',
-                     f'    call {method_label(cls.name, "__ini__")}',
+                     f'    call {method_label(ctor_owner, "__ini__")}',
                      f'{factory}_done:', '    mov rax, qword ptr [rbp-16]',
                      '    mov rsp, rbp', '    pop rbp', '    ret']
         else:
@@ -635,7 +715,7 @@ def emit_derived_class(cls, *, classes, target, prototypes, filename,
                      '    add esp, 4', '    mov ebx, eax',
                      '    test eax, eax', f'    jz {factory}_done',
                      '    push dword ptr [ebp+8]', '    push ebx',
-                     f'    call {method_label(cls.name, "__ini__")}',
+                     f'    call {method_label(ctor_owner, "__ini__")}',
                      '    add esp, 8',
                      f'{factory}_done:', '    mov eax, ebx',
                      '    pop ebx', '    mov esp, ebp', '    pop ebp', '    ret']
@@ -649,10 +729,101 @@ def emit_derived_class(cls, *, classes, target, prototypes, filename,
                      '    call __dbase_obj_jit_object_instance_new',
                      '    add esp, 4', '    ret']
 
+    # Stage 647: Win32Raise supplies Code BEFORE invoking __ini__. A
+    # dedicated factory preserves the ABI of ordinary NEW and DLL callers.
+    if cls.name.casefold() in ('win32exception', 'win32fileexception') and ctor is not None and ctor.parameters:
+        code_field = next(((p, offset) for p, owner, offset, typ in slots
+                           if p.name.casefold() == 'code' and typ == 'number'), None)
+        if code_field is not None:
+            off = code_field[1]
+            coded = method_label(cls.name, 'create_with_code')
+            code += [f'{coded}:']
+            if is64:
+                code += ['    push rbp', '    mov rbp, rsp', '    sub rsp, 64',
+                         '    mov qword ptr [rbp-8], rcx',
+                         '    mov dword ptr [rbp-16], edx',
+                         f'    mov rcx, {vmt_label(cls.name)}',
+                         '    call __dbase_obj_jit_object_instance_new',
+                         '    mov qword ptr [rbp-24], rax',
+                         '    test rax, rax', f'    jz {coded}_done',
+                         '    mov edx, dword ptr [rbp-16]',
+                         f'    mov dword ptr [rax+{off}], edx',
+                         '    mov rcx, rax', '    mov rdx, qword ptr [rbp-8]',
+                         f'    call {method_label(ctor_owner, "__ini__")}',
+                         f'{coded}_done:',
+                         '    mov rax, qword ptr [rbp-24]',
+                         '    mov rsp, rbp', '    pop rbp', '    ret']
+            else:
+                code += ['    push ebp', '    mov ebp, esp', '    push ebx',
+                         f'    push {vmt_label(cls.name)}',
+                         '    call __dbase_obj_jit_object_instance_new',
+                         '    add esp, 4', '    mov ebx, eax',
+                         '    test eax, eax', f'    jz {coded}_done',
+                         '    mov edx, dword ptr [ebp+12]',
+                         f'    mov dword ptr [ebx+{off}], edx',
+                         '    push dword ptr [ebp+8]', '    push ebx',
+                         f'    call {method_label(ctor_owner, "__ini__")}',
+                         '    add esp, 8', f'{coded}_done:',
+                         '    mov eax, ebx', '    pop ebx',
+                         '    mov esp, ebp', '    pop ebp', '    ret']
     return imports, code, data, slots, uses_strings
+
+
+def _uint32_to_text_assembly(is64):
+    """Convert an unsigned Win32 DWORD to a LocalAlloc-owned ANSI string."""
+    if is64:
+        return [
+            '__dbase_cls_u32toa:',
+            '    push rbp', '    mov rbp, rsp', '    push rbx', '    sub rsp, 72',
+            '    mov dword ptr [rbp-16], ecx',
+            '    mov ecx, 64', '    mov edx, 16',
+            '    call __dbase_cls_api_LocalAlloc',
+            '    mov qword ptr [rbp-24], rax', '    test rax, rax',
+            '    jz __dbase_cls_u32toa64_done',
+            '    lea r8, [rax+15]', '    mov byte ptr [r8], 0',
+            '    mov eax, dword ptr [rbp-16]', '    mov ebx, 10',
+            '__dbase_cls_u32toa64_digits:',
+            '    xor edx, edx', '    div ebx', '    add edx, 48',
+            '    dec r8', '    mov byte ptr [r8], dl',
+            '    test eax, eax', '    jne __dbase_cls_u32toa64_digits',
+            '    mov r9, qword ptr [rbp-24]',
+            '__dbase_cls_u32toa64_copy:',
+            '    movzx edx, byte ptr [r8]', '    mov byte ptr [r9], dl',
+            '    inc r8', '    inc r9', '    test edx, edx',
+            '    jne __dbase_cls_u32toa64_copy',
+            '    mov rax, qword ptr [rbp-24]',
+            '__dbase_cls_u32toa64_done:',
+            '    mov rbx, qword ptr [rbp-8]',
+            '    mov rsp, rbp', '    pop rbp', '    ret',
+        ]
+    return [
+        '__dbase_cls_u32toa:',
+        '    push ebp', '    mov ebp, esp',
+        '    push ebx', '    push esi', '    push edi',
+        '    push 16', '    push 64',
+        '    call __dbase_cls_api_LocalAlloc',
+        '    mov edi, eax', '    test eax, eax',
+        '    jz __dbase_cls_u32toa32_done',
+        '    lea esi, [edi+15]', '    mov byte ptr [esi], 0',
+        '    mov eax, dword ptr [ebp+8]', '    mov ebx, 10',
+        '__dbase_cls_u32toa32_digits:',
+        '    xor edx, edx', '    div ebx', '    add edx, 48',
+        '    dec esi', '    mov byte ptr [esi], dl',
+        '    test eax, eax', '    jne __dbase_cls_u32toa32_digits',
+        '    mov edx, edi',
+        '__dbase_cls_u32toa32_copy:',
+        '    movzx ebx, byte ptr [esi]', '    mov byte ptr [edx], bl',
+        '    inc esi', '    inc edx', '    test ebx, ebx',
+        '    jne __dbase_cls_u32toa32_copy',
+        '    mov eax, edi',
+        '__dbase_cls_u32toa32_done:',
+        '    pop edi', '    pop esi', '    pop ebx',
+        '    mov esp, ebp', '    pop ebp', '    ret',
+    ]
 
 
 def runtime_string_support(is64):
     imports = [f'import __dbase_cls_api_{name}, "kernel32.dll", "{name}"'
                for name in ('lstrlenA', 'lstrcpyA', 'lstrcatA', 'LocalAlloc', 'LocalFree')]
-    return imports, _concat3_assembly(is64), ['__dbase_cls_empty:', '    db 0']
+    return imports, _concat3_assembly(is64) + _uint32_to_text_assembly(is64), [
+        '__dbase_cls_empty:', '    db 0']
