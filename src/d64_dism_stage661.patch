@@ -1,0 +1,386 @@
+--- a/d64_dism.py (Stage 660)
++++ b/d64_dism.py (Stage 661)
+@@ -91784,10 +91784,13 @@
+             if panel.isNull():
+                 return specs
+             drag_name = self._dock_caption(self._drag_dock)
+-            if self._drag_dock.objectName() == "project_settings_dock":
++            host = self.parentWidget()
++            if (host is not None
++                    and self._drag_dock is getattr(host, "right_dock", None)
++                    and host._turbo_help_project_info_workspace_active()):
+                 side = "left" if area == Qt.LeftDockWidgetArea else "right"
+                 label = "Links andocken" if side == "left" else "Rechts andocken"
+-                specs[f"{side}:settings"] = (
++                specs[f"{side}:project-help"] = (
+                     panel.adjusted(10, 42, -10, -10), area,
+                     Qt.Horizontal, "after", f"{drag_name}\n{label}",
+                 )
+@@ -91900,8 +91903,6 @@
+                     mode = "UNTEN"
+                 elif target.endswith(":side"):
+                     mode = "SEITLICH"
+-                if target.endswith(":settings"):
+-                    mode = "ANDOCKEN"
+                 painter.drawText(rect.adjusted(8, 8, -8, -8), Qt.AlignCenter | Qt.TextWordWrap, mode + "\n" + label)
+             painter.end()
+ 
+@@ -91928,7 +91929,7 @@
+             parent = dock.parentWidget()
+             self._dock_host_window = parent if isinstance(parent, QMainWindow) else None
+             self._snap_drag_enabled = (dock.objectName() == "d64_content_dock")
+-            if dock.objectName() in ("filesystem_dock", "project_settings_dock"):
++            if dock.objectName() == "filesystem_dock":
+                 self._snap_drag_enabled = True
+             self._dark_mode = bool(
+                 getattr(self._dock_host_window or dock.window(), "dark_mode_enabled", False)
+@@ -115620,16 +115621,14 @@
+             if self._exclusive_tool_workspace_transitioning:
+                 return
+             project = getattr(self, "right_dock", None) if beside_project else None
+-            settings = getattr(self, "project_settings_dock", None)
+-            is_help = dock is getattr(self, "turbo_help_compiler_dock", None)
+-            keep_settings = bool(is_help and settings is not None and settings.isVisible())
+-            if keep_settings and getattr(self, "_project_settings_workspace_active", False):
+-                # Beende den alten Settings-Vollbildmodus vor dem neuen Snapshot.
+-                # Dadurch koennen beide Docks spaeter unabhaengig geschlossen werden.
+-                self._restore_project_settings_workspace()
++            info = getattr(self, "right_dock", None)
++            help_compiler = dock is getattr(self, "turbo_help_compiler_dock", None)
++            keep_info = bool(help_compiler and info is not None and info.isVisible())
+             keep = {dock}
+-            if keep_settings:
+-                keep.add(settings)
++            # Stage 661: Projekt-Informationen, NOT Projekt-Einstellungen,
++            # stays visible while the Turbo Help compiler is open.
++            if keep_info:
++                keep.add(info)
+             if project is not None and project is not dock:
+                 keep.add(project)
+ 
+@@ -115702,9 +115701,10 @@
+                     # Nur für den Resourcen Builder bleibt das Projekt-Dock
+                     # sichtbar, auch wenn es vorher ausgeblendet war.
+                     project.show()
+-                elif keep_settings and not settings.isFloating():
+-                    area = self.dockWidgetArea(settings)
+-                    side = (Qt.RightDockWidgetArea if area == Qt.LeftDockWidgetArea
++                elif keep_info and not info.isFloating():
++                    info_area = self.dockWidgetArea(info)
++                    side = (Qt.RightDockWidgetArea
++                            if info_area == Qt.LeftDockWidgetArea
+                             else Qt.LeftDockWidgetArea)
+                     if self.dockWidgetArea(dock) != side:
+                         self.addDockWidget(side, dock)
+@@ -115715,9 +115715,10 @@
+                 dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                 snapshot["owner"] = dock
+                 snapshot["beside_project"] = bool(beside_project)
+-                if keep_settings:
+-                    snapshot["help_settings_width"] = min(
+-                        max(260, int(settings.width())), max(260, int(self.width() * 0.45)))
++                if help_compiler and keep_info:
++                    snapshot["help_info_width"] = max(1, int(info.width()))
++                    if not info.isFloating():
++                        snapshot["help_info_side"] = self.dockWidgetArea(info)
+             finally:
+                 self._exclusive_tool_workspace_transitioning = False
+ 
+@@ -115733,17 +115734,20 @@
+                 and project.isVisible() else 0
+             )
+             try:
+-                settings = getattr(self, "project_settings_dock", None)
+-                if (dock is getattr(self, "turbo_help_compiler_dock", None)
+-                        and settings is not None and settings.isVisible()
+-                        and not settings.isFloating()):
+-                    settings_width = min(
+-                        max(260, int(snapshot.get("help_settings_width", settings.width()))),
+-                        max(260, int(self.width()) - 272),
++                info = getattr(self, "right_dock", None)
++                help_compiler = dock is getattr(self, "turbo_help_compiler_dock", None)
++                if (help_compiler and info is not None and info.isVisible()
++                        and not info.isFloating()):
++                    # Preserve the 1/4-window width restriction of the
++                    # Projekt-Informationen dock; give the rest to Help.
++                    width_limit = max(1, int(self._project_information_dock_width_limit()))
++                    info_width = min(width_limit, max(1, int(
++                        snapshot.get("help_info_width", info.width()))))
++                    self.resizeDocks(
++                        [info, dock],
++                        [info_width, max(1, int(self.width()) - info_width - 12)],
++                        Qt.Horizontal,
+                     )
+-                    self.resizeDocks([settings, dock],
+-                                     [settings_width, max(1, int(self.width()) - settings_width - 12)],
+-                                     Qt.Horizontal)
+                 else:
+                     self.resizeDocks(
+                         [dock], [max(1, int(self.width()) - reserved - 12)],
+@@ -115820,11 +115824,14 @@
+                         self.restoreState(snapshot["state"])
+                     except (RuntimeError, TypeError):
+                         pass
+-                    settings = getattr(self, "project_settings_dock", None)
+-                    side = snapshot.get("help_settings_side")
+-                    if settings is not None and side in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+-                        self.addDockWidget(side, settings)
+-                        settings.setFloating(False)
++                    # A user-selected side for Projekt-Informationen must
++                    # survive the workspace's saved-state restoration.
++                    info = getattr(self, "right_dock", None)
++                    info_side = snapshot.get("help_info_side")
++                    if (info is not None and info_side in
++                            (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea)):
++                        self.addDockWidget(info_side, info)
++                        info.setFloating(False)
+                     # restoreState() alleine restauriert nicht immer alle
+                     # zuvor unsichtbaren Docks; expliziter Sichtbarkeitsabgleich.
+                     for candidate in all_docks:
+@@ -126733,43 +126740,6 @@
+             )
+             dock.hide()
+ 
+-        def _turbo_help_workspace_dock(self):
+-            snapshot = getattr(self, "_exclusive_tool_workspace", None)
+-            help_dock = getattr(self, "turbo_help_compiler_dock", None)
+-            if snapshot is not None and snapshot.get("owner") is help_dock and help_dock is not None:
+-                return help_dock
+-            return None
+-
+-        def _dock_project_settings_to_side(self, dock, area) -> None:
+-            # Custom title bar floats the dock during drag; explicitly redock it.
+-            blocked = dock.blockSignals(True)
+-            try:
+-                self.addDockWidget(area, dock)
+-                dock.setFloating(False)
+-                dock.show()
+-                dock.raise_()
+-            finally:
+-                dock.blockSignals(blocked)
+-            help_dock = self._turbo_help_workspace_dock()
+-            if help_dock is not None:
+-                opposite = (Qt.RightDockWidgetArea if area == Qt.LeftDockWidgetArea
+-                            else Qt.LeftDockWidgetArea)
+-                old_blocked = help_dock.blockSignals(True)
+-                try:
+-                    if not help_dock.isFloating() and self.dockWidgetArea(help_dock) != opposite:
+-                        self.addDockWidget(opposite, help_dock)
+-                    help_dock.show()
+-                finally:
+-                    help_dock.blockSignals(old_blocked)
+-                snapshot = self._exclusive_tool_workspace
+-                snapshot["help_settings_side"] = area
+-                snapshot["visibility"][dock] = True
+-                snapshot["help_settings_width"] = min(
+-                    max(260, int(dock.width())), max(260, int(self.width() * 0.45)))
+-                self._expand_exclusive_tool_workspace(help_dock)
+-                QTimer.singleShot(0, lambda current=help_dock:
+-                                  self._expand_exclusive_tool_workspace(current))
+-
+         def _enter_project_settings_workspace(self) -> None:
+             if self._project_settings_workspace_active:
+                 return
+@@ -126839,21 +126809,8 @@
+                     self.save_project()
+                 except Exception as exc:
+                     self.log(f"Projekt-Einstellungen konnten beim Schließen nicht gespeichert werden: {exc}")
+-            help_dock = self._turbo_help_workspace_dock()
+-            if help_dock is not None:
+-                settings = getattr(self, "project_settings_dock", None)
+-                if not bool(visible) and settings is not None and settings.isHidden():
+-                    # Explicit close: do not reopen this dock when Help closes.
+-                    self._exclusive_tool_workspace["visibility"][settings] = False
+-                return
+             if self._project_settings_workspace_active and not bool(visible):
+-                # Drag/float can temporarily emit visibilityChanged(False).
+-                # Only a dock that is still explicitly hidden should exit the workspace.
+-                def restore_if_closed():
+-                    settings = getattr(self, "project_settings_dock", None)
+-                    if settings is not None and settings.isHidden():
+-                        self._restore_project_settings_workspace()
+-                QTimer.singleShot(0, restore_if_closed)
++                QTimer.singleShot(0, self._restore_project_settings_workspace)
+ 
+         def show_project_settings_dock(self, _checked: bool = False) -> None:
+             """Stage 325: Vorspann vor dem Aufbau der Projekt-Einstellungen.
+@@ -126882,9 +126839,7 @@
+             _window_was_maximized = bool(self.isMaximized())
+             _window_was_fullscreen = bool(self.isFullScreen())
+             self._ensure_project_settings_dock()
+-            _help_workspace = self._turbo_help_workspace_dock()
+-            if _help_workspace is None:
+-                self._enter_project_settings_workspace()
++            self._enter_project_settings_workspace()
+             self.project_settings_panel.set_debug_options(getattr(self, "project_debug_options", stage530_default_debug_options()))
+             self.project_settings_panel.set_stack_cookie_options(getattr(
+                 self, "project_windows_compiler_security_options",
+@@ -127039,30 +126994,24 @@
+             self.project_settings_dock.show()
+             self.project_settings_dock.raise_()
+ 
+-            if _help_workspace is not None:
+-                area = self.dockWidgetArea(self.project_settings_dock)
+-                if area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+-                    area = Qt.LeftDockWidgetArea
+-                self._dock_project_settings_to_side(self.project_settings_dock, area)
+-            else:
+-                left = getattr(self, "left_dock", None)
+-                if left is not None:
+-                    left.hide()
+-                # QScrollArea uebernimmt Platzmangel; kein 100000-Pixel-Wunsch,
+-                # der unter Windows eine neue Hauptfensterbreite provozieren kann.
+-                self.resizeDocks(
+-                    [self.project_settings_dock],
+-                    [max(260, _window_width_before_project_settings)],
+-                    Qt.Horizontal,
+-                )
+-                # Stage 311: project information and filesystem stay hidden until
+-                # the settings workspace closes. Use the entire remaining area.
+-                right = getattr(self, "right_dock", None)
+-                if right is not None:
+-                    right.hide()
+-                self.resizeDocks([self.project_settings_dock],
+-                                 [max(260, _window_height_before_project_settings)],
+-                                 Qt.Vertical)
++            left = getattr(self, "left_dock", None)
++            if left is not None:
++                left.hide()
++            # QScrollArea uebernimmt Platzmangel; kein 100000-Pixel-Wunsch,
++            # der unter Windows eine neue Hauptfensterbreite provozieren kann.
++            self.resizeDocks(
++                [self.project_settings_dock],
++                [max(260, _window_width_before_project_settings)],
++                Qt.Horizontal,
++            )
++            # Stage 311: project information and filesystem stay hidden until
++            # the settings workspace closes. Use the entire remaining area.
++            right = getattr(self, "right_dock", None)
++            if right is not None:
++                right.hide()
++            self.resizeDocks([self.project_settings_dock],
++                             [max(260, _window_height_before_project_settings)],
++                             Qt.Vertical)
+ 
+             current = (
+                 self.document_tabs.currentWidget()
+@@ -140269,12 +140218,9 @@
+                 return getattr(self, "left_dock", None)
+             return None
+ 
+-        def _is_project_settings_side_dock(self, dock: QDockWidget) -> bool:
+-            return dock is not None and dock is getattr(self, "project_settings_dock", None)
+-
+         def _begin_project_dock_snap(self, dock: QDockWidget) -> None:
+-            """Overlay fuer Projekt, Dateisystem und Projekt-Einstellungen anzeigen."""
+-            if not (self._is_primary_side_dock(dock) or self._is_project_settings_side_dock(dock)):
++            """Stage ASM 66: Overlay fuer Projekt UND Dateisystem anzeigen."""
++            if not self._is_primary_side_dock(dock):
+                 return
+             overlay = self._ensure_dock_snap_overlay()
+             overlay.show_for_dock(dock)
+@@ -140284,7 +140230,7 @@
+             dock: QDockWidget,
+             global_pos: QPoint,
+         ):
+-            if not (self._is_primary_side_dock(dock) or self._is_project_settings_side_dock(dock)):
++            if not self._is_primary_side_dock(dock):
+                 return Qt.NoDockWidgetArea
+             overlay = self._ensure_dock_snap_overlay()
+             if not overlay.isVisible():
+@@ -140368,8 +140314,7 @@
+             dock: QDockWidget,
+             global_pos: QPoint,
+         ) -> bool:
+-            settings_snap = self._is_project_settings_side_dock(dock)
+-            if not (self._is_primary_side_dock(dock) or settings_snap):
++            if not self._is_primary_side_dock(dock):
+                 return False
+             overlay = self._ensure_dock_snap_overlay()
+             area = overlay.update_target(global_pos)
+@@ -140382,12 +140327,15 @@
+             if area != spec_area:
+                 return False
+ 
+-            if settings_snap:
++            if (dock is getattr(self, "right_dock", None)
++                    and self._turbo_help_project_info_workspace_active()):
++                # Do NOT activate the hidden filesystem dock during Help.
+                 if spec_area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                     return False
+-                if not bool(dock.allowedAreas() & spec_area):
+-                    return False
+-                self._dock_project_settings_to_side(dock, spec_area)
++                self.addDockWidget(spec_area, dock)
++                dock.setFloating(False)
++                dock.show()
++                self._sync_turbo_help_project_information_side()
+                 return True
+ 
+             if not self._apply_primary_side_dock_layout(
+@@ -149150,6 +149098,8 @@
+ 
+         def _project_information_dock_location_changed(self, area) -> None:
+             if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
++                if self._turbo_help_project_info_workspace_active():
++                    QTimer.singleShot(0, self._sync_turbo_help_project_information_side)
+                 self._enforce_project_information_dock_width()
+                 QTimer.singleShot(0, self._enforce_project_information_dock_width)
+                 if bool(getattr(self, "_settings_workspace_active", False)):
+@@ -149157,6 +149107,46 @@
+                     QTimer.singleShot(0, self._dock_desktop_properties_next_to_project)
+                 if bool(getattr(self, "_dbase_table_workspace_active", False)):
+                     QTimer.singleShot(0, self._normalize_dbase_table_designer_docking)
++
++        def _turbo_help_project_info_workspace_active(self) -> bool:
++            snapshot = getattr(self, "_exclusive_tool_workspace", None)
++            help_dock = getattr(self, "turbo_help_compiler_dock", None)
++            return bool(snapshot is not None and help_dock is not None
++                        and snapshot.get("owner") is help_dock)
++
++        def _sync_turbo_help_project_information_side(self) -> None:
++            """Keep the Help editor opposite the visible project information dock."""
++            if (not self._turbo_help_project_info_workspace_active()
++                    or self._exclusive_tool_workspace_transitioning):
++                return
++            info = getattr(self, "right_dock", None)
++            help_dock = getattr(self, "turbo_help_compiler_dock", None)
++            if (info is None or help_dock is None or not info.isVisible()
++                    or info.isFloating()):
++                return
++            area = self.dockWidgetArea(info)
++            if area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
++                return
++            side = (Qt.RightDockWidgetArea if area == Qt.LeftDockWidgetArea
++                    else Qt.LeftDockWidgetArea)
++            snapshot = self._exclusive_tool_workspace
++            snapshot["help_info_side"] = area
++            snapshot["help_info_width"] = max(1, int(info.width()))
++            if not help_dock.isFloating() and self.dockWidgetArea(help_dock) != side:
++                self.addDockWidget(side, help_dock)
++            self._expand_exclusive_tool_workspace(help_dock)
++
++        def _project_information_dock_visibility_changed(self, visible: bool) -> None:
++            """Remember explicit project-info visibility changes during Help."""
++            if (not self._turbo_help_project_info_workspace_active()
++                    or self._exclusive_tool_workspace_transitioning):
++                return
++            dock = getattr(self, "right_dock", None)
++            if dock is None or (not visible and not dock.isHidden()):
++                return  # transient floating/reparenting signal
++            self._exclusive_tool_workspace["visibility"][dock] = bool(visible)
++            if visible:
++                QTimer.singleShot(0, self._sync_turbo_help_project_information_side)
+ 
+         def _create_right_dock(self) -> None:
+             self.right_dock = QDockWidget("Projekt / Informationen", self)
+@@ -149311,6 +149301,9 @@
+             )
+             self.right_dock.dockLocationChanged.connect(
+                 self._project_information_dock_location_changed
++            )
++            self.right_dock.visibilityChanged.connect(
++                self._project_information_dock_visibility_changed
+             )
+             self.addDockWidget(Qt.RightDockWidgetArea, self.right_dock)
+             self._enforce_project_information_dock_width()

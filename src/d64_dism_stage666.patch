@@ -1,0 +1,281 @@
+--- a/d64qt5/d64_turbo_help_window.hpp
++++ b/d64qt5/d64_turbo_help_window.hpp
+@@ -22,6 +22,8 @@
+ #include <QResizeEvent>
+ #include <QTextBrowser>
+ #include <QTextDocument>
++#include <QTextFrame>
++#include <QTextFormat>
+ #include <QToolButton>
+ #include <QUrl>
+ #include <QVBoxLayout>
+@@ -161,7 +163,7 @@
+         gridCellHeight_ = qMax(1, cellSize.height());
+         if (browser_ && !currentTopic_.isEmpty() && topics_.contains(currentTopic_)) {
+             const int oldScroll = browser_->verticalScrollBar()->value();
+-            browser_->setHtml(renderMarkup(topics_.value(currentTopic_), textInsetPixels()));
++            setHelpHtml(topics_.value(currentTopic_));
+             browser_->verticalScrollBar()->setValue(oldScroll);
+         }
+         if (maximized_) {
+@@ -286,13 +288,11 @@
+         }
+         if (!topics_.contains(resolvedTopic)) {
+             // Never navigate to file:// or network URLs.
+-            browser_->setHtml(renderMarkup(
+-                QStringLiteral("<b>Hilfethema nicht gefunden: </b>") + topic,
+-                textInsetPixels()));
++            setHelpHtml(QStringLiteral("<b>Hilfethema nicht gefunden: </b>") + topic);
+             return false;
+         }
+         browser_->clear(); // Replace the previous topic, never append.
+-        browser_->setHtml(renderMarkup(topics_.value(resolvedTopic), textInsetPixels()));
++        setHelpHtml(topics_.value(resolvedTopic));
+         currentTopic_ = resolvedTopic;
+         if (caption_) caption_->setText(QStringLiteral("Hilfe:  ") + resolvedTopic);
+         if (!anchor.isEmpty()) browser_->scrollToAnchor(anchor);
+@@ -461,15 +461,28 @@
+                                        minimumHeight(), maxH));
+     }
+ 
+-    // Stage 665: indent one further DOS column. The first grid column
+-    // contains the border, two full blank columns follow, and the text
+-    // begins in grid column 4. The 2-pixel frame is already
+-    // outside the text browser's viewport, so subtract that from the inset.
+-    int textInsetPixels() const { return qMax(0, gridCellWidth_ * 3 - 2); }
++    // Stage 666: QTextBrowser/QTextDocument does not reliably apply CSS
++    // "padding-left" to <body> on all Qt5 builds. Set the margin on the
++    // document's ROOT FRAME instead. This leaves exactly one entire DOS
++    // character cell empty between the inside of the yellow window frame
++    // and the first character of any topic (also error messages and links).
++    // Always apply AFTER setHtml(), which reconstructs the document frames.
++    void setHelpHtml(const QString &source)
++    {
++        browser_->setHtml(renderMarkup(source));
++        QTextFrame *root = browser_->document()->rootFrame();
++        if (!root) return;
++        QTextFrameFormat format = root->frameFormat();
++        format.setLeftMargin(qreal(qMax(1, gridCellWidth_)));
++        format.setRightMargin(0.0);
++        format.setTopMargin(0.0);
++        format.setBottomMargin(0.0);
++        root->setFrameFormat(format);
++    }
+ 
+     // Only <b>, <ref>, <link> and <anchor> are interpreted. All other markup
+     // is HTML-escaped; the help compiler never feeds arbitrary HTML to Qt.
+-    static QString renderMarkup(const QString &text, int leftInset)
++    static QString renderMarkup(const QString &text)
+     {
+         static const QRegularExpression token(
+             QStringLiteral(R"(</?b>|<anchor\s+id=["'][^"']+["']\s*>\s*</anchor>|<ref>[^<]*</ref>|<link>[^<]*</link>)"),
+@@ -525,9 +538,9 @@
+         body += safeText(text.mid(begin));
+         return QStringLiteral(
+             "<html><head><style>body{background:#00bfc7;color:#062b34;"
+-            "margin:0;padding:0 0 0 %1px;font-family:Consolas,'Courier New',monospace;font-size:11pt;}"
++            "margin:0;padding:0;font-family:Consolas,'Courier New',monospace;font-size:11pt;}"
+             "a,a:visited{color:#003bc7;text-decoration:underline;}"
+-            "</style></head><body>").arg(qMax(0, leftInset)) + body + QStringLiteral("</body></html>");
++            "</style></head><body>") + body + QStringLiteral("</body></html>");
+     }
+ 
+     QHash<QString, QString> topics_;
+--- a/test_stage664.py
++++ b/test_stage664.py
+@@ -148,12 +148,12 @@
+     assert 'g_turbo_help_window->showTopicByNumber(helpNumber)' in CPP
+ 
+ 
+-def test_yellow_border_5_pixel_shadow_and_two_blank_character_columns():
++def test_yellow_border_5_pixel_shadow_and_root_frame_character_gap():
+     assert 'border:2px solid #ffe600' in HELP
+     assert 'shadow->setOffset(5.0, 5.0);' in HELP
+     assert 'shadow->setBlurRadius(0.0);' in HELP
+     assert 'browser_->document()->setDocumentMargin(0.0);' in HELP
+-    assert 'gridCellWidth_ * 3 - 2' in HELP
+-    assert 'textInsetPixels()' in HELP
+-    assert 'margin:0;padding:0 0 0 %1px;font-family:Consolas' in HELP
++    assert 'format.setLeftMargin(qreal(qMax(1, gridCellWidth_)));' in HELP
++    assert 'root->setFrameFormat(format);' in HELP
++    assert 'margin:0;padding:0;font-family:Consolas' in HELP
+     assert 'Hilfe:  ' in HELP
+--- a/test_stage665.py
++++ b/test_stage665.py
+@@ -131,13 +131,13 @@
+     assert bar.value() == 0
+ 
+ 
+-def test_bridge_inset_moves_another_full_dos_column_right():
+-    assert 'gridCellWidth_ * 3 - 2' in HELP
+-    assert 'gridCellWidth_ * 2 - 2' not in HELP
++def test_bridge_inset_uses_actual_document_root_frame():
++    assert 'format.setLeftMargin(qreal(qMax(1, gridCellWidth_)));' in HELP
++    assert 'root->setFrameFormat(format);' in HELP
+     assert 'browser_->document()->setDocumentMargin(0.0);' in HELP
+-    assert 'renderMarkup(topics_.value(currentTopic_), textInsetPixels())' in HELP
+-    assert 'renderMarkup(topics_.value(resolvedTopic), textInsetPixels())' in HELP
+-    assert 'textInsetPixels()));' in HELP  # error messages honor the indent too
++    assert 'setHelpHtml(topics_.value(currentTopic_));' in HELP
++    assert 'setHelpHtml(topics_.value(resolvedTopic));' in HELP
++    assert 'setHelpHtml(QStringLiteral("<b>Hilfethema nicht gefunden: </b>") + topic);' in HELP
+     assert 'border:2px solid #ffe600' in HELP
+     assert 'shadow->setOffset(5.0, 5.0)' in HELP
+     assert 'QStringLiteral("Hilfe:  ") + resolvedTopic' in HELP
+--- /dev/null
++++ b/build_and_deploy_dbase_editor_stage666.bat
+@@ -0,0 +1,23 @@
++@echo off
++setlocal EnableExtensions DisableDelayedExpansion
++rem Stage 666: Reliable one-cell text gap via QTextDocument root frame in libd64_qt5.dll.
++rem No turbo_help_host.exe.
++set "BASE=%~dp0"
++set "TARGET=%BASE%runtime\dbase\pe32"
++if not "%~1"=="" set "TARGET=%~1"
++call "%BASE%d64qt5\build_d64qt5_mingw32.bat"
++if errorlevel 1 exit /b 1
++set "SOURCE=%BASE%d64qt5\release\libd64_qt5.dll"
++if not exist "%SOURCE%" (
++    echo FEHLER: DLL nicht gefunden: "%SOURCE%"
++    exit /b 1
++)
++if not exist "%TARGET%" mkdir "%TARGET%"
++if errorlevel 1 exit /b 1
++copy /y "%SOURCE%" "%TARGET%\libd64_qt5.dll" >nul
++if errorlevel 1 exit /b 1
++for %%F in ("%BASE%d64qt5\release\turbo_help_host.exe" "%TARGET%\turbo_help_host.exe") do (
++    if exist "%%~fF" del /f /q "%%~fF"
++)
++echo Stage 666: Qt5-Bridge mit verlaesslicher freier DOS-Zeichenspalte bereitgestellt.
++exit /b 0
+--- /dev/null
++++ b/test_stage666.py
+@@ -0,0 +1,60 @@
++# -*- coding: utf-8 -*-
++"""Stage 666 regression: real Qt document frame margin, not ignored body CSS."""
++from pathlib import Path
++import re
++
++HEADER = (Path(__file__).parent / 'd64qt5/d64_turbo_help_window.hpp').read_text(encoding='utf-8')
++
++
++def test_help_html_uses_qtextdocument_root_frame_with_one_character_gap():
++    assert '#include <QTextFrame>' in HEADER
++    assert '#include <QTextFormat>' in HEADER
++    helper = HEADER[HEADER.index('    void setHelpHtml('):HEADER.index('    // Only <b>', HEADER.index('    void setHelpHtml('))]
++    assert 'browser_->setHtml(renderMarkup(source));' in helper
++    assert 'QTextFrame *root = browser_->document()->rootFrame();' in helper
++    assert 'QTextFrameFormat format = root->frameFormat();' in helper
++    assert 'format.setLeftMargin(qreal(qMax(1, gridCellWidth_)));' in helper
++    assert 'root->setFrameFormat(format);' in helper
++    assert helper.index('browser_->setHtml') < helper.index('root->setFrameFormat')
++    assert 'format.setTopMargin(0.0);' in helper
++    assert 'format.setRightMargin(0.0);' in helper
++    assert 'format.setBottomMargin(0.0);' in helper
++
++
++def test_every_topic_render_uses_margin_helper_including_missing_topic():
++    assert 'setHelpHtml(topics_.value(resolvedTopic));' in HEADER
++    assert 'setHelpHtml(topics_.value(currentTopic_));' in HEADER
++    assert 'setHelpHtml(QStringLiteral("<b>Hilfethema nicht gefunden: </b>") + topic);' in HEADER
++    # There must not be a bypass that resets the frame and loses its inset.
++    assert HEADER.count('browser_->setHtml(') == 1
++    assert 'browser_->clear(); // Replace the previous topic' in HEADER
++    assert 'root->setFrameFormat(format);' in HEADER
++
++
++def test_document_styles_do_not_double_indent_after_root_margin():
++    assert '"margin:0;padding:0;font-family:Consolas' in HEADER
++    assert 'padding:0 0 0 %1px' not in HEADER
++    assert 'textInsetPixels()' not in HEADER
++    assert 'static QString renderMarkup(const QString &text)' in HEADER
++    assert '.arg(qMax(0, leftInset))' not in HEADER
++
++
++def test_existing_window_chrome_and_grid_behaviour_unaffected():
++    for snippet in (
++        'border:2px solid #ffe600',
++        'shadow->setOffset(5.0, 5.0);',
++        'QStringLiteral("Hilfe:  ") + resolvedTopic',
++        'd64TurboGridDragExtent(',
++        'd64TurboRoundCells(delta.x(), gridCellWidth_)',
++        'bool showTopicByNumber(quint32 number',
++        'browser_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);',
++        'browser_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);',
++    ):
++        assert snippet in HEADER
++
++
++def test_helper_is_called_after_resizing_character_grid():
++    method = HEADER[HEADER.index('    void setGridCellSize('):HEADER.index('    bool openMo(')]
++    assert 'gridCellWidth_ = qMax(1, cellSize.width());' in method
++    assert 'setHelpHtml(topics_.value(currentTopic_));' in method
++    assert method.index('gridCellWidth_ = qMax') < method.index('setHelpHtml(')
+--- /dev/null
++++ b/STAGE666_TURBO_HELP_RELIABLE_ONE_CELL_MARGIN_README.md
+@@ -0,0 +1,65 @@
++# Stage 666 – Turbo-Vision-Hilfe: garantierter Abstand einer DOS-Zeichenspalte
++
++**Verbindliche Grundlage:** `d64_dism_stage665.zip`.
++
++## Fehlerursache in Stage 665
++
++Der seit Stage 664/665 gewünschte Texteinzug wurde nur über ein CSS-`padding-left` im
++`<body>` des an `QTextBrowser::setHtml()` übergebenen HTML-Dokuments umgesetzt.
++Der Qt5-Rich-Text-Renderer wertet dieses CSS nicht auf allen Systemen zuverlässig
++als tatsächlichen linken Abstand aus. Das Resultat: Der erste Buchstabe liegt
++weiterhin direkt am inneren linken Fensterrand.
++
++## Korrektur
++
++Die Datei `d64qt5/d64_turbo_help_window.hpp` besitzt nun die zentrale Methode
++`setHelpHtml(const QString &source)`:
++
++1. Sie erzeugt das formatierte Dokument über `browser_->setHtml(renderMarkup(source))`.
++2. **Danach** holt sie den wirklichen Dokumentrahmen mit
++   `browser_->document()->rootFrame()`.
++3. Mit `QTextFrameFormat::setLeftMargin(qMax(1, gridCellWidth_))` setzt sie einen
++   vollständigen Zeichenblock als Abstand zwischen Fensterinnenkante und Text.
++4. Die übrigen Dokumentränder (`top`, `right`, `bottom`) bleiben bei 0.
++5. Der geänderte Rahmen wird durch `root->setFrameFormat(format)` tatsächlich auf
++   das Layout angewendet.
++
++Es bleibt somit stets **eine durchgehend cyanfarbene Leer-Spalte** zwischen
++linkem Fensterrahmen und Hilfetext. Diese Leerspalte gilt auch für Links,
++Nummern-Themen und Fehlermeldungen. Die Größe einer Zeichenspalte wird aus
++`gridCellWidth_` übernommen und beim Wechsel der DOS-Konsolenschrift neu gesetzt.
++
++Das bisherige HTML-`padding-left` wurde auf `padding:0` zurückgesetzt, damit
++keine doppelte Einrückung bei anderen Qt-Versionen entstehen kann.
++
++## Unverändertes Verhalten
++
++- Gelber Außenrahmen 2 Pixel, harter Schatten +5/+5 Pixel.
++- Titelleiste `Hilfe:  <Hilfethema>`.
++- Hilfethemen über Namen und numerische Hilfenummern.
++- Rasterweises Verschieben und Größenändern.
++- Pfeil-Scrollbalken und Linknavigation.
++- `.hlp`/`.mo`-Dateiformat, Hilfecompiler sowie Gutter/Minimap unverändert.
++
++## Windows-Build
++
++Nach Entpacken im bestehenden C64-Frontend-Verzeichnis:
++
++```bat
++build_and_deploy_dbase_editor_stage666.bat
++```
++
++Nur `libd64_qt5.dll` muss neu erstellt und eingesetzt werden. Die `.thlp`
++Quellen und `.hlp` Hilfedateien müssen nicht erneut kompiliert werden.
++Stelle sicher, dass die tatsächlich verwendete Laufzeitumgebung die neue DLL
++lädt (Programm nach DLL-Tausch neu starten).
++
++## Verifikation
++
++- 111 Tests aus Stage 650–659 und 661–666 erfolgreich (inklusive fünf neuen
++  Prüfungen für die Positionierung auf dem `QTextDocument`-Root-Frame).
++- Python-Testprüfungen der früheren CSS-Annahme aus Stage 664/665 wurden an die
++  jetzt verwendete Qt5-Rahmenformatierung angepasst.
++- Archiv-CRC geprüft.
++- **Kein nativer Windows-/Qt5-GUI-Test in dieser Umgebung**; visuelle Prüfung
++  nach dem Neuaufbau der DLL ist noch erforderlich.

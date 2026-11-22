@@ -22,6 +22,10 @@ METHODS = (
 )
 METHOD_BY_NAME = {name.casefold(): (i, kind, args, result) for i, (name,kind,args,result) in enumerate(METHODS)}
 LIFECYCLE = {'__ini__': 'procedure', '__del__': 'procedure'}
+# High bit of JitVmt.instance_size marks the shared method table ABI.
+# The native runtime masks it off for allocation / InstanceSize().
+JIT_VMT_SHARED_METHOD_FLAG = 0x80000000
+
 RUNTIME_EXPORTS = (
     'jit_object_instance_new', 'jit_object_instance_free', 'jit_object_free',
     'jit_object_class_type', 'jit_class_parent', 'jit_class_name',
@@ -536,6 +540,43 @@ def emit_classes(classes, *, target: str, ffi_prototypes=(), filename="<dBase>",
     data.extend(derived_data)
     imports.extend(derived_imports)
 
+    # Stage 670: pool identical virtual method tables once per assembly unit.
+    # The compact VMT has the five regular header fields followed by a pointer
+    # to a shared nine-entry table (destroy + the eight native TObject methods).
+    # Keep the old JitVmt C struct ABI: the high bit in instance_size tells the
+    # runtime to interpret the last header word as a method-table pointer.
+    base_methods = (method_label('TObject', '__del__'),) + tuple(
+        method_label('TObject', method_name) for method_name, _, _, _ in METHODS)
+    method_tables = {base_methods: '__dbase_class_object'}
+    data.extend(['; Stage 670: shared VMT method tables', '__dbase_class_object:'])
+    data.extend(f'    {ptr} {name}' for name in base_methods)
+
+    resolved = {}
+    def virtual_methods(name, active=frozenset()):
+        key = name.casefold()
+        if key in resolved:
+            return resolved[key]
+        if key in active:
+            raise ValueError(f'Zyklische dBASE-Klassenhierarchie: {name}')
+        cls = present[key]
+        parent = str(getattr(cls, 'parent', '') or '').casefold()
+        inherited = (virtual_methods(parent, active | {key}) if parent in present
+                     else base_methods)
+        methods = list(inherited)
+        for member in getattr(cls, 'methods', ()):
+            index = METHOD_BY_NAME.get(member.name.casefold())
+            if (index is not None and member.body
+                    and member.kind == index[1]
+                    and len(member.parameters) == len(index[2])):
+                # An overload with a different signature is *not* a virtual
+                # override and must not be installed in an incompatible slot.
+                methods[index[0] + 1] = method_label(cls.name, member.name)
+            elif (member.name.casefold() == '__del__' and member.body
+                  and member.kind == 'procedure' and not member.parameters):
+                methods[0] = method_label(cls.name, '__del__')
+        resolved[key] = tuple(methods)
+        return resolved[key]
+
     for cls in present.values():
         name = cls.name
         label = vmt_label(name)
@@ -551,14 +592,21 @@ def emit_classes(classes, *, target: str, ffi_prototypes=(), filename="<dBase>",
         slots = custom_codegen.get(name.casefold())
         size = ptr_size * (1 + 2 * len(slots)) if slots is not None else ptr_size
         has_custom = name.casefold() in custom_codegen
+        signature = virtual_methods(name)
+        shared = method_tables.get(signature)
+        if shared is None:
+            shared = f'__dbase_class_methods_{len(method_tables)}'
+            method_tables[signature] = shared
+            data.append(f'{shared}:')
+            data.extend(f'    {ptr} {member}' for member in signature)
+        if size >= JIT_VMT_SHARED_METHOD_FLAG:
+            raise ValueError(f'dBASE-Klasse {name}: Instanzgroesse zu gross fuer kompakte VMT.')
         data += [f'global {label}', f'{label}:',
                  f'    {ptr} {parent_label}', f'    {ptr} {classname_label}',
-                 f'    {ptr} {size}',
+                 f'    {ptr} 0x{(size | JIT_VMT_SHARED_METHOD_FLAG):08X}',
                  f'    {ptr} {method_label(name, "fields_init") if has_custom else method_label("TObject", "__ini__")}',
                  f'    {ptr} {method_label(name, "fields_done") if has_custom else 0}',
-                 f'    {ptr} {method_label("TObject", "__del__")}']
-        for method_name, _, _, _ in METHODS:
-            data.append(f'    {ptr} {method_label("TObject", method_name)}')
+                 f'    {ptr} {shared}']
         encoded = ', '.join(map(str, name.encode('cp1252'))) or '0'
         data += [f'{classname_label}:', f'    db {encoded}, 0']
     # Only keep the two structural imports (allocation / VMT dispatch) and

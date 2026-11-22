@@ -81,3 +81,4 @@ EXPORTS
     DBaseQtWfmSessionInvoke @1015
     DBaseQtFillBackground @1016
     DBaseQtHelpShowMo @1017
+    DBaseQtHelpShowTopicId @1018

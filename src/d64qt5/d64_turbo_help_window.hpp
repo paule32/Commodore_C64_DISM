@@ -9,6 +9,8 @@
 #include <QEvent>
 #include <QFile>
 #include <QFrame>
+#include <QGraphicsDropShadowEffect>
+#include <QColor>
 #include <QHash>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -19,6 +21,9 @@
 #include <QScrollBar>
 #include <QResizeEvent>
 #include <QTextBrowser>
+#include <QTextDocument>
+#include <QTextFrame>
+#include <QTextFormat>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -35,8 +40,14 @@ public:
         setAttribute(Qt::WA_StyledBackground, true);
         setContextMenuPolicy(Qt::NoContextMenu);
         setFocusPolicy(Qt::StrongFocus);
+        // Stage 664: hard-edged DOS-style shadow, +5 px right and +5 px down.
+        auto *shadow = new QGraphicsDropShadowEffect(this);
+        shadow->setBlurRadius(0.0);
+        shadow->setOffset(5.0, 5.0);
+        shadow->setColor(QColor(0, 0, 0, 160));
+        setGraphicsEffect(shadow);
         setStyleSheet(QStringLiteral(
-            "QWidget#dbaseTurboHelpWindow{background:#00bfc7;border:2px solid #07566b;}"
+            "QWidget#dbaseTurboHelpWindow{background:#00bfc7;border:2px solid #ffe600;}"
             "QFrame#dbaseTurboHelpTitle{background:#73edf1;border-bottom:2px solid #07566b;}"
             "QLabel#dbaseTurboHelpCaption{color:#002935;font: bold 11pt Consolas;}"
             "QToolButton#dbaseTurboHelpClose{background:#abfaff;color:#003947;"
@@ -72,6 +83,7 @@ public:
         caption->setObjectName(QStringLiteral("dbaseTurboHelpCaption"));
         caption->setAttribute(Qt::WA_TransparentForMouseEvents);
         header->addWidget(caption);
+        caption_ = caption;
         header->addStretch(1);
         layout->addWidget(title_);
 
@@ -101,6 +113,9 @@ public:
         helpHScroll->installEventFilter(this);
         helpVScroll->installEventFilter(this);
         browser_->setFont(QFont(QStringLiteral("Consolas"), 11));
+        // Stage 664: HTML adds a horizontal DOS-grid inset; document margins
+        // must not add unwanted top/right space or shift the text by 4 px.
+        browser_->document()->setDocumentMargin(0.0);
         QObject::connect(browser_, &QTextBrowser::anchorClicked, this,
                          [this](const QUrl &link) {
             if (link.scheme() != QLatin1String("tvhelp") ||
@@ -146,6 +161,11 @@ public:
         const int rows = d64TurboRoundCells(height(), oldHeight);
         gridCellWidth_ = qMax(1, cellSize.width());
         gridCellHeight_ = qMax(1, cellSize.height());
+        if (browser_ && !currentTopic_.isEmpty() && topics_.contains(currentTopic_)) {
+            const int oldScroll = browser_->verticalScrollBar()->value();
+            setHelpHtml(topics_.value(currentTopic_));
+            browser_->verticalScrollBar()->setValue(oldScroll);
+        }
         if (maximized_) {
             const int restoreColumn = d64TurboRoundCells(restore_.x(), oldWidth);
             const int restoreRow = d64TurboRoundCells(restore_.y(), oldHeight);
@@ -204,6 +224,8 @@ public:
             return false;
         }
         QHash<QString, QString> loaded;
+        QHash<quint32, QString> numberToTopic;
+        const QString numericPrefix = QStringLiteral("turbo-help-id\x04");
         for (quint32 n = 0; n < count; ++n) {
             const quint32 idlen = u32(quint64(idsOffset) + quint64(n) * 8, bigEndian);
             const quint32 idoff = u32(quint64(idsOffset) + quint64(n) * 8 + 4, bigEndian);
@@ -215,28 +237,64 @@ public:
                 return false;
             }
             const QString id = QString::fromUtf8(data.constData() + idoff, int(idlen));
-            if (!id.isEmpty())
-                loaded.insert(id, QString::fromUtf8(data.constData() + vaoff, int(valen)));
+            const QString value = QString::fromUtf8(data.constData() + vaoff, int(valen));
+            if (id.startsWith(numericPrefix)) {
+                // GNU gettext msgctxt + msgid are joined by byte 0x04 in MO.
+                // Help ID 1234 maps to the *symbolic* topic name "test".
+                bool ok = false;
+                const quint32 numericId = id.mid(numericPrefix.size()).toUInt(&ok, 10);
+                if (!ok || numberToTopic.contains(numericId)) {
+                    if (error) *error = QStringLiteral("Doppelte/ungültige Hilfenummer in HLP");
+                    return false;
+                }
+                numberToTopic.insert(numericId, value);
+            } else if (!id.isEmpty()) {
+                loaded.insert(id, value);
+            }
         }
         if (!loaded.contains(QStringLiteral("index"))) {
             if (error) *error = QStringLiteral("Das Standardthema index fehlt in der HLP-Datei");
             return false;
         }
+        // Reject invalid numeric aliases before replacing a running catalog.
+        for (auto it = numberToTopic.cbegin(); it != numberToTopic.cend(); ++it) {
+            if (!loaded.contains(it.value())) {
+                if (error) *error = QStringLiteral("Hilfenummer verweist auf fehlendes Thema");
+                return false;
+            }
+        }
         topics_.swap(loaded);
+        helpNumbers_.swap(numberToTopic);
         return showTopic(QStringLiteral("index"));
+    }
+
+    bool showTopicByNumber(quint32 number, const QString &anchor = QString())
+    {
+        const auto found = helpNumbers_.constFind(number);
+        if (found == helpNumbers_.cend()) return false;
+        return showTopic(found.value(), anchor);
     }
 
     bool showTopic(const QString &topic, const QString &anchor = QString())
     {
-        if (!topics_.contains(topic)) {
+        // A quoted %link "1234" (or %link 1234) works as a numeric link too;
+        // explicit text topic names always have precedence over numeric aliases.
+        QString resolvedTopic = topic;
+        if (!topics_.contains(resolvedTopic)) {
+            bool ok = false;
+            const quint32 number = topic.toUInt(&ok, 10);
+            if (ok && helpNumbers_.contains(number))
+                resolvedTopic = helpNumbers_.value(number);
+        }
+        if (!topics_.contains(resolvedTopic)) {
             // Never navigate to file:// or network URLs.
-            browser_->setHtml(QStringLiteral("<b>Hilfethema nicht gefunden: </b>") +
-                              topic.toHtmlEscaped());
+            setHelpHtml(QStringLiteral("<b>Hilfethema nicht gefunden: </b>") + topic);
             return false;
         }
         browser_->clear(); // Replace the previous topic, never append.
-        browser_->setHtml(renderMarkup(topics_.value(topic)));
-        currentTopic_ = topic;
+        setHelpHtml(topics_.value(resolvedTopic));
+        currentTopic_ = resolvedTopic;
+        if (caption_) caption_->setText(QStringLiteral("Hilfe:  ") + resolvedTopic);
         if (!anchor.isEmpty()) browser_->scrollToAnchor(anchor);
         else browser_->verticalScrollBar()->setValue(0);
         show();
@@ -403,6 +461,25 @@ private:
                                        minimumHeight(), maxH));
     }
 
+    // Stage 666: QTextBrowser/QTextDocument does not reliably apply CSS
+    // "padding-left" to <body> on all Qt5 builds. Set the margin on the
+    // document's ROOT FRAME instead. This leaves exactly one entire DOS
+    // character cell empty between the inside of the yellow window frame
+    // and the first character of any topic (also error messages and links).
+    // Always apply AFTER setHtml(), which reconstructs the document frames.
+    void setHelpHtml(const QString &source)
+    {
+        browser_->setHtml(renderMarkup(source));
+        QTextFrame *root = browser_->document()->rootFrame();
+        if (!root) return;
+        QTextFrameFormat format = root->frameFormat();
+        format.setLeftMargin(qreal(qMax(1, gridCellWidth_)));
+        format.setRightMargin(0.0);
+        format.setTopMargin(0.0);
+        format.setBottomMargin(0.0);
+        root->setFrameFormat(format);
+    }
+
     // Only <b>, <ref>, <link> and <anchor> are interpreted. All other markup
     // is HTML-escaped; the help compiler never feeds arbitrary HTML to Qt.
     static QString renderMarkup(const QString &text)
@@ -461,14 +538,16 @@ private:
         body += safeText(text.mid(begin));
         return QStringLiteral(
             "<html><head><style>body{background:#00bfc7;color:#062b34;"
-            "font-family:Consolas,'Courier New',monospace;font-size:11pt;}"
+            "margin:0;padding:0;font-family:Consolas,'Courier New',monospace;font-size:11pt;}"
             "a,a:visited{color:#003bc7;text-decoration:underline;}"
             "</style></head><body>") + body + QStringLiteral("</body></html>");
     }
 
     QHash<QString, QString> topics_;
+    QHash<quint32, QString> helpNumbers_;
     QString currentTopic_;
     QFrame *title_ = nullptr;
+    QLabel *caption_ = nullptr;
     QToolButton *grip_ = nullptr;
     QPoint resizeStartGlobal_;
     QSize resizeStart_;

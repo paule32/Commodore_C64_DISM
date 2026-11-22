@@ -1,0 +1,1164 @@
+--- a/d64_dism.py
++++ b/d64_dism.py
+@@ -50278,8 +50278,9 @@
+             )
+ 
+     @staticmethod
+-    def extract_with_windows_help(source: Path, target: Path) -> None:
+-        helper = Path(os.environ.get("WINDIR", r"C:\Windows")) / "hh.exe"
++    def extract_with_windows_help(source: Path, target: Path, hh_path: str = "") -> None:
++        helper = (Path(hh_path).expanduser() if str(hh_path).strip() else
++                  Path(os.environ.get("WINDIR", r"C:\Windows")) / "hh.exe")
+         if not helper.is_file():
+             raise RuntimeError("hh.exe wurde nicht gefunden.")
+ 
+@@ -50310,36 +50311,73 @@
+         if previous_count <= 0:
+             raise RuntimeError("Windows HTML Help hat keine Dateien extrahiert.")
+ 
++    @staticmethod
++    def extract_with_pychm(source: Path, target: Path) -> None:
++        """Extract CHM data using optional Python pychm / CHMLib bindings."""
++        from chm import chmlib
++        handle = chmlib.chm_open(str(source).encode('utf-8'))
++        if not handle:
++            raise RuntimeError(f"pychm konnte die CHM-Datei nicht öffnen: {source}")
++        total = [0]
++        try:
++            def visitor(h, unit, _context):
++                raw = unit.path
++                value = (raw.decode('utf-8', 'replace') if isinstance(raw, bytes)
++                         else str(raw))
++                # Ignore CHM internal streams and refuse path traversal.
++                if not value.startswith('/') or value.startswith('/#'):
++                    return chmlib.CHM_ENUMERATOR_CONTINUE
++                name = value.lstrip('/').replace('\\', '/')
++                parts = Path(name).parts
++                if any(part in ('..', '.') for part in parts) or not parts:
++                    return chmlib.CHM_ENUMERATOR_CONTINUE
++                destination = target.joinpath(*parts)
++                if not destination.resolve().is_relative_to(target.resolve()):
++                    return chmlib.CHM_ENUMERATOR_CONTINUE
++                length = int(unit.length)
++                if length < 0 or length > 64 * 1024 * 1024 or total[0] > 100000:
++                    return chmlib.CHM_ENUMERATOR_CONTINUE
++                count, payload = chmlib.chm_retrieve_object(h, unit, 0, length)
++                if count > 0:
++                    destination.parent.mkdir(parents=True, exist_ok=True)
++                    destination.write_bytes(bytes(payload[:count]))
++                    total[0] += 1
++                return chmlib.CHM_ENUMERATOR_CONTINUE
++            mask = chmlib.CHM_ENUMERATE_NORMAL | chmlib.CHM_ENUMERATE_FILES
++            chmlib.chm_enumerate(handle, mask, visitor, None)
++        finally:
++            chmlib.chm_close(handle)
++        if total[0] <= 0:
++            raise RuntimeError('pychm hat keine regulären CHM-Dateien extrahiert')
++
+     @classmethod
+-    def extract(cls, source: Path, target: Path) -> None:
+-        errors: List[str] = []
+-        command = cls.seven_zip_command()
+-        if command:
+-            try:
+-                cls.extract_with_7zip(command, source, target)
+-                if any(iter_chm_files(target)):
+-                    return
+-            except Exception as exc:
+-                errors.append(str(exc))
+-
+-        if os.name == "nt":
+-            try:
+-                cls.extract_with_windows_help(source, target)
+-                if any(iter_chm_files(target)):
+-                    return
+-            except Exception as exc:
+-                errors.append(str(exc))
+-
+-        hint = (
+-            "Installiere 7-Zip und stelle 7z/7zz ueber PATH bereit."
+-            if os.name == "nt"
+-            else "Installiere 7-Zip, z. B. mit 'sudo apt install p7zip-full'."
+-        )
+-        details = "\n\n".join(errors)
+-        raise RuntimeError(
+-            "Kein verwendbares CHM-Entpackprogramm gefunden.\n"
+-            f"{hint}\n\n{details}"
+-        )
++    def extract(cls, source: Path, target: Path, *, mode="internal", hh_path="") -> None:
++        """Select explicit Microsoft or internal CHM extraction backend.
++
++        The internal backend uses the existing 7-Zip integration. No Microsoft
++        HTML Help invocation is made unless the Microsoft mode is selected.
++        """
++        if mode == "microsoft":
++            if os.name != "nt":
++                raise RuntimeError("Microsoft CHM benötigt Windows und hh.exe")
++            cls.extract_with_windows_help(source, target, hh_path)
++            if not any(iter_chm_files(target)):
++                raise RuntimeError("Microsoft CHM hat keine Dateien extrahiert")
++            return
++        # Prefer Python's optional pychm package. Python's standard library
++        # does not contain a CHM extractor; 7-Zip remains a compatibility fallback.
++        try:
++            cls.extract_with_pychm(source, target)
++            return
++        except (ImportError, RuntimeError, OSError, AttributeError) as py_error:
++            command = cls.seven_zip_command()
++            if not command:
++                raise RuntimeError(
++                    "Für den internen CHM-Modus wird pychm (Python-Paket) "
++                    "oder 7z benötigt. PyCHM: " + str(py_error)) from py_error
++            cls.extract_with_7zip(command, source, target)
++            if not any(iter_chm_files(target)):
++                raise RuntimeError("Interner CHM-Entpacker lieferte keine Dateien")
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -50712,6 +50750,8 @@
+ # Stage 652: Turbo-Vision Help sources live in their own project node.
+ PROJECT_TURBO_HELP_ENTRY_KEY = "__project_turbo_help_sources__"
+ PROJECT_TURBO_HELP_SECTION = "Category.TurboHelp"
++PROJECT_HELP_SETTINGS_KEY = "__project_help_settings__"
++PROJECT_HELP_SETTINGS_SECTION = "Settings.Windows.Hilfe"
+ PROJECT_NODE_TURBO_HELP_ROOT = "turbo_help_root"
+ PROJECT_NODE_TURBO_HELP_FILE = "turbo_help_file"
+ PROJECT_NODE_PROLOG_KNOWLEDGE_FILE = "prolog_knowledge_file"
+@@ -51716,6 +51756,7 @@
+     entries[PROJECT_C_ARCHIVES_KEY] = []
+     entries[PROJECT_PROLOG_KNOWLEDGE_KEY] = []
+     entries[PROJECT_TURBO_HELP_ENTRY_KEY] = []
++    entries[PROJECT_HELP_SETTINGS_KEY] = []
+     entries[PROJECT_C64_RESOURCE_ENTRY_KEY] = []
+     entries[PROJECT_C64_SPRITES_ENTRY_KEY] = []
+     for _key in PROJECT_C64_SOURCE_KEYS.values():
+@@ -52111,6 +52152,14 @@
+     }
+     encode_named_project_metadata(parser, _named_names, _named_selection, _named_files)
+ 
++    # Stage 663: project-wide Help settings, shared between both Windows ABIs.
++    _help_rows = entries.get(PROJECT_HELP_SETTINGS_KEY, ())
++    if _help_rows:
++        parser[PROJECT_HELP_SETTINGS_SECTION] = {
++            "Title": "Hilfe",
++            "Values": json.dumps(_help_rows[0], ensure_ascii=False),
++        }
++
+     # Stage 652: persist the Turbo Help project leaves, not unsaved tabs.
+     parser[PROJECT_TURBO_HELP_SECTION] = {"Title": "Turbo Help"}
+     for _n, _item in enumerate(entries.get(PROJECT_TURBO_HELP_ENTRY_KEY, ()), 1):
+@@ -53932,6 +53981,16 @@
+                 entries[_ls["output_relative_key"]] = list(entries[_settings["output_relative_key"]])
+                 entries[_ls["output_key"]] = [dict(item) for item in entries[_settings["output_key"]]]
+                 entries[_ls["cache_key"]] = [dict(item) for item in entries.get(_settings["asm_cache_key"], ())]
++
++    # Stage 663: help search/compressor settings live in their own section.
++    if parser.has_section(PROJECT_HELP_SETTINGS_SECTION):
++        try:
++            _help_values = json.loads(parser.get(
++                PROJECT_HELP_SETTINGS_SECTION, "Values", fallback="{}"))
++            if isinstance(_help_values, dict):
++                entries[PROJECT_HELP_SETTINGS_KEY] = [_help_values]
++        except (TypeError, ValueError):
++            pass
+ 
+     # Stage 652: load Turbo Help source leaves from the .pro file.
+     if parser.has_section(PROJECT_TURBO_HELP_SECTION):
+@@ -75612,6 +75671,8 @@
+             start_directory = str(
+                 self.settings.value("chm/last_directory", "") or ""
+             )
++            if not start_directory and getattr(self, "owner_help_directories", None):
++                start_directory = str(self.owner_help_directories[0])
+             filename, _ = QFileDialog.getOpenFileName(
+                 self,
+                 "CHM-Hilfedatei öffnen",
+@@ -75649,7 +75710,11 @@
+                     prefix="d64_chm_viewer_"
+                 )
+                 root = Path(new_temporary.name)
+-                ChmExtractor.extract(source, root)
++                ChmExtractor.extract(
++                    source, root,
++                    mode=getattr(self, "extract_mode", "internal"),
++                    hh_path=getattr(self, "extract_hh_path", ""),
++                )
+                 topics, keywords, home_local = self.read_metadata(root)
+                 context_id_map = read_chm_context_map(root)
+             except Exception as exc:
+@@ -107620,10 +107685,20 @@
+             self.nodes = {}
+             # Stage 528: Debug gehört als Hauptknoten in die linke
+             # Windows-TreeList (PE32 und PE32+), nicht nur in die Tab-Leiste.
+-            for title in ("Umgebung", "Compiler", "Assembler", "Linker", "Debug"):
++            for title in ("Umgebung", "Compiler", "Assembler", "Linker", "Debug", "Hilfe"):
+                 item = QTreeWidgetItem(self.tree, [title])
+                 item.setData(0, Qt.UserRole, title.casefold())
+                 self.nodes[title.casefold()] = item
++
++            # Stage 663: Hilfe ist ein EIGENER Hauptknoten ganz am Ende,
++            # kein Unterpunkt von Debug. Beide Windows-ABIs verwenden ihn.
++            self.help_development_item = QTreeWidgetItem(
++                self.nodes["hilfe"], ["Entwicklung"])
++            self.help_development_item.setData(0, Qt.UserRole, "hilfe.entwicklung")
++            self.help_application_item = QTreeWidgetItem(
++                self.nodes["hilfe"], ["Anwendung"])
++            self.help_application_item.setData(0, Qt.UserRole, "hilfe.anwendung")
++            self.nodes["hilfe"].setExpanded(True)
+ 
+             # Stage 198: Umgebung ist nur noch der Hauptknoten. Die bisherige
+             # Umgebung-Seite liegt unter Workstation; Editor erhaelt eine
+@@ -107777,6 +107852,16 @@
+                 f"project_settings_windows_{target_tag}_debug_page"
+             )
+             self.stack.addWidget(self.debug_page)
++
++            # Stage 663: separate Help pages. The owner keeps one project-wide
++            # set of settings, mirrored into the PE32 and PE64 tree views.
++            from turbo_help_settings import TurboHelpSettingsPage
++            self.help_development_page = TurboHelpSettingsPage("entwicklung", self.stack)
++            self.help_application_page = TurboHelpSettingsPage("anwendung", self.stack)
++            for _help_page in (self.help_development_page, self.help_application_page):
++                self.stack.addWidget(_help_page)
++                _help_page.changed.connect(self._help_settings_changed)
++            self.set_help_settings(getattr(self.owner, "project_help_settings", None))
+ 
+             # Stage 531: eigenes Security-Blatt je Architektur.
+             self.security_page = WindowsCompilerSecuritySettingsPage(
+@@ -109611,6 +109696,28 @@
+                         result.addWidget(obj, source_layout.stretch(i))
+             return result
+ 
++        def set_help_settings(self, value) -> None:
++            from turbo_help_settings import normalize_help_settings
++            settings = normalize_help_settings(value)
++            project_path = getattr(self.owner, "current_project_path", None)
++            base = Path(project_path).resolve().parent if project_path else None
++            self.help_development_page.project_base = base
++            self.help_application_page.project_base = base
++            self.help_development_page.set_data(settings["entwicklung"])
++            self.help_application_page.set_data(settings["anwendung"])
++
++        def _help_settings_changed(self, scope: str, value: dict) -> None:
++            from turbo_help_settings import normalize_help_settings
++            state = normalize_help_settings(getattr(self.owner, "project_help_settings", None))
++            state[scope] = dict(value)
++            self.owner.project_help_settings = state
++            if hasattr(self.owner, "set_project_modified"):
++                self.owner.set_project_modified(True)
++            # The other Windows page displays the same *project* options.
++            parent_panel = getattr(self.owner, "project_settings_panel", None)
++            if parent_panel is not None:
++                parent_panel.set_help_settings(state)
++
+         def _tree_changed(self, current, _previous) -> None:
+             key = str(current.data(0, Qt.UserRole) or "") if current is not None else ""
+             if key in self._overview_widgets:
+@@ -109662,6 +109769,10 @@
+                 page = self.manifest_page
+             elif key == "debug":
+                 page = self.debug_page
++            elif key == "hilfe.entwicklung":
++                page = self.help_development_page
++            elif key == "hilfe.anwendung":
++                page = self.help_application_page
+             else:
+                 page = self.placeholder
+             self.stack.setCurrentWidget(page)
+@@ -111749,6 +111860,17 @@
+             self.owner.project_windows_pascal_import_options = state
+             if hasattr(self.owner, "set_project_modified"):
+                 self.owner.set_project_modified(True)
++
++        def set_help_settings(self, value):
++            from turbo_help_settings import normalize_help_settings
++            state = normalize_help_settings(value)
++            for page in self.windows_pages.values():
++                page.set_help_settings(state)
++            self.owner.project_help_settings = state
++
++        def help_settings(self):
++            from turbo_help_settings import normalize_help_settings
++            return normalize_help_settings(getattr(self.owner, "project_help_settings", None))
+ 
+         def set_pascal_import_options(self, values) -> None:
+             values = values if isinstance(values, dict) else {}
+@@ -113847,6 +113969,8 @@
+             self._source_find_project_signature = None
+ 
+             self.current_project_path = None
++            from turbo_help_settings import default_help_settings
++            self.project_help_settings = default_help_settings()
+             self.project_debug_options = stage530_default_debug_options()
+             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
+             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
+@@ -125467,6 +125591,14 @@
+             # der laufenden Turbo-Vision-Konsolenanwendung durch F1 geoeffnet.
+             # Das Kompilat wird bei der EXE-Erzeugung als App.hlp bereitgestellt.
+             self._turbo_help_catalog_path = Path(mo_path).resolve()
++            # F2 also deploys the runtime search paths, even before the EXE exists.
++            from turbo_help_settings import write_application_help_manifest
++            try:
++                _runtime_exe = self._turbo_help_project_executable()
++                write_application_help_manifest(
++                    _runtime_exe, getattr(self, "project_help_settings", None))
++            except (OSError, ValueError) as exc:
++                self.log(f"TURBO HELP PATHS WARNING: {exc}")
+             self._turbo_help_catalog_project = (
+                 str(Path(self.current_project_path).resolve())
+                 if getattr(self, "current_project_path", None) else None
+@@ -126559,6 +126691,7 @@
+             scroll.setMinimumSize(0, 0)
+             panel = ProjectSettingsPanel(self, scroll)
+             panel.set_debug_options(getattr(self, "project_debug_options", stage530_default_debug_options()))
++            panel.set_help_settings(getattr(self, "project_help_settings", None))
+             panel.set_stack_cookie_options(getattr(
+                 self, "project_windows_compiler_security_options",
+                 stage531_default_compiler_security_options(),
+@@ -126725,7 +126858,14 @@
+             panel.set_dark_mode(self.application_dark_mode(self.dark_mode_enabled))
+             scroll.setWidget(panel)
+             dock.setWidget(scroll)
+-            dock.setTitleBarWidget(DockTitleBar(dock))
++            titlebar = DockTitleBar(dock)
++            titlebar.layout().removeWidget(titlebar.close_button)
++            titlebar.layout().insertSpacing(1, 100)
++            titlebar.close_button.setText("schließen")
++            titlebar.close_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
++            titlebar.close_button.setToolTip("Projekt-Einstellungen ausblenden")
++            titlebar.layout().insertWidget(2, titlebar.close_button)
++            dock.setTitleBarWidget(titlebar)
+ 
+             # Stage 187: Das Projekt-Settings-Dock gehört zwischen das
+             # Dateisystem links und den Projekt-/Informationsbaum rechts.
+@@ -126844,6 +126984,7 @@
+             self._ensure_project_settings_dock()
+             self._enter_project_settings_workspace()
+             self.project_settings_panel.set_debug_options(getattr(self, "project_debug_options", stage530_default_debug_options()))
++            self.project_settings_panel.set_help_settings(getattr(self, "project_help_settings", None))
+             self.project_settings_panel.set_stack_cookie_options(getattr(
+                 self, "project_windows_compiler_security_options",
+                 stage531_default_compiler_security_options(),
+@@ -136772,6 +136913,14 @@
+                             # Hilfedateifehler darf keine erfolgreich gelinkte
+                             # EXE als Assemblerfehler erscheinen lassen.
+                             self.log(f"TURBO HELP HLP WARNING: {exc}")
++                    # Deliver the application help search paths with the EXE.
++                    from turbo_help_settings import write_application_help_manifest
++                    try:
++                        _manifest = write_application_help_manifest(
++                            output_path, getattr(self, "project_help_settings", None))
++                        self.log(f"TURBO HELP PATHS: {_manifest}")
++                    except (OSError, ValueError) as exc:
++                        self.log(f"TURBO HELP PATHS WARNING: {exc}")
+                 # Stage 552: the on-disk PE import directory of a packed EXE
+                 # lists only cabinet/kernel32. Use the *link manifest* to find
+                 # original imports, including those from externalized .inc, and
+@@ -143228,6 +143377,11 @@
+                 {"path": path, "last_id": int(self.project_dbase_id_counters.get(key, 0))}
+                 for path, key in entry_paths
+             ]
++            # Stage 663: persist Help roots and paths with the project.
++            from turbo_help_settings import normalize_help_settings
++            entries[PROJECT_HELP_SETTINGS_KEY] = [normalize_help_settings(
++                getattr(self, "project_help_settings", None))]
++
+             # Stage 530: all project-save routes persist BOTH ABI profiles.
+             panel = getattr(self, "project_settings_panel", None)
+             options_by_target = (
+@@ -143468,6 +143622,8 @@
+             if designer is not None:
+                 designer.set_project_column_widths(self.project_dbase_data_column_widths)
+             self.current_project_path = None
++            from turbo_help_settings import default_help_settings
++            self.project_help_settings = default_help_settings()
+             self.project_debug_options = stage530_default_debug_options()
+             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
+             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
+@@ -143481,6 +143637,7 @@
+             _panel = getattr(self, "project_settings_panel", None)
+             if _panel is not None:
+                 _panel.set_debug_options(self.project_debug_options)
++                _panel.set_help_settings(self.project_help_settings)
+                 _panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
+                 _panel.set_parallel_options(self.project_windows_pascal_parallel_options)
+                 _panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
+@@ -143628,6 +143785,8 @@
+             if designer is not None:
+                 designer.set_project_column_widths(self.project_dbase_data_column_widths)
+             self.current_project_path = None
++            from turbo_help_settings import default_help_settings
++            self.project_help_settings = default_help_settings()
+             self.project_debug_options = stage530_default_debug_options()
+             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
+             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
+@@ -143641,6 +143800,7 @@
+             _panel = getattr(self, "project_settings_panel", None)
+             if _panel is not None:
+                 _panel.set_debug_options(self.project_debug_options)
++                _panel.set_help_settings(self.project_help_settings)
+                 _panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
+                 _panel.set_parallel_options(self.project_windows_pascal_parallel_options)
+                 _panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
+@@ -144251,6 +144411,9 @@
+             }
+             counters_modified = self._initialize_dbase_table_id_counters(entries)
+             self.current_project_path = resolved
++            from turbo_help_settings import normalize_help_settings
++            self.project_help_settings = normalize_help_settings(
++                (entries.get(PROJECT_HELP_SETTINGS_KEY) or [{}])[0])
+             self.project_debug_options = {
+                 target: DebugOptions(**(entries.get(f"__stage530_debug_{target}__") or [{}])[0])
+                 for target in ("pe32", "pe64")
+@@ -144280,6 +144443,7 @@
+             _debug_panel = getattr(self, "project_settings_panel", None)
+             if _debug_panel is not None:
+                 _debug_panel.set_debug_options(self.project_debug_options)
++                _debug_panel.set_help_settings(self.project_help_settings)
+                 _debug_panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
+                 _debug_panel.set_parallel_options(self.project_windows_pascal_parallel_options)
+                 _debug_panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
+@@ -147246,8 +147410,31 @@
+         # Doppelklick darf weder einen zweiten Designer starten noch
+         # einen zweiten Formular-Ladevorgang in die Queue stellen.
+         # ---------------------------------------------------------------------------
++        def _hide_turbo_help_for_project_leaf(self, item) -> None:
++            """Leaving Turbo Help for a different project leaf restores docks."""
++            kind = self._project_item_kind(item)
++            if kind in (PROJECT_NODE_TURBO_HELP_ROOT, PROJECT_NODE_TURBO_HELP_FILE):
++                return True
++            if item.parent() is None:
++                return True
++            dock = getattr(self, "turbo_help_compiler_dock", None)
++            if dock is None or not dock.isVisible():
++                return True
++            editor = self._turbo_help_active_editor()
++            if editor is not None and not editor.save_all_documents():
++                # A canceled Save As must not discard or hide the editor.
++                return False
++            dock.hide()
++            snapshot = getattr(self, "_exclusive_tool_workspace", None)
++            if snapshot is not None and snapshot.get("owner") is dock:
++                self._restore_exclusive_tool_workspace(dock)
++            return True
++
+         def _on_project_item_double_clicked(self, item: QTreeWidgetItem, column: int = 0) -> None:
+             kind = self._project_item_kind(item)
++            if kind != PROJECT_NODE_TURBO_HELP_FILE:
++                if not self._hide_turbo_help_for_project_leaf(item):
++                    return
+             if kind == PROJECT_NODE_TURBO_HELP_FILE:
+                 self._project_turbo_help_open(item)
+                 return
+@@ -147286,6 +147473,10 @@
+                 self._project_turbo_help_open(item)
+                 return
+                 
++            # Stage 663: switching to another tree leaf closes the Help dock,
++            # but does not close the persistent Projekt-Informationen tree.
++            if not self._hide_turbo_help_for_project_leaf(item):
++                return
+             if self._project_item_kind(item) == PROJECT_NODE_C64_SPRITE_FILE:
+                 self.open_project_item(item)
+                 return
+@@ -148748,6 +148939,9 @@
+             _column: int = 0,
+         ) -> None:
+             kind = self._project_item_kind(item)
++            if kind != PROJECT_NODE_TURBO_HELP_FILE:
++                if not self._hide_turbo_help_for_project_leaf(item):
++                    return
+             # Stage 620: Sprite-Blatt und zugehoeriges Dock als EINEN Vorgang
+             # hinter dem Splash laden. Sonst wird _show_c64_tool_dock im
+             # Projektbaum ohne den ueblichen show_*_dock-Slot aufgerufen.
+@@ -150747,6 +150941,14 @@
+                 self,
+                 dark_mode=dark_mode,
+             )
++            # Entwicklung-Hilfe: project search paths and CHM decompressor.
++            from turbo_help_settings import normalize_help_settings, search_directories
++            _help_opts = normalize_help_settings(getattr(self, "project_help_settings", None))
++            _dev = _help_opts["entwicklung"]
++            dialog.extract_mode = _dev["compressor"]
++            dialog.extract_hh_path = _dev["hh_path"]
++            dialog.owner_help_directories = search_directories(
++                _help_opts, "entwicklung", getattr(self, "current_project_path", None))
+             # Noch vor CHM-Extraktion, erstem Seitenladen und exec_() wird die
+             # Web-Oberflaeche auf den zuvor ermittelten Modus festgelegt.
+             dialog.set_dark_mode(dark_mode)
+@@ -150766,13 +150968,19 @@
+                     display_name="E-Baukasten-Hilfe",
+                 )
+             else:
+-                last_file = str(
+-                    self.settings.value("chm/last_file", "") or ""
+-                )
++                last_file = str(self.settings.value("chm/last_file", "") or "")
+                 if last_file and Path(last_file).is_file():
+                     dialog.open_chm(last_file)
+                 else:
+-                    QTimer.singleShot(0, dialog.choose_chm)
++                    candidates = []
++                    for _directory in search_directories(
++                            _help_opts, "entwicklung", getattr(self, "current_project_path", None)):
++                        if _directory.is_dir():
++                            candidates.extend(sorted(_directory.glob("*.chm")))
++                    if candidates:
++                        dialog.open_chm(str(candidates[0]))
++                    else:
++                        QTimer.singleShot(0, dialog.choose_chm)
+             dialog.exec_()
+ 
+         def show_system_information_dialog(self) -> None:
+--- a/d64qt5/d64qt5_bridge.cpp
++++ b/d64qt5/d64qt5_bridge.cpp
+@@ -8870,6 +8870,36 @@
+ #endif
+ }
+ 
++// Stage 663: runtime search directory manifest generated by dBase2Many.
++static void d64TurboHelpAddSearchDirectories(
++    QStringList &candidates, const QFileInfo &exeInfo,
++    const QDir &exeDir, const QString &catalogName)
++{
++        QFile manifest(exeDir.filePath(
++            exeInfo.completeBaseName() + QStringLiteral(".help.json")));
++        if (manifest.open(QIODevice::ReadOnly) && manifest.size() <= 64 * 1024) {
++            const QJsonDocument document = QJsonDocument::fromJson(manifest.readAll());
++            if (document.isObject()) {
++                const QJsonObject values = document.object();
++                if (values.value(QStringLiteral("format")).toString()
++                        == QLatin1String("d64-turbo-help-paths-v1")) {
++                    const QJsonArray directories = values.value(
++                        QStringLiteral("directories")).toArray();
++                    for (const QJsonValue &value : directories) {
++                        const QString directoryText = value.toString().trimmed();
++                        if (directoryText.isEmpty()) continue;
++                        const QFileInfo directoryInfo(directoryText);
++                        const QString directory = directoryInfo.isAbsolute()
++                            ? directoryInfo.absoluteFilePath()
++                            : exeDir.filePath(directoryText);
++                        const QString candidate = QDir(directory).filePath(catalogName);
++                        if (!candidates.contains(candidate)) candidates << candidate;
++                    }
++                }
++            }
++        }
++}
++
+ // Stage 653: Native HLP viewer belongs to libd64_qt5.dll, not a separate EXE.
+ // nullptr / "" selects a sidecar beside the RUNNING application executable:
+ //   <EXE-Stamm>.hlp (GNU-MO payload with .hlp extension).
+@@ -8890,7 +8920,11 @@
+         candidates << (candidate.isAbsolute() ? candidate.absoluteFilePath()
+                                                : exeDir.filePath(requested));
+     } else {
++        const QString catalogName = exeInfo.completeBaseName() + QStringLiteral(".hlp");
++        // Prefer App.hlp next to App.exe.  When deployed with a configured
++        // application search-path manifest, also check those directories.
+         candidates << exeDir.filePath(exeInfo.completeBaseName() + QStringLiteral(".hlp"));
++        d64TurboHelpAddSearchDirectories(candidates, exeInfo, exeDir, catalogName);
+     }
+     QString resolved;
+     for (const QString &path : candidates) {
+--- a/d64qt5/d64_turbo_help_window.hpp
++++ b/d64qt5/d64_turbo_help_window.hpp
+@@ -9,6 +9,8 @@
+ #include <QEvent>
+ #include <QFile>
+ #include <QFrame>
++#include <QGraphicsDropShadowEffect>
++#include <QColor>
+ #include <QHash>
+ #include <QHBoxLayout>
+ #include <QKeyEvent>
+@@ -35,6 +37,12 @@
+         setAttribute(Qt::WA_StyledBackground, true);
+         setContextMenuPolicy(Qt::NoContextMenu);
+         setFocusPolicy(Qt::StrongFocus);
++        // Stage 663: three-pixel shadow, displaced three pixels right and down.
++        auto *shadow = new QGraphicsDropShadowEffect(this);
++        shadow->setBlurRadius(0.0);
++        shadow->setOffset(3.0, 3.0);
++        shadow->setColor(QColor(0, 0, 0, 160));
++        setGraphicsEffect(shadow);
+         setStyleSheet(QStringLiteral(
+             "QWidget#dbaseTurboHelpWindow{background:#00bfc7;border:2px solid #07566b;}"
+             "QFrame#dbaseTurboHelpTitle{background:#73edf1;border-bottom:2px solid #07566b;}"
+@@ -72,6 +80,7 @@
+         caption->setObjectName(QStringLiteral("dbaseTurboHelpCaption"));
+         caption->setAttribute(Qt::WA_TransparentForMouseEvents);
+         header->addWidget(caption);
++        caption_ = caption;
+         header->addStretch(1);
+         layout->addWidget(title_);
+ 
+@@ -237,6 +246,7 @@
+         browser_->clear(); // Replace the previous topic, never append.
+         browser_->setHtml(renderMarkup(topics_.value(topic)));
+         currentTopic_ = topic;
++        if (caption_) caption_->setText(QStringLiteral("Hilfe:  ") + topic);
+         if (!anchor.isEmpty()) browser_->scrollToAnchor(anchor);
+         else browser_->verticalScrollBar()->setValue(0);
+         show();
+@@ -469,6 +479,7 @@
+     QHash<QString, QString> topics_;
+     QString currentTopic_;
+     QFrame *title_ = nullptr;
++    QLabel *caption_ = nullptr;
+     QToolButton *grip_ = nullptr;
+     QPoint resizeStartGlobal_;
+     QSize resizeStart_;
+--- a/turbo_help_settings.py
++++ b/turbo_help_settings.py
+@@ -0,0 +1,288 @@
++"""Turbo Help search/compressor project settings (Stage 663).
++
++Shared between the Windows PE32 and PE64 project settings trees.  A CHM
++reader uses the development paths; deployed programs use application paths.
++"""
++from copy import deepcopy
++from pathlib import Path
++
++from PyQt5.QtCore import Qt, pyqtSignal
++from PyQt5.QtWidgets import (
++    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox, QLabel,
++    QLineEdit, QPushButton, QListWidget, QRadioButton, QButtonGroup,
++    QFileDialog, QMessageBox, QStyle,
++)
++
++SCOPES = ('entwicklung', 'anwendung')
++
++
++def default_help_settings():
++    return {key: {'relative': False, 'paths': [], 'compressor': 'internal',
++                  'hh_path': ''} for key in SCOPES}
++
++
++def normalize_help_settings(value):
++    result = default_help_settings()
++    if not isinstance(value, dict):
++        return result
++    for key in SCOPES:
++        item = value.get(key, {})
++        if not isinstance(item, dict):
++            continue
++        paths = item.get('paths', [])
++        if not isinstance(paths, list):
++            paths = []
++        result[key] = {
++            'relative': bool(item.get('relative', False)),
++            'paths': [str(p) for p in paths if str(p).strip()],
++            'compressor': ('microsoft' if item.get('compressor') == 'microsoft'
++                           else 'internal'),
++            'hh_path': str(item.get('hh_path', '') or ''),
++        }
++    return result
++
++
++def search_directories(settings, scope, project_path=None, executable=None):
++    """Resolve configured search paths in order, avoiding process CWD."""
++    entry = normalize_help_settings(settings).get(scope, {})
++    base = Path(project_path).resolve().parent if project_path else None
++    if scope == 'anwendung' and executable is not None:
++        base = Path(executable).resolve().parent
++    if base is None:
++        base = Path.cwd()
++    result = []
++    for raw in entry.get('paths', []):
++        path = Path(raw).expanduser()
++        if not path.is_absolute():
++            path = base / path
++        path = path.resolve()
++        if path not in result:
++            result.append(path)
++    return result
++
++
++class TurboHelpSettingsPage(QWidget):
++    changed = pyqtSignal(str, dict)
++
++    def __init__(self, scope, parent=None):
++        super().__init__(parent)
++        if scope not in SCOPES:
++            raise ValueError(scope)
++        self.scope = scope
++        self.project_base = None
++        self._syncing = False
++        self.setObjectName('project_turbo_help_' + scope)
++        layout = QVBoxLayout(self)
++        layout.setContentsMargins(12, 10, 12, 10)
++        layout.setSpacing(9)
++
++        group = QGroupBox('Suchpfade:', self)
++        group_layout = QVBoxLayout(group)
++        self.relative = QCheckBox('relative Pfade', group)
++        self.relative.setObjectName('turbo_help_' + scope + '_relative')
++        group_layout.addWidget(self.relative)
++        directory_row = QHBoxLayout()
++        directory_row.addWidget(QLabel('Verzeichnis:', group))
++        self.directory = QLineEdit(group)
++        self.directory.setObjectName('turbo_help_' + scope + '_directory')
++        directory_row.addWidget(self.directory, 1)
++        self.browse_directory = QPushButton(group)
++        self.browse_directory.setObjectName('turbo_help_' + scope + '_directory_browse')
++        self.browse_directory.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
++        self.browse_directory.setToolTip('Verzeichnis wählen')
++        directory_row.addWidget(self.browse_directory)
++        group_layout.addLayout(directory_row)
++        listing = QHBoxLayout()
++        self.paths = QListWidget(group)
++        self.paths.setObjectName('turbo_help_' + scope + '_paths')
++        listing.addWidget(self.paths, 1)
++        actions = QVBoxLayout()
++        self.add_button = QPushButton('Hinzufügen', group)
++        self.delete_button = QPushButton('Löschen', group)
++        self.cancel_button = QPushButton('Abbrechen', group)
++        self.up_button = QPushButton('↑', group)
++        self.down_button = QPushButton('↓', group)
++        self.up_button.setToolTip('Eintrag nach oben')
++        self.down_button.setToolTip('Eintrag nach unten')
++        for button in (self.add_button, self.delete_button, self.cancel_button,
++                       self.up_button, self.down_button):
++            actions.addWidget(button)
++        actions.addStretch(1)
++        listing.addLayout(actions)
++        group_layout.addLayout(listing)
++        layout.addWidget(group, 1)
++
++        compressor = QGroupBox('Compressor', self)
++        compressor_layout = QVBoxLayout(compressor)
++        self.microsoft = QRadioButton('Microsoft CHM', compressor)
++        self.internal = QRadioButton('internal', compressor)
++        self.radio_group = QButtonGroup(compressor)
++        self.radio_group.addButton(self.microsoft)
++        self.radio_group.addButton(self.internal)
++        compressor_layout.addWidget(self.microsoft)
++        executable_row = QHBoxLayout()
++        executable_row.addWidget(QLabel('Pfad:', compressor))
++        self.hh_path = QLineEdit(compressor)
++        self.hh_path.setObjectName('turbo_help_' + scope + '_hh_exe')
++        executable_row.addWidget(self.hh_path, 1)
++        self.browse_hh = QPushButton(compressor)
++        self.browse_hh.setObjectName('turbo_help_' + scope + '_hh_browse')
++        self.browse_hh.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
++        self.browse_hh.setToolTip('HH.EXE suchen')
++        executable_row.addWidget(self.browse_hh)
++        compressor_layout.addLayout(executable_row)
++        compressor_layout.addWidget(self.internal)
++        layout.addWidget(compressor)
++
++        self.browse_directory.clicked.connect(self._choose_directory)
++        self.browse_hh.clicked.connect(self._choose_hh)
++        self.add_button.clicked.connect(self._add_path)
++        self.delete_button.clicked.connect(self._delete_path)
++        self.cancel_button.clicked.connect(self.directory.clear)
++        self.cancel_button.clicked.connect(self.directory.setFocus)
++        self.up_button.clicked.connect(lambda: self._move_path(-1))
++        self.down_button.clicked.connect(lambda: self._move_path(1))
++        self.directory.returnPressed.connect(self._add_path)
++        self.paths.itemClicked.connect(lambda item: self.directory.setText(item.text()))
++        self.relative.toggled.connect(self._emit_changed)
++        self.microsoft.toggled.connect(self._toggle_compressor)
++        self.internal.toggled.connect(self._toggle_compressor)
++        self.hh_path.editingFinished.connect(self._emit_changed)
++        self.set_data(default_help_settings()[scope])
++
++    def _canonical_display_path(self, raw):
++        import os
++        path = Path(raw).expanduser()
++        if not self.relative.isChecked() or self.project_base is None:
++            return str(path)
++        base = Path(self.project_base).resolve()
++        if not path.is_absolute():
++            return str(path)
++        try:
++            return os.path.relpath(str(path.resolve()), str(base))
++        except ValueError:  # Windows paths on different drives
++            return str(path)
++
++    def _choose_directory(self):
++        text = self.directory.text().strip()
++        start = Path(text).expanduser() if text else Path.home()
++        if text and not start.is_absolute() and self.project_base is not None:
++            start = Path(self.project_base) / start
++        path = QFileDialog.getExistingDirectory(self, 'Hilfe-Suchverzeichnis', str(start))
++        if path:
++            self.directory.setText(self._canonical_display_path(path))
++            self.directory.setFocus(Qt.OtherFocusReason)
++
++    def _choose_hh(self):
++        start = self.hh_path.text().strip() or str(Path.home())
++        filename, _ = QFileDialog.getOpenFileName(
++            self, 'Microsoft HTML Help auswählen', start,
++            'Microsoft HTML Help (hh.exe);;Programme (*.exe);;Alle Dateien (*)')
++        # QFileDialog accepts double-click and OK; Cancel returns an empty path.
++        if filename:
++            self.hh_path.setText(filename)
++            self._emit_changed()
++        self.hh_path.setFocus(Qt.OtherFocusReason)
++
++    def _add_path(self):
++        name = self._canonical_display_path(self.directory.text().strip())
++        if not name:
++            self.directory.setFocus(Qt.OtherFocusReason)
++            return
++        if not any(self.paths.item(i).text().casefold() == name.casefold()
++                   for i in range(self.paths.count())):
++            self.paths.addItem(name)
++            self._emit_changed()
++        self.paths.setCurrentRow(self.paths.count() - 1)
++
++    def _delete_path(self):
++        item = self.paths.currentItem()
++        if item is None:
++            return
++        if QMessageBox.question(self, 'Suchpfad löschen',
++                                f"Soll '{item.text()}' gelöscht werden?",
++                                QMessageBox.Yes | QMessageBox.No,
++                                QMessageBox.No) != QMessageBox.Yes:
++            return
++        self.paths.takeItem(self.paths.row(item))
++        self._emit_changed()
++
++    def _move_path(self, delta):
++        row = self.paths.currentRow()
++        target = row + delta
++        if row < 0 or not 0 <= target < self.paths.count():
++            return
++        item = self.paths.takeItem(row)
++        self.paths.insertItem(target, item)
++        self.paths.setCurrentRow(target)
++        self._emit_changed()
++
++    def _toggle_compressor(self, _checked=False):
++        self.hh_path.setEnabled(self.microsoft.isChecked())
++        self.browse_hh.setEnabled(self.microsoft.isChecked())
++        self._emit_changed()
++
++    def data(self):
++        return {
++            'relative': self.relative.isChecked(),
++            'paths': [self.paths.item(i).text() for i in range(self.paths.count())],
++            'compressor': 'microsoft' if self.microsoft.isChecked() else 'internal',
++            'hh_path': self.hh_path.text().strip(),
++        }
++
++    def set_data(self, value):
++        item = normalize_help_settings({self.scope: value})[self.scope]
++        self._syncing = True
++        try:
++            self.relative.setChecked(item['relative'])
++            self.paths.clear()
++            self.paths.addItems(item['paths'])
++            self.directory.clear()
++            self.hh_path.setText(item['hh_path'])
++            self.microsoft.setChecked(item['compressor'] == 'microsoft')
++            self.internal.setChecked(item['compressor'] != 'microsoft')
++            self.hh_path.setEnabled(self.microsoft.isChecked())
++            self.browse_hh.setEnabled(self.microsoft.isChecked())
++        finally:
++            self._syncing = False
++
++    def _emit_changed(self, *_args):
++        if not self._syncing:
++            self.changed.emit(self.scope, self.data())
++
++
++def write_application_help_manifest(executable, settings):
++    """Publish the application help search paths next to <project>.exe.
++
++    The Qt5 bridge uses paths relative to the running EXE, independently of
++    the IDE's working directory. The <project>.hlp sidecar remains first.
++    """
++    import json
++    import os
++    import tempfile
++    exe = Path(executable).expanduser().resolve()
++    if exe.suffix.casefold() != '.exe':
++        raise ValueError('Die Hilfe-Suchpfade benötigen einen EXE-Dateinamen.')
++    item = normalize_help_settings(settings)['anwendung']
++    output = exe.with_suffix('.help.json')
++    output.parent.mkdir(parents=True, exist_ok=True)
++    payload = {
++        'format': 'd64-turbo-help-paths-v1',
++        'relative': item['relative'],
++        'directories': item['paths'],
++    }
++    temp = None
++    try:
++        with tempfile.NamedTemporaryFile('w', dir=output.parent,
++                                         prefix=output.name + '.', suffix='.tmp',
++                                         encoding='utf-8', delete=False) as handle:
++            temp = Path(handle.name)
++            json.dump(payload, handle, ensure_ascii=False, indent=2)
++            handle.write('\n')
++            handle.flush()
++            os.fsync(handle.fileno())
++        os.replace(temp, output)
++    finally:
++        if temp is not None:
++            temp.unlink(missing_ok=True)
++    return output
+--- a/test_stage663.py
++++ b/test_stage663.py
+@@ -0,0 +1,151 @@
++# -*- coding: utf-8 -*-
++"""Stage 663 – root Hilfe, project settings, dock switch, runtime help."""
++import ast
++import json
++import textwrap
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++ROOT = Path(__file__).parent
++MAIN = (ROOT / 'd64_dism.py').read_text(encoding='utf-8')
++GUI = (ROOT / 'turbo_help_settings.py').read_text(encoding='utf-8')
++HELP = (ROOT / 'd64qt5/d64_turbo_help_window.hpp').read_text(encoding='utf-8')
++BRIDGE = (ROOT / 'd64qt5/d64qt5_bridge.cpp').read_text(encoding='utf-8')
++
++
++def pure_functions():
++    parsed = ast.parse(GUI)
++    wanted = {'default_help_settings', 'normalize_help_settings',
++              'search_directories', 'write_application_help_manifest'}
++    selected = [node for node in parsed.body if isinstance(node, ast.FunctionDef)
++                and node.name in wanted]
++    ns = {'Path': Path, 'SCOPES': ('entwicklung', 'anwendung')}
++    exec('from pathlib import Path\n' + '\n'.join(ast.get_source_segment(GUI, f)
++         for f in selected), ns)
++    return ns
++
++
++def test_help_is_last_independent_root_not_debug_child():
++    roots = 'for title in ("Umgebung", "Compiler", "Assembler", "Linker", "Debug", "Hilfe")'
++    assert roots in MAIN
++    assert 'self.nodes["hilfe"], ["Entwicklung"]' in MAIN
++    assert 'self.nodes["hilfe"], ["Anwendung"]' in MAIN
++    assert '"hilfe.entwicklung"' in MAIN and '"hilfe.anwendung"' in MAIN
++    assert 'self.nodes["debug"], ["Hilfe"]' not in MAIN
++
++
++def test_help_pages_have_search_paths_and_compressor_controls():
++    assert "QGroupBox('Suchpfade:'" in GUI
++    assert "QGroupBox('Compressor'" in GUI
++    for name in ['Hinzufügen', 'Löschen', 'Abbrechen',
++                 'relative Pfade', 'Microsoft CHM', 'internal',
++                 'Verzeichnis:', 'Pfad:']:
++        assert name in GUI
++    assert 'QFileDialog.getExistingDirectory' in GUI
++    assert 'QFileDialog.getOpenFileName' in GUI
++    assert 'QMessageBox.question' in GUI
++
++
++def test_help_project_settings_are_serialized_and_loaded():
++    assert 'PROJECT_HELP_SETTINGS_SECTION = "Settings.Windows.Hilfe"' in MAIN
++    assert '"Values": json.dumps(_help_rows[0]' in MAIN
++    assert 'entries[PROJECT_HELP_SETTINGS_KEY] = [_help_values]' in MAIN
++    assert 'self.project_help_settings = normalize_help_settings(' in MAIN
++
++
++def test_default_settings_independent_and_normalize_bad_values():
++    fn = pure_functions()
++    settings = fn['default_help_settings']()
++    assert list(settings) == ['entwicklung', 'anwendung']
++    settings['entwicklung']['paths'].append('help/chm')
++    assert settings['anwendung']['paths'] == []
++    invalid = fn['normalize_help_settings']({'entwicklung': {'paths': 'bad',
++                                       'compressor': 'oops', 'relative': True}})
++    assert invalid['entwicklung']['paths'] == []
++    assert invalid['entwicklung']['compressor'] == 'internal'
++    assert invalid['entwicklung']['relative']
++
++
++def test_help_manifest_is_named_after_executable_and_preserves_order(tmp_path):
++    fn = pure_functions()
++    exe = tmp_path / 'output' / 'MyApp.exe'
++    settings = {'anwendung': {'relative': True, 'paths': ['help', 'doc', 'extra'],
++                              'compressor': 'microsoft', 'hh_path': 'hh.exe'}}
++    path = fn['write_application_help_manifest'](exe, settings)
++    assert path == exe.with_suffix('.help.json')
++    result = json.loads(path.read_text(encoding='utf-8'))
++    assert result == {'format': 'd64-turbo-help-paths-v1',
++                      'relative': True, 'directories': ['help', 'doc', 'extra']}
++    assert list(tmp_path.glob('*.hlp')) == []
++
++
++def test_relative_development_search_paths_use_project_parent(tmp_path):
++    fn = pure_functions()
++    file = tmp_path / 'project' / 'project.pro'
++    dirs = fn['search_directories']({'entwicklung': {'paths': ['help', '../manuals']}},
++                                    'entwicklung', file)
++    assert dirs == [(file.parent / 'help').resolve(),
++                    (file.parent / '../manuals').resolve()]
++
++
++def test_help_dock_switch_checks_unsaved_work_and_restores_layout():
++    # The handler is extracted verbatim and tested without Qt dependencies.
++    beginning = MAIN.index('        def _hide_turbo_help_for_project_leaf(')
++    end = MAIN.index('\n        def _on_project_item_double_clicked(', beginning)
++    code = textwrap.dedent(MAIN[beginning:end])
++    ns = {'PROJECT_NODE_TURBO_HELP_ROOT': 'root',
++          'PROJECT_NODE_TURBO_HELP_FILE': 'thlp'}
++    exec(code, ns)
++    fn = ns['_hide_turbo_help_for_project_leaf']
++
++    class Dock:
++        visible = True
++        def isVisible(self): return self.visible
++        def hide(self): self.visible = False
++
++    class Owner:
++        def __init__(self, saved):
++            self.turbo_help_compiler_dock = Dock()
++            self.saved = saved
++            self.restored = False
++            self._exclusive_tool_workspace = {'owner': self.turbo_help_compiler_dock}
++        def _project_item_kind(self, item): return item.kind
++        def _turbo_help_active_editor(self):
++            return SimpleNamespace(save_all_documents=lambda: self.saved)
++        def _restore_exclusive_tool_workspace(self, dock):
++            self.restored = True
++    leaf = SimpleNamespace(kind='dbase_file', parent=lambda: object())
++    owner = Owner(False)
++    assert fn(owner, leaf) is False
++    assert owner.turbo_help_compiler_dock.visible and not owner.restored
++    owner.saved = True
++    assert fn(owner, leaf) is True
++    assert not owner.turbo_help_compiler_dock.visible and owner.restored
++    owner = Owner(True)
++    assert fn(owner, SimpleNamespace(kind='thlp', parent=lambda: object())) is True
++    assert owner.turbo_help_compiler_dock.visible
++
++
++def test_project_settings_title_close_button_is_100_pixels_after_label():
++    assert 'titlebar.layout().insertSpacing(1, 100)' in MAIN
++    assert 'titlebar.close_button.setText("schließen")' in MAIN
++    assert 'titlebar.layout().insertWidget(2, titlebar.close_button)' in MAIN
++
++
++def test_qt5_help_title_tracks_topic_and_three_pixel_shadow():
++    assert 'setOffset(3.0, 3.0)' in HELP
++    assert 'setGraphicsEffect(shadow)' in HELP
++    assert 'QStringLiteral("Hilfe:  ") + topic' in HELP
++    assert 'caption_ = caption' in HELP
++    assert 'exeInfo.completeBaseName() + QStringLiteral(".help.json")' in BRIDGE
++    assert 'exeDir.filePath(exeInfo.completeBaseName() + QStringLiteral(".hlp"))' in BRIDGE
++
++
++def test_chm_backend_prefers_python_and_never_unconditionally_invokes_hh():
++    assert 'def extract_with_pychm(' in MAIN
++    assert 'from chm import chmlib' in MAIN
++    assert 'if mode == "microsoft":' in MAIN
++    assert 'cls.extract_with_windows_help(source, target, hh_path)' in MAIN
++    assert 'cls.extract_with_pychm(source, target)' in MAIN
+--- a/STAGE663_HELP_ROOT_SETTINGS_DOCK_BRIDGE_README.md
++++ b/STAGE663_HELP_ROOT_SETTINGS_DOCK_BRIDGE_README.md
+@@ -0,0 +1,79 @@
++# Stage 663 – Projekt-Einstellungen → Hilfe (eigenständiger Hauptknoten)
++
++**Verbindliche Basis:** Stage 662. Die am 21.11.2026 präzisierte Struktur
++setzt **Hilfe** als eigenständigen *letzten Hauptknoten* in die Windows-
++Einstellungen (PE32 und PE64), **nicht** als Unterknoten von Debug.
++
++```text
++Windows → 32-Bit / 64-Bit
++  Umgebung
++  Compiler
++  Assembler
++  Linker
++  Debug
++  Hilfe
++    Entwicklung
++    Anwendung
++```
++
++## Einstellungen
++
++Jedes Hilfe-Blatt enthält „Suchpfade:“ mit „relative Pfade“,
++Verzeichniseingabe und Browser-Schaltfläche, Pfadliste sowie „Hinzufügen“,
++„Löschen“ (Bestätigung), „Abbrechen“, „↑“ und „↓“. Darunter liegt
++„Compressor“ mit „Microsoft CHM“, der auswählbaren `HH.EXE` und „internal“.
++Der Standard-Dateidialog übernimmt Doppelklick (OK) und bietet Abbrechen.
++Abbrechen setzt den Fokus zurück auf das Eingabefeld.
++
++Die Werte werden im Projekt unter `[Settings.Windows.Hilfe]` als JSON
++persistiert und für PE32 und PE64 gemeinsam verwaltet.
++
++- **Entwicklung**: konfigurierte Suchverzeichnisse für den IDE-CHM-Viewer;
++  bei der Erstauswahl wird dort nach `*.chm` gesucht.
++- **Anwendung**: Verzeichnisse der Laufzeithilfe werden beim F2-Kompilieren
++  und beim EXE-Build als `<EXE-Stamm>.help.json` neben der EXE abgelegt.
++  `libd64_qt5.dll` versucht zuerst `<EXE-Stamm>.hlp` neben der EXE und
++  danach dieselbe Datei in den konfigurierten Pfaden. Relative Pfade werden
++  im Laufzeitprozess relativ zum **EXE-Verzeichnis** aufgelöst.
++
++**CHM-Entpacker:** `Microsoft CHM` verwendet die gewählte `HH.EXE` mit
++`-decompile`. Der interne Weg bevorzugt die optionale Python-Bibliothek
++`pychm` (CHMLib-Bindings); falls diese nicht installiert/benutzbar ist,
++verwendet er die vorhandene 7-Zip-Integration. Die Python-Standardbibliothek
++enthält keinen eigenen CHM-Entpacker. Ohne beide Backends erscheint eine
++Fehlermeldung. Die Dateiauswahl führt `HH.EXE` nicht aus.
++
++## Dock-Wechsel
++
++Ein Klick auf ein Projektblatt außerhalb „Turbo Help“ speichert zunächst
++alle veränderten `.thlp`-Editoren und blendet den Hilfecompiler aus.
++Bei abgebrochenem Speichern bleibt das Hilfecompiler-Dock geöffnet.
++`Projekt-Informationen` und das vor dem Hilfecompiler aktive Fensterlayout
++werden wiederhergestellt. Ein Klick auf ein weiteres Turbo-Help-Blatt
++wechselt weiterhin im Hilfecompiler zu dessen Tab.
++
++Die Titelleiste von **Projekt-Einstellungen** hat ca. 100 Pixel hinter der
++Beschriftung eine Schaltfläche **schließen**, die das Dock ausblendet.
++
++## Qt5-Bridge
++
++`d64qt5/d64_turbo_help_window.hpp`:
++
++- Dreipixel-Schatten mit Versatz 3 Pixel nach rechts und nach unten
++- Titelleiste zeigt **`Hilfe:  <Hilfethema>`**, aktualisiert bei jedem Themenwechsel
++- Rasterverschieben, Rastervergrößern, Scrollleisten und F1 bleiben erhalten
++- Keine `turbo_help_host.exe`
++
++Neu zu bauen ist `libd64_qt5.dll` mit
++`build_and_deploy_dbase_editor_stage663.bat`.
++
++## Überprüfung
++
++- Python-Syntax von `turbo_help_settings.py` und die mit Python 3.15 `lazy`
++  importierte `d64_dism.py` (für den hiesigen Parser testweise `lazy` entfernt)
++- **86** gezielte/bestehende Tests bestanden, inklusive der Stage-663-Tests
++- Archivintegrität (ZIP-CRC) geprüft
++
++**Nicht geprüft:** nativer Windows-/PyQt5-/Qt5-Laufzeittest. Die Ausführung
++von `HH.EXE` und der Python-CHM-Extraktion wurde mangels verfügbarer
++Windows-/CHM-Testdateien und optionaler Bibliotheken nicht verifiziert.
+--- a/build_and_deploy_dbase_editor_stage663.bat
++++ b/build_and_deploy_dbase_editor_stage663.bat
+@@ -0,0 +1,23 @@
++@echo off
++setlocal EnableExtensions DisableDelayedExpansion
++rem Stage 663: Turbo Hilfe Shadow/Caption in libd64_qt5.dll.
++rem No turbo_help_host.exe.
++set "BASE=%~dp0"
++set "TARGET=%BASE%runtime\dbase\pe32"
++if not "%~1"=="" set "TARGET=%~1"
++call "%BASE%d64qt5\build_d64qt5_mingw32.bat"
++if errorlevel 1 exit /b 1
++set "SOURCE=%BASE%d64qt5\release\libd64_qt5.dll"
++if not exist "%SOURCE%" (
++    echo FEHLER: DLL nicht gefunden: "%SOURCE%"
++    exit /b 1
++)
++if not exist "%TARGET%" mkdir "%TARGET%"
++if errorlevel 1 exit /b 1
++copy /y "%SOURCE%" "%TARGET%\libd64_qt5.dll" >nul
++if errorlevel 1 exit /b 1
++for %%F in ("%BASE%d64qt5\release\turbo_help_host.exe" "%TARGET%\turbo_help_host.exe") do (
++    if exist "%%~fF" del /f /q "%%~fF"
++)
++echo Stage 663: Qt5-Bridge mit Titel/Schatten bereitgestellt.
++exit /b 0

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Turbo Vision Help compiler: %topic/%include/%ref/%link -> GNU PO and MO.
+"""Turbo Vision Help compiler: %topic [number]/%include/%ref/%link -> GNU PO and MO.
 
 Usage: python turbo_help_compiler.py source.thlp [--output-dir DIRECTORY]
 The default topic is ``index``. No external dependencies / msgfmt needed.
@@ -21,11 +21,25 @@ class HelpCompileError(ValueError):
 
 
 _QUOTED = r'(?P<quote>[\'\"])(?P<name>.*?)(?P=quote)'
-_TOPIC = re.compile(r'^\s*%topic\s+' + _QUOTED + r'\s*$', re.I)
+_TOPIC = re.compile(r'^\s*%topic\s+' + _QUOTED + r'(?:\s+(?P<number>[0-9]+))?\s*$', re.I)
 _INCLUDE = re.compile(r'^\s*%include\s+(?:"([^"]+)"|\'([^\']+)\'|<([^>]+)>)\s*$', re.I)
 _ANCHOR = re.compile(r'^\s*%anchor\s+#?([\w.-]+)\s*$', re.I)
-_REF = re.compile(r'%(ref)\s+(?:"([^"]+)"|\'([^\']+)\')\s+#([\w.-]+)', re.I)
-_LINK = re.compile(r'%(link)\s+(?:"([^"]+)"|\'([^\']+)\')', re.I)
+_REF = re.compile(r'%(ref)\s+(?:"([^"]+)"|\'([^\']+)\'|([0-9]+))\s+#([\w.-]+)', re.I)
+_LINK = re.compile(r'%(link)\s+(?:"([^"]+)"|\'([^\']+)\'|([0-9]+))', re.I)
+
+
+# The GNU gettext context is serialized in .mo as "turbo-help-id\x04<number>".
+# Each numeric entry points to the *name*, not a second copy of the help text.
+HELP_NUMBER_CONTEXT = 'turbo-help-id'
+MAX_HELP_NUMBER = 0xFFFFFFFF
+
+
+class HelpTopicCatalog(OrderedDict):
+    """Ordinary name->content mapping, with optional unique 32-bit help IDs."""
+
+    def __init__(self, *args, topic_numbers=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.topic_numbers = dict(topic_numbers or {})  # number -> name
 
 
 class HelpCompiler:
@@ -37,13 +51,16 @@ class HelpCompiler:
         self.stack: list[Path] = []
         self._visited_files: set[Path] = set()
         self.where: dict[str, str] = {}
+        self.topic_numbers: dict[int, str] = {}
+        self.number_where: dict[int, str] = {}
 
     def compile(self) -> OrderedDict[str, str]:
         self._visit(self.source)
         if 'index' not in self.topics:
             raise HelpCompileError('Das Standardthema %topic "index" fehlt.')
-        return OrderedDict((topic, '\n'.join(lines).rstrip('\n'))
-                           for topic, lines in self.topics.items())
+        return HelpTopicCatalog(((topic, '\n'.join(lines).rstrip('\n'))
+                                 for topic, lines in self.topics.items()),
+                                topic_numbers=self.topic_numbers)
 
     @classmethod
     def compile_files(cls, sources):
@@ -62,8 +79,9 @@ class HelpCompiler:
             instance._visit(path)
         if 'index' not in instance.topics:
             raise HelpCompileError('Das Standardthema %topic "index" fehlt.')
-        return OrderedDict((key, '\n'.join(lines).rstrip('\n'))
-                           for key, lines in instance.topics.items())
+        return HelpTopicCatalog(((key, '\n'.join(lines).rstrip('\n'))
+                                 for key, lines in instance.topics.items()),
+                                topic_numbers=instance.topic_numbers)
 
     def _visit(self, path: Path) -> None:
         path = path.resolve(strict=True)
@@ -100,6 +118,18 @@ class HelpCompiler:
                         raise HelpCompileError(f'{location}: leere Topic-ID')
                     if name in self.topics:
                         raise HelpCompileError(f'{location}: %topic {name!r} schon in {self.where[name]} definiert')
+                    number_text = topic.group('number')
+                    if number_text is not None:
+                        # Canonical decimal form: 000123 and 123 refer to the same ID.
+                        if len(number_text) > 10 or int(number_text) > MAX_HELP_NUMBER:
+                            raise HelpCompileError(f'{location}: Hilfenummer außerhalb 0..{MAX_HELP_NUMBER}')
+                        number = int(number_text)
+                        if number in self.topic_numbers:
+                            raise HelpCompileError(
+                                f'{location}: Hilfenummer {number} schon für '
+                                f'{self.topic_numbers[number]!r} in {self.number_where[number]} vergeben')
+                        self.topic_numbers[number] = name
+                        self.number_where[number] = location
                     self.topics[name] = []
                     self.where[name] = location
                     self.active = name
@@ -115,8 +145,8 @@ class HelpCompiler:
                     line = f'<anchor id="{anchor.group(1)}"></anchor>'
                 elif line.lstrip().startswith('%anchor'):
                     raise HelpCompileError(f'{location}: ungültiger %anchor')
-                line = _REF.sub(lambda m: f"<ref>'{m.group(2) or m.group(3)}' #{m.group(4)}</ref>", line)
-                line = _LINK.sub(lambda m: f"<link>'{m.group(2) or m.group(3)}'</link>", line)
+                line = _REF.sub(lambda m: f"<ref>'{m.group(2) or m.group(3) or m.group(4)}' #{m.group(5)}</ref>", line)
+                line = _LINK.sub(lambda m: f"<link>'{m.group(2) or m.group(3) or m.group(4)}'</link>", line)
                 self.topics[self.active].append(line)
         finally:
             self.stack.pop()
@@ -136,6 +166,14 @@ def write_po(topics: dict[str, str]) -> str:
         '\n'
     )
     parts = [header]
+    by_name: dict[str, int] = {}
+    for raw_number, topic in getattr(topics, 'topic_numbers', {}).items():
+        number = int(raw_number)
+        if number < 0 or number > MAX_HELP_NUMBER or topic not in topics:
+            raise HelpCompileError(f'Ungültige Hilfenummer/Ziel: {raw_number!r} -> {topic!r}')
+        if topic in by_name:
+            raise HelpCompileError(f'Thema {topic!r} besitzt mehrere Hilfenummern')
+        by_name[topic] = number
     for name, content in topics.items():
         parts.append(f'msgid {po_quote(name)}\n')
         if '\n' in content:
@@ -145,26 +183,39 @@ def write_po(topics: dict[str, str]) -> str:
         else:
             parts.append(f'msgstr {po_quote(content)}\n')
         parts.append('\n')
+        if name in by_name:
+            # Standard GNU gettext msgctxt: the MO key is
+            # "turbo-help-id\x04<number>"; msgstr stores the symbolic topic name.
+            # The original msgid=name / msgstr=content is unchanged.
+            parts.append(f'msgctxt {po_quote(HELP_NUMBER_CONTEXT)}\n')
+            parts.append(f'msgid {po_quote(str(by_name[name]))}\n')
+            parts.append(f'msgstr {po_quote(name)}\n\n')
     return ''.join(parts)
 
 
 def read_po(source: str) -> dict[str, str]:
-    """Read the msgid/msgstr subset generated by write_po().
+    """Read our GNU PO subset (msgctxt/msgid/msgstr with string continuations).
 
-    This makes PO the canonical intermediate representation: .mo is built
-    from the actual .po data, not independently from the source topic map.
+    For contextual entries, GNU .mo uses the standard key ``context\x04msgid``.
+    Thus old text-based lookups and new numeric aliases coexist without changing
+    the existing topics. The .po remains the source of truth for .mo generation.
     """
     entries: dict[str, str] = {}
+    current_context: str | None = None
     current_id: str | None = None
     current_value = ''
     mode = ''
 
     def flush():
-        nonlocal current_id, current_value, mode
+        nonlocal current_context, current_id, current_value, mode
+        if current_context is not None and current_id is None:
+            raise HelpCompileError('PO-Eintrag mit msgctxt ohne msgid')
         if current_id is not None:
-            if current_id in entries:
-                raise HelpCompileError(f'Doppelte msgid in PO: {current_id!r}')
-            entries[current_id] = current_value
+            key = (current_context + '\x04' if current_context is not None else '') + current_id
+            if key in entries:
+                raise HelpCompileError(f'Doppelte msgid/msgctxt in PO: {key!r}')
+            entries[key] = current_value
+        current_context = None
         current_id = None
         current_value = ''
         mode = ''
@@ -175,8 +226,19 @@ def read_po(source: str) -> dict[str, str]:
             if not line:
                 flush()
             continue
-        if line.startswith('msgid '):
-            flush()
+        if line.startswith('msgctxt '):
+            if current_id is not None:
+                flush()
+            elif current_context is not None:
+                raise HelpCompileError(f'PO Zeile {line_number}: doppeltes msgctxt')
+            try:
+                current_context = json.loads(line[8:])
+            except (ValueError, TypeError) as exc:
+                raise HelpCompileError(f'PO Zeile {line_number}: ungültige msgctxt') from exc
+            mode = 'ctxt'
+        elif line.startswith('msgid '):
+            if current_id is not None:
+                flush()
             try:
                 current_id = json.loads(line[6:])
             except (ValueError, TypeError) as exc:
@@ -195,12 +257,14 @@ def read_po(source: str) -> dict[str, str]:
                 addition = json.loads(line)
             except (ValueError, TypeError) as exc:
                 raise HelpCompileError(f'PO Zeile {line_number}: ungültige Fortsetzung') from exc
-            if mode == 'id' and current_id is not None:
+            if mode == 'ctxt' and current_context is not None:
+                current_context += addition
+            elif mode == 'id' and current_id is not None:
                 current_id += addition
             elif mode == 'str':
                 current_value += addition
             else:
-                raise HelpCompileError(f'PO Zeile {line_number}: Fortsetzung ohne msgid/msgstr')
+                raise HelpCompileError(f'PO Zeile {line_number}: Fortsetzung ohne msgctxt/msgid/msgstr')
         else:
             raise HelpCompileError(f'PO Zeile {line_number}: nicht unterstützte Anweisung')
     flush()
@@ -208,6 +272,19 @@ def read_po(source: str) -> dict[str, str]:
         raise HelpCompileError('PO-Kopf mit Zeichensatzangabe fehlt')
     if 'index' not in entries:
         raise HelpCompileError('PO-Standardthema index fehlt')
+    # Numeric associations must target existing topics, never arbitrary content.
+    seen_targets = set()
+    prefix = HELP_NUMBER_CONTEXT + '\x04'
+    for key, topic in entries.items():
+        if key.startswith(prefix):
+            digits = key[len(prefix):]
+            if not digits.isdecimal() or int(digits) > MAX_HELP_NUMBER:
+                raise HelpCompileError(f'Ungültige Hilfenummer in msgctxt: {digits!r}')
+            if topic not in entries:
+                raise HelpCompileError(f'Hilfenummer {digits} verweist auf unbekanntes Thema {topic!r}')
+            if topic in seen_targets:
+                raise HelpCompileError(f'Doppelte Hilfenummernzuordnung für {topic!r}')
+            seen_targets.add(topic)
     return entries
 
 

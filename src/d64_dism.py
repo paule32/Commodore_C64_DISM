@@ -50278,8 +50278,9 @@ class ChmExtractor:
             )
 
     @staticmethod
-    def extract_with_windows_help(source: Path, target: Path) -> None:
-        helper = Path(os.environ.get("WINDIR", r"C:\Windows")) / "hh.exe"
+    def extract_with_windows_help(source: Path, target: Path, hh_path: str = "") -> None:
+        helper = (Path(hh_path).expanduser() if str(hh_path).strip() else
+                  Path(os.environ.get("WINDIR", r"C:\Windows")) / "hh.exe")
         if not helper.is_file():
             raise RuntimeError("hh.exe wurde nicht gefunden.")
 
@@ -50310,36 +50311,73 @@ class ChmExtractor:
         if previous_count <= 0:
             raise RuntimeError("Windows HTML Help hat keine Dateien extrahiert.")
 
+    @staticmethod
+    def extract_with_pychm(source: Path, target: Path) -> None:
+        """Extract CHM data using optional Python pychm / CHMLib bindings."""
+        from chm import chmlib
+        handle = chmlib.chm_open(str(source).encode('utf-8'))
+        if not handle:
+            raise RuntimeError(f"pychm konnte die CHM-Datei nicht öffnen: {source}")
+        total = [0]
+        try:
+            def visitor(h, unit, _context):
+                raw = unit.path
+                value = (raw.decode('utf-8', 'replace') if isinstance(raw, bytes)
+                         else str(raw))
+                # Ignore CHM internal streams and refuse path traversal.
+                if not value.startswith('/') or value.startswith('/#'):
+                    return chmlib.CHM_ENUMERATOR_CONTINUE
+                name = value.lstrip('/').replace('\\', '/')
+                parts = Path(name).parts
+                if any(part in ('..', '.') for part in parts) or not parts:
+                    return chmlib.CHM_ENUMERATOR_CONTINUE
+                destination = target.joinpath(*parts)
+                if not destination.resolve().is_relative_to(target.resolve()):
+                    return chmlib.CHM_ENUMERATOR_CONTINUE
+                length = int(unit.length)
+                if length < 0 or length > 64 * 1024 * 1024 or total[0] > 100000:
+                    return chmlib.CHM_ENUMERATOR_CONTINUE
+                count, payload = chmlib.chm_retrieve_object(h, unit, 0, length)
+                if count > 0:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(bytes(payload[:count]))
+                    total[0] += 1
+                return chmlib.CHM_ENUMERATOR_CONTINUE
+            mask = chmlib.CHM_ENUMERATE_NORMAL | chmlib.CHM_ENUMERATE_FILES
+            chmlib.chm_enumerate(handle, mask, visitor, None)
+        finally:
+            chmlib.chm_close(handle)
+        if total[0] <= 0:
+            raise RuntimeError('pychm hat keine regulären CHM-Dateien extrahiert')
+
     @classmethod
-    def extract(cls, source: Path, target: Path) -> None:
-        errors: List[str] = []
-        command = cls.seven_zip_command()
-        if command:
-            try:
-                cls.extract_with_7zip(command, source, target)
-                if any(iter_chm_files(target)):
-                    return
-            except Exception as exc:
-                errors.append(str(exc))
+    def extract(cls, source: Path, target: Path, *, mode="internal", hh_path="") -> None:
+        """Select explicit Microsoft or internal CHM extraction backend.
 
-        if os.name == "nt":
-            try:
-                cls.extract_with_windows_help(source, target)
-                if any(iter_chm_files(target)):
-                    return
-            except Exception as exc:
-                errors.append(str(exc))
-
-        hint = (
-            "Installiere 7-Zip und stelle 7z/7zz ueber PATH bereit."
-            if os.name == "nt"
-            else "Installiere 7-Zip, z. B. mit 'sudo apt install p7zip-full'."
-        )
-        details = "\n\n".join(errors)
-        raise RuntimeError(
-            "Kein verwendbares CHM-Entpackprogramm gefunden.\n"
-            f"{hint}\n\n{details}"
-        )
+        The internal backend uses the existing 7-Zip integration. No Microsoft
+        HTML Help invocation is made unless the Microsoft mode is selected.
+        """
+        if mode == "microsoft":
+            if os.name != "nt":
+                raise RuntimeError("Microsoft CHM benötigt Windows und hh.exe")
+            cls.extract_with_windows_help(source, target, hh_path)
+            if not any(iter_chm_files(target)):
+                raise RuntimeError("Microsoft CHM hat keine Dateien extrahiert")
+            return
+        # Prefer Python's optional pychm package. Python's standard library
+        # does not contain a CHM extractor; 7-Zip remains a compatibility fallback.
+        try:
+            cls.extract_with_pychm(source, target)
+            return
+        except (ImportError, RuntimeError, OSError, AttributeError) as py_error:
+            command = cls.seven_zip_command()
+            if not command:
+                raise RuntimeError(
+                    "Für den internen CHM-Modus wird pychm (Python-Paket) "
+                    "oder 7z benötigt. PyCHM: " + str(py_error)) from py_error
+            cls.extract_with_7zip(command, source, target)
+            if not any(iter_chm_files(target)):
+                raise RuntimeError("Interner CHM-Entpacker lieferte keine Dateien")
 
 
 # ---------------------------------------------------------------------------
@@ -50712,6 +50750,8 @@ PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT = "prolog_knowledge_root"
 # Stage 652: Turbo-Vision Help sources live in their own project node.
 PROJECT_TURBO_HELP_ENTRY_KEY = "__project_turbo_help_sources__"
 PROJECT_TURBO_HELP_SECTION = "Category.TurboHelp"
+PROJECT_HELP_SETTINGS_KEY = "__project_help_settings__"
+PROJECT_HELP_SETTINGS_SECTION = "Settings.Windows.Hilfe"
 PROJECT_NODE_TURBO_HELP_ROOT = "turbo_help_root"
 PROJECT_NODE_TURBO_HELP_FILE = "turbo_help_file"
 PROJECT_NODE_PROLOG_KNOWLEDGE_FILE = "prolog_knowledge_file"
@@ -51232,6 +51272,7 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "dbase_peephole_register_width_key": "__windows_pe32_dbase_peephole_register_width__",
         "dbase_peephole_processor_flags_key": "__windows_pe32_dbase_peephole_processor_flags__",
         "dbase_peephole_stack_state_key": "__windows_pe32_dbase_peephole_stack_state__",
+        "dbase_size_level_key": "__windows_pe32_dbase_size_level__",
         "dbase_optimization_section": "Settings.Windows.32Bit.Compiler.dBASE.Optimierung",
         "console_dll_directory_key": "__windows_pe32_console_dll_directory__",
         "console_dll_pack_key": "__windows_pe32_console_dll_pack__",
@@ -51292,6 +51333,7 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "dbase_peephole_register_width_key": "__windows_pe64_dbase_peephole_register_width__",
         "dbase_peephole_processor_flags_key": "__windows_pe64_dbase_peephole_processor_flags__",
         "dbase_peephole_stack_state_key": "__windows_pe64_dbase_peephole_stack_state__",
+        "dbase_size_level_key": "__windows_pe64_dbase_size_level__",
         "dbase_optimization_section": "Settings.Windows.64Bit.Compiler.dBASE.Optimierung",
         "console_dll_directory_key": "__windows_pe64_console_dll_directory__",
         "console_dll_pack_key": "__windows_pe64_console_dll_pack__",
@@ -51710,12 +51752,14 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     entries[PROJECT_NAMED_NAMES_KEY] = []
     entries[PROJECT_NAMED_SELECTED_KEY] = []
     entries[PROJECT_NAMED_ASSIGNMENTS_KEY] = []
+    entries["__project_editor_compiler_targets__"] = []
     # Verschachtelte COFF-Archive liegen bewusst nicht als neue Root-Kategorie
     # vor, sondern unter C-Programme -> Archive. Der reservierte Schlüssel
     # hält diese Hierarchie in der *.pro-Datei getrennt von normalen C-Dateien.
     entries[PROJECT_C_ARCHIVES_KEY] = []
     entries[PROJECT_PROLOG_KNOWLEDGE_KEY] = []
     entries[PROJECT_TURBO_HELP_ENTRY_KEY] = []
+    entries[PROJECT_HELP_SETTINGS_KEY] = []
     entries[PROJECT_C64_RESOURCE_ENTRY_KEY] = []
     entries[PROJECT_C64_SPRITES_ENTRY_KEY] = []
     for _key in PROJECT_C64_SOURCE_KEYS.values():
@@ -51797,6 +51841,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["dbase_peephole_register_width_key"]] = [{"value": "false"}]
         entries[_settings["dbase_peephole_processor_flags_key"]] = [{"value": "false"}]
         entries[_settings["dbase_peephole_stack_state_key"]] = [{"value": "false"}]
+        entries[_settings["dbase_size_level_key"]] = [{"value": "O0"}]
         entries[_settings["manifest_key"]] = [normalize_manifest_settings()]
     entries[PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY] = [{"value": ""}]
     entries[PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY] = [{"value": "9"}]
@@ -51930,6 +51975,7 @@ def format_project_ini(
     entries: Dict[str, List[Dict[str, str]]],
     project_path: Path,
 ) -> str:
+    from dbase_size_optimizer import normalize_dbase_optimization_level
     project_path = Path(project_path)
     parser = configparser.ConfigParser(interpolation=None)
     parser.optionxform = str
@@ -52110,6 +52156,19 @@ def format_project_ini(
         for row in entries.get(PROJECT_NAMED_ASSIGNMENTS_KEY, ())
     }
     encode_named_project_metadata(parser, _named_names, _named_selection, _named_files)
+
+    # Stage 669: per-file target ComboBoxes next to Start are project data.
+    from project_editor_targets import write_editor_targets, ENTRY_KEY
+    write_editor_targets(parser, entries.get(ENTRY_KEY, ()), project_path,
+                         _project_storage_path)
+
+    # Stage 663: project-wide Help settings, shared between both Windows ABIs.
+    _help_rows = entries.get(PROJECT_HELP_SETTINGS_KEY, ())
+    if _help_rows:
+        parser[PROJECT_HELP_SETTINGS_SECTION] = {
+            "Title": "Hilfe",
+            "Values": json.dumps(_help_rows[0], ensure_ascii=False),
+        }
 
     # Stage 652: persist the Turbo Help project leaves, not unsaved tabs.
     parser[PROJECT_TURBO_HELP_SECTION] = {"Title": "Turbo Help"}
@@ -52418,6 +52477,8 @@ def format_project_ini(
             "PeepholeRegisterWidth": "true" if _project_bool_entry(entries, _settings["dbase_peephole_register_width_key"], False) else "false",
             "PeepholeProcessorFlags": "true" if _project_bool_entry(entries, _settings["dbase_peephole_processor_flags_key"], False) else "false",
             "PeepholeStackState": "true" if _project_bool_entry(entries, _settings["dbase_peephole_stack_state_key"], False) else "false",
+            "OptimizationLevel": normalize_dbase_optimization_level(
+                (entries.get(_settings["dbase_size_level_key"], ()) or [{"value": "O0"}])[0].get("value")),
         }
         parser[_settings["prolog_optimization_section"]] = {
             "Title": f"Windows {_settings['title']} Compiler Prolog Optimierung",
@@ -52853,6 +52914,11 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
         ), "language": language}
         for key, language in _assignments.items()
     ]
+
+    # Stage 669: restore compiler/assembler target selections from *.pro.
+    from project_editor_targets import read_editor_targets, ENTRY_KEY
+    entries[ENTRY_KEY] = read_editor_targets(parser, Path(project_path),
+                                              _project_loaded_path)
 
     # Stage 530: legacy [Settings.Debug] is copied to each target only if
     # that target has no architecture-specific section of its own.
@@ -53357,6 +53423,10 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
         _input_section = _settings["input_section"]
         _output_section = _settings["output_section"]
         _dbase_optimization_section = _settings["dbase_optimization_section"]
+        from dbase_size_optimizer import normalize_dbase_optimization_level
+        entries[_settings["dbase_size_level_key"]] = [{"value": normalize_dbase_optimization_level(
+            parser.get(_dbase_optimization_section, "OptimizationLevel", fallback="O0")
+            if parser.has_section(_dbase_optimization_section) else "O0")} ]
         for _key, _field in (("dbase_external_ui_key", "ExternalUIComponents"),
                              ("dbase_compress_json_key", "CompressJson"),
                              ("dbase_store_binary_key", "StoreBinaryData"),
@@ -53932,6 +54002,16 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                 entries[_ls["output_relative_key"]] = list(entries[_settings["output_relative_key"]])
                 entries[_ls["output_key"]] = [dict(item) for item in entries[_settings["output_key"]]]
                 entries[_ls["cache_key"]] = [dict(item) for item in entries.get(_settings["asm_cache_key"], ())]
+
+    # Stage 663: help search/compressor settings live in their own section.
+    if parser.has_section(PROJECT_HELP_SETTINGS_SECTION):
+        try:
+            _help_values = json.loads(parser.get(
+                PROJECT_HELP_SETTINGS_SECTION, "Values", fallback="{}"))
+            if isinstance(_help_values, dict):
+                entries[PROJECT_HELP_SETTINGS_KEY] = [_help_values]
+        except (TypeError, ValueError):
+            pass
 
     # Stage 652: load Turbo Help source leaves from the .pro file.
     if parser.has_section(PROJECT_TURBO_HELP_SECTION):
@@ -71641,6 +71721,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
         assemble_requested = pyqtSignal(object)
         start_requested = pyqtSignal(object)
         assemble_generated_requested = pyqtSignal(object)
+        link_generated_requested = pyqtSignal(object)
         start_generated_requested = pyqtSignal(object)
         coff_requested = pyqtSignal(object)
         context_help_requested = pyqtSignal(object, str, str)
@@ -71745,6 +71826,18 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
             self.dbase_process = None
             self.dbase_uses_debug_output = False
             self._pascal_compile_running = False
+            # Stage 667: Only the selected dBASE/Module leaf enables split COFF/Link.
+            self._dbase_module_selected = False
+            self._dbase_program_selected = False
+            self._dbase_module_coff_path = None
+            self._dbase_module_coff_digest = ""
+            self._dbase_module_coff_target = ""
+            self._dbase_module_link_path = None
+            self._dbase_module_link_digest = ""
+            self._dbase_module_link_target = ""
+            self._dbase_module_link_is_dll = False
+            self._dbase_module_link_profile_kind = ""
+            self._dbase_module_active_profile_kind = ""
 
             layout = QVBoxLayout(self)
             layout.setContentsMargins(0, 0, 0, 0)
@@ -71785,6 +71878,15 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
             )
             self.assemble_button.clicked.connect(
                 lambda checked=False: self.assemble_requested.emit(self)
+            )
+
+            self.link_assembled_button = QPushButton("Link", self.assembler_panel)
+            self.link_assembled_button.setObjectName("link_assembled_button")
+            self.link_assembled_button.setVisible(False)
+            self.link_assembled_button.setEnabled(False)
+            self.link_assembled_button.setToolTip("COFF-Objekte zum PE32/PE32+-Programm linken")
+            self.link_assembled_button.clicked.connect(
+                lambda checked=False: self.link_generated_requested.emit(self)
             )
 
             self.start_assembled_button = QPushButton(
@@ -71875,6 +71977,7 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
             )
 
             assembler_panel_layout.addWidget(self.assemble_button)
+            assembler_panel_layout.addWidget(self.link_assembled_button)
             assembler_panel_layout.addWidget(self.start_assembled_button)
             assembler_panel_layout.addSpacing(6)
             assembler_panel_layout.addWidget(self.build_target_combo)
@@ -72268,6 +72371,17 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
                 )
             )
 
+            self.link_generated_button = QPushButton("Link", self.generated_assembly_panel)
+            self.link_generated_button.setObjectName("link_generated_button")
+            self.link_generated_button.setVisible(False)
+            self.link_generated_button.setEnabled(False)
+            self.link_generated_button.setToolTip(
+                "Das ausgewählte dBASE-Modul mit dem COFF-Objekt des Hauptprogramms linken"
+            )
+            self.link_generated_button.clicked.connect(
+                lambda checked=False: self.link_generated_requested.emit(self)
+            )
+
             self.start_generated_button = QPushButton(
                 "Start",
                 self.generated_assembly_panel,
@@ -72372,6 +72486,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
 
             generated_assembly_panel_layout.addWidget(
                 self.assemble_generated_button
+            )
+            generated_assembly_panel_layout.addWidget(
+                self.link_generated_button
             )
             generated_assembly_panel_layout.addWidget(
                 self.start_generated_button
@@ -73672,6 +73789,9 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
                 return
             self._view_modification_changed(True)
             self.invalidate_assembly_result("Assemblercode geändert")
+            self._dbase_module_coff_digest = ""
+            self._dbase_module_link_digest = ""
+            self.refresh_project_module_link_buttons()
             has_source = bool(
                 self.generated_assembly_editor.toPlainText().strip()
             )
@@ -74259,6 +74379,62 @@ QMessageBox QPushButton:hover { background-color: #e4f1fb; }""")
                 )
                 if is_assembler_source and self.assembled_program is None:
                     self.assembly_status_label.setText("Noch nicht assembliert")
+
+            self.refresh_project_module_link_buttons()
+
+        def refresh_project_module_link_buttons(self) -> None:
+            """Keep Link and Start separate for the selected dBASE Module leaf."""
+            active = bool(
+                self._dbase_module_selected
+                and self.is_dbase_document
+                and self.build_target in {"pe32", "pe64"}
+            )
+            object_only = bool(
+                self._dbase_program_selected and self.is_dbase_document
+                and self.build_target in {"pe32", "pe64"}
+            )
+            digest = self.generated_assembly_digest()
+            coff_ready = bool(
+                active and self._dbase_module_coff_path is not None
+                and self._dbase_module_coff_digest == digest
+                and self._dbase_module_coff_target == self.build_target
+                and Path(self._dbase_module_coff_path).is_file()
+            )
+            linked = bool(
+                coff_ready and self._dbase_module_link_path is not None
+                and self._dbase_module_link_digest == digest
+                and self._dbase_module_link_target == self.build_target
+                and Path(self._dbase_module_link_path).is_file()
+                and getattr(self, "_dbase_module_link_profile_kind", "")
+                    == getattr(self, "_dbase_module_active_profile_kind", "")
+            )
+            self.link_assembled_button.setVisible(False)
+            self.link_generated_button.setVisible(active)
+            self.link_generated_button.setEnabled(coff_ready)
+            if linked:
+                for path, mtime, size in getattr(self, "_dbase_module_link_inputs", ()):
+                    try:
+                        stat = Path(path).stat()
+                        if stat.st_mtime_ns != mtime or stat.st_size != size:
+                            linked = False
+                            break
+                    except OSError:
+                        linked = False
+                        break
+            executable_ready = bool(linked and not getattr(self, "_dbase_module_link_is_dll", False))
+            self.start_generated_button.setVisible(not (active or object_only) or executable_ready)
+            if active:
+                self.start_generated_button.setEnabled(executable_ready)
+            # Source tab is Compile for .prg, while the assembler tab is
+            # Assemble -> Link -> Start for a selected module.
+            self.start_assembled_button.setVisible(
+                self.is_assembler_document and not (active or object_only)
+            )
+            if active or object_only:
+                self.assemble_generated_button.setText("Assemble")
+                self.assemble_generated_button.setToolTip(
+                    "Assemblertext als relocierbares COFF32/COFF64-.o erzeugen, ohne zu linken"
+                )
 
         def begin_pascal_compile_progress(self, source_count: int) -> None:
             self._pascal_compile_running = True
@@ -75612,6 +75788,8 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
             start_directory = str(
                 self.settings.value("chm/last_directory", "") or ""
             )
+            if not start_directory and getattr(self, "owner_help_directories", None):
+                start_directory = str(self.owner_help_directories[0])
             filename, _ = QFileDialog.getOpenFileName(
                 self,
                 "CHM-Hilfedatei öffnen",
@@ -75649,7 +75827,11 @@ QDialog#chm_viewer_dialog QScrollBar::sub-page:horizontal {{
                     prefix="d64_chm_viewer_"
                 )
                 root = Path(new_temporary.name)
-                ChmExtractor.extract(source, root)
+                ChmExtractor.extract(
+                    source, root,
+                    mode=getattr(self, "extract_mode", "internal"),
+                    hh_path=getattr(self, "extract_hh_path", ""),
+                )
                 topics, keywords, home_local = self.read_metadata(root)
                 context_id_map = read_chm_context_map(root)
             except Exception as exc:
@@ -91784,6 +91966,17 @@ margin:0px;padding:0px;border:0px;
             if panel.isNull():
                 return specs
             drag_name = self._dock_caption(self._drag_dock)
+            host = self.parentWidget()
+            if (host is not None
+                    and self._drag_dock is getattr(host, "right_dock", None)
+                    and host._turbo_help_project_info_workspace_active()):
+                side = "left" if area == Qt.LeftDockWidgetArea else "right"
+                label = "Links andocken" if side == "left" else "Rechts andocken"
+                specs[f"{side}:project-help"] = (
+                    panel.adjusted(10, 42, -10, -10), area,
+                    Qt.Horizontal, "after", f"{drag_name}\n{label}",
+                )
+                return specs
             other_name = self._dock_caption(self._other_dock())
             header_h = 32
             gap = 8
@@ -107609,10 +107802,20 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.nodes = {}
             # Stage 528: Debug gehört als Hauptknoten in die linke
             # Windows-TreeList (PE32 und PE32+), nicht nur in die Tab-Leiste.
-            for title in ("Umgebung", "Compiler", "Assembler", "Linker", "Debug"):
+            for title in ("Umgebung", "Compiler", "Assembler", "Linker", "Debug", "Hilfe"):
                 item = QTreeWidgetItem(self.tree, [title])
                 item.setData(0, Qt.UserRole, title.casefold())
                 self.nodes[title.casefold()] = item
+
+            # Stage 663: Hilfe ist ein EIGENER Hauptknoten ganz am Ende,
+            # kein Unterpunkt von Debug. Beide Windows-ABIs verwenden ihn.
+            self.help_development_item = QTreeWidgetItem(
+                self.nodes["hilfe"], ["Entwicklung"])
+            self.help_development_item.setData(0, Qt.UserRole, "hilfe.entwicklung")
+            self.help_application_item = QTreeWidgetItem(
+                self.nodes["hilfe"], ["Anwendung"])
+            self.help_application_item.setData(0, Qt.UserRole, "hilfe.anwendung")
+            self.nodes["hilfe"].setExpanded(True)
 
             # Stage 198: Umgebung ist nur noch der Hauptknoten. Die bisherige
             # Umgebung-Seite liegt unter Workstation; Editor erhaelt eine
@@ -107766,6 +107969,16 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 f"project_settings_windows_{target_tag}_debug_page"
             )
             self.stack.addWidget(self.debug_page)
+
+            # Stage 663: separate Help pages. The owner keeps one project-wide
+            # set of settings, mirrored into the PE32 and PE64 tree views.
+            from turbo_help_settings import TurboHelpSettingsPage
+            self.help_development_page = TurboHelpSettingsPage("entwicklung", self.stack)
+            self.help_application_page = TurboHelpSettingsPage("anwendung", self.stack)
+            for _help_page in (self.help_development_page, self.help_application_page):
+                self.stack.addWidget(_help_page)
+                _help_page.changed.connect(self._help_settings_changed)
+            self.set_help_settings(getattr(self.owner, "project_help_settings", None))
 
             # Stage 531: eigenes Security-Blatt je Architektur.
             self.security_page = WindowsCompilerSecuritySettingsPage(
@@ -108364,6 +108577,28 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             )
             dbase_opt_layout = QVBoxLayout(self.dbase_optimization_page)
             dbase_opt_layout.setContentsMargins(10, 8, 10, 8)
+            # Stage 671: O0 is explicitly unoptimized; O1 enables compact
+            # compiler-generated dBASE control flow (PE32 and PE32+ separately).
+            self.dbase_size_group = QGroupBox(
+                "Optimierungsstufen:", self.dbase_optimization_page)
+            self.dbase_size_group.setObjectName(
+                f"project_windows_{target_tag}_dbase_size_levels")
+            size_group_layout = QVBoxLayout(self.dbase_size_group)
+            self.dbase_size_o0_radio = QRadioButton(
+                "O0  -  keine Optimierung", self.dbase_size_group)
+            self.dbase_size_o1_radio = QRadioButton(
+                "O1  -  Längen Optimierung", self.dbase_size_group)
+            self.dbase_size_o0_radio.setObjectName(
+                f"project_windows_{target_tag}_dbase_size_o0")
+            self.dbase_size_o1_radio.setObjectName(
+                f"project_windows_{target_tag}_dbase_size_o1")
+            self.dbase_size_o0_radio.setChecked(True)
+            self.dbase_size_o1_radio.setToolTip(
+                "Kürzt ausschließlich nachweislich redundante ASM-Sprünge. "
+                "Die Fehler-Zeilennummern bleiben unverändert.")
+            size_group_layout.addWidget(self.dbase_size_o0_radio)
+            size_group_layout.addWidget(self.dbase_size_o1_radio)
+            dbase_opt_layout.addWidget(self.dbase_size_group)
             self.dbase_visual_group = QGroupBox(
                 "Visuelle Elemente", self.dbase_optimization_page
             )
@@ -109100,6 +109335,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.pascal_unit_output_edit.editingFinished.connect(self._pascal_unit_output_edited)
             self.input_relative_checkbox.toggled.connect(self._input_relative_toggled)
             self.output_relative_checkbox.toggled.connect(self._output_relative_toggled)
+            for _radio in (self.dbase_size_o0_radio, self.dbase_size_o1_radio):
+                _radio.toggled.connect(self._dbase_size_level_changed)
             self.dbase_external_ui_checkbox.toggled.connect(self._dbase_visual_changed)
             self.dbase_store_binary_checkbox.toggled.connect(self._dbase_visual_changed)
             self.dbase_compress_json_checkbox.toggled.connect(self._dbase_visual_changed)
@@ -109600,6 +109837,28 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                         result.addWidget(obj, source_layout.stretch(i))
             return result
 
+        def set_help_settings(self, value) -> None:
+            from turbo_help_settings import normalize_help_settings
+            settings = normalize_help_settings(value)
+            project_path = getattr(self.owner, "current_project_path", None)
+            base = Path(project_path).resolve().parent if project_path else None
+            self.help_development_page.project_base = base
+            self.help_application_page.project_base = base
+            self.help_development_page.set_data(settings["entwicklung"])
+            self.help_application_page.set_data(settings["anwendung"])
+
+        def _help_settings_changed(self, scope: str, value: dict) -> None:
+            from turbo_help_settings import normalize_help_settings
+            state = normalize_help_settings(getattr(self.owner, "project_help_settings", None))
+            state[scope] = dict(value)
+            self.owner.project_help_settings = state
+            if hasattr(self.owner, "set_project_modified"):
+                self.owner.set_project_modified(True)
+            # The other Windows page displays the same *project* options.
+            parent_panel = getattr(self.owner, "project_settings_panel", None)
+            if parent_panel is not None:
+                parent_panel.set_help_settings(state)
+
         def _tree_changed(self, current, _previous) -> None:
             key = str(current.data(0, Qt.UserRole) or "") if current is not None else ""
             if key in self._overview_widgets:
@@ -109651,6 +109910,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 page = self.manifest_page
             elif key == "debug":
                 page = self.debug_page
+            elif key == "hilfe.entwicklung":
+                page = self.help_development_page
+            elif key == "hilfe.anwendung":
+                page = self.help_application_page
             else:
                 page = self.placeholder
             self.stack.setCurrentWidget(page)
@@ -109997,6 +110260,27 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 options = self.dbase_slot_settings()
                 callback(self.target, options["static_numeric_internal_slots"],
                          options["dynamic_typed_variables"], mark_modified=True)
+
+        def dbase_size_level(self) -> str:
+            return "O1" if self.dbase_size_o1_radio.isChecked() else "O0"
+
+        def set_dbase_size_level(self, level: str) -> None:
+            from dbase_size_optimizer import normalize_dbase_optimization_level
+            self._syncing = True
+            try:
+                selected = normalize_dbase_optimization_level(level)
+                self.dbase_size_o1_radio.setChecked(selected == "O1")
+                self.dbase_size_o0_radio.setChecked(selected == "O0")
+            finally:
+                self._syncing = False
+            self._overview_refresh_later()
+
+        def _dbase_size_level_changed(self, checked: bool) -> None:
+            if not checked or self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_dbase_size_level", None)
+            if callable(callback):
+                callback(self.target, self.dbase_size_level(), mark_modified=True)
 
         def dbase_peephole_settings(self) -> dict:
             from windows_peephole import normalize_peephole_options
@@ -111739,6 +112023,17 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             if hasattr(self.owner, "set_project_modified"):
                 self.owner.set_project_modified(True)
 
+        def set_help_settings(self, value):
+            from turbo_help_settings import normalize_help_settings
+            state = normalize_help_settings(value)
+            for page in self.windows_pages.values():
+                page.set_help_settings(state)
+            self.owner.project_help_settings = state
+
+        def help_settings(self):
+            from turbo_help_settings import normalize_help_settings
+            return normalize_help_settings(getattr(self.owner, "project_help_settings", None))
+
         def set_pascal_import_options(self, values) -> None:
             values = values if isinstance(values, dict) else {}
             for target, page in self._pascal_import_pages.items():
@@ -111883,6 +112178,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
         def set_dbase_slot_settings(self, target: str, static_numeric: bool, dynamic_typed: bool) -> None:
             self.page_for_target(target).set_dbase_slot_settings(static_numeric, dynamic_typed)
+
+        def dbase_size_level(self, target: str = "pe32") -> str:
+            return self.page_for_target(target).dbase_size_level()
+
+        def set_dbase_size_level(self, target: str, level: str) -> None:
+            self.page_for_target(target).set_dbase_size_level(level)
 
         def dbase_peephole_settings(self, target: str = "pe32") -> dict:
             return self.page_for_target(target).dbase_peephole_settings()
@@ -113678,6 +113979,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe64": {"static_numeric_internal_slots": False, "dynamic_typed_variables": False},
             }
             # Per-architecture options shared by dBASE/Pascal generated PE code.
+            self.project_windows_dbase_size_level: Dict[str, str] = {"pe32": "O0", "pe64": "O0"}
             self.project_windows_dbase_peephole: Dict[str, dict] = {
                 target: {"register_width": False, "processor_flags": False,
                          "stack_state": False}
@@ -113836,6 +114138,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._source_find_project_signature = None
 
             self.current_project_path = None
+            self._project_editor_compiler_targets = {}
+            from turbo_help_settings import default_help_settings
+            self.project_help_settings = default_help_settings()
             self.project_debug_options = stage530_default_debug_options()
             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
@@ -115610,7 +115915,14 @@ border-radius: 7px;}}"""
             if self._exclusive_tool_workspace_transitioning:
                 return
             project = getattr(self, "right_dock", None) if beside_project else None
+            info = getattr(self, "right_dock", None)
+            help_compiler = dock is getattr(self, "turbo_help_compiler_dock", None)
+            keep_info = bool(help_compiler and info is not None and info.isVisible())
             keep = {dock}
+            # Stage 661: Projekt-Informationen, NOT Projekt-Einstellungen,
+            # stays visible while the Turbo Help compiler is open.
+            if keep_info:
+                keep.add(info)
             if project is not None and project is not dock:
                 keep.add(project)
 
@@ -115683,6 +115995,13 @@ border-radius: 7px;}}"""
                     # Nur für den Resourcen Builder bleibt das Projekt-Dock
                     # sichtbar, auch wenn es vorher ausgeblendet war.
                     project.show()
+                elif keep_info and not info.isFloating():
+                    info_area = self.dockWidgetArea(info)
+                    side = (Qt.RightDockWidgetArea
+                            if info_area == Qt.LeftDockWidgetArea
+                            else Qt.LeftDockWidgetArea)
+                    if self.dockWidgetArea(dock) != side:
+                        self.addDockWidget(side, dock)
                 else:
                     self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
@@ -115690,6 +116009,10 @@ border-radius: 7px;}}"""
                 dock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
                 snapshot["owner"] = dock
                 snapshot["beside_project"] = bool(beside_project)
+                if help_compiler and keep_info:
+                    snapshot["help_info_width"] = max(1, int(info.width()))
+                    if not info.isFloating():
+                        snapshot["help_info_side"] = self.dockWidgetArea(info)
             finally:
                 self._exclusive_tool_workspace_transitioning = False
 
@@ -115705,10 +116028,25 @@ border-radius: 7px;}}"""
                 and project.isVisible() else 0
             )
             try:
-                self.resizeDocks(
-                    [dock], [max(1, int(self.width()) - reserved - 12)],
-                    Qt.Horizontal,
-                )
+                info = getattr(self, "right_dock", None)
+                help_compiler = dock is getattr(self, "turbo_help_compiler_dock", None)
+                if (help_compiler and info is not None and info.isVisible()
+                        and not info.isFloating()):
+                    # Preserve the 1/4-window width restriction of the
+                    # Projekt-Informationen dock; give the rest to Help.
+                    width_limit = max(1, int(self._project_information_dock_width_limit()))
+                    info_width = min(width_limit, max(1, int(
+                        snapshot.get("help_info_width", info.width()))))
+                    self.resizeDocks(
+                        [info, dock],
+                        [info_width, max(1, int(self.width()) - info_width - 12)],
+                        Qt.Horizontal,
+                    )
+                else:
+                    self.resizeDocks(
+                        [dock], [max(1, int(self.width()) - reserved - 12)],
+                        Qt.Horizontal,
+                    )
                 self.resizeDocks([dock], [max(1, int(self.height()) - 100)],
                                  Qt.Vertical)
                 dock.updateGeometry()
@@ -115780,6 +116118,14 @@ border-radius: 7px;}}"""
                         self.restoreState(snapshot["state"])
                     except (RuntimeError, TypeError):
                         pass
+                    # A user-selected side for Projekt-Informationen must
+                    # survive the workspace's saved-state restoration.
+                    info = getattr(self, "right_dock", None)
+                    info_side = snapshot.get("help_info_side")
+                    if (info is not None and info_side in
+                            (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea)):
+                        self.addDockWidget(info_side, info)
+                        info.setFloating(False)
                     # restoreState() alleine restauriert nicht immer alle
                     # zuvor unsichtbaren Docks; expliziter Sichtbarkeitsabgleich.
                     for candidate in all_docks:
@@ -125106,22 +125452,32 @@ border-radius: 7px;}}"""
         # Die Bridge stellt weder Compiler noch Hilfecompiler-Menü bereit.
         # -------------------------------------------------------------------
         def _turbo_help_active_editor(self):
-            """Resolve the actual editor widget; never trust QAction/Qt bool results.
+            """Find a live help editor, including after a restored Qt dock.
 
-            A project-tree click may open the dock for the first time, or a
-            restored dock may already own the editor while the cached reference
-            is missing/invalid. Only a real TurboHelpEditor is returned.
+            The installed application can load the widget class through more
+            than one module identity. Verify its actual editor API rather
+            than relying solely on ``isinstance`` (Stage 662).
             """
-            from turbo_help_gui import TurboHelpEditor
+            def valid(candidate):
+                try:
+                    return (candidate is not None and not isinstance(candidate, bool)
+                            and callable(getattr(candidate, "load_document", None))
+                            and getattr(candidate, "tabs", None) is not None)
+                except RuntimeError:  # already deleted Qt wrapper
+                    return False
 
             editor = getattr(self, "turbo_help_compiler_editor", None)
-            if isinstance(editor, TurboHelpEditor):
+            if valid(editor):
                 return editor
             dock = getattr(self, "turbo_help_compiler_dock", None)
-            candidate = dock.widget() if dock is not None else None
-            if isinstance(candidate, TurboHelpEditor):
-                self.turbo_help_compiler_editor = candidate
-                return candidate
+            if dock is not None:
+                try:
+                    candidate = dock.widget()
+                except RuntimeError:
+                    candidate = None
+                if valid(candidate):
+                    self.turbo_help_compiler_editor = candidate
+                    return candidate
             return None
 
         def _add_project_turbo_help_file(self, path, *, title="", mark_modified=True):
@@ -125207,24 +125563,30 @@ border-radius: 7px;}}"""
             if not item.data(0, Qt.UserRole + 302):
                 for edit, pending in getattr(self, "_turbo_help_pending_leaves", {}).items():
                     if pending is item:
-                        self.show_turbo_help_compiler_dock()
-                        editor = self._turbo_help_active_editor()
+                        opened = self.show_turbo_help_compiler_dock()
+                        editor = (opened if callable(getattr(opened, "load_document", None))
+                                  else self._turbo_help_active_editor())
                         if editor is None:
                             self.show_error("Turbo Help", "Der Hilfecompiler-Editor ist nicht verfügbar.")
                             return
                         editor.tabs.setCurrentWidget(edit)
-                        edit.setFocus()
+                        current = getattr(editor.tabs, "currentWidget", None)
+                        if not callable(current) or current() is edit:
+                            edit.setFocus(Qt.OtherFocusReason)
                         return
                 return
             path = Path(str(item.data(0, Qt.UserRole + 302) or ""))
             if not path.is_file():
                 self.show_error("Turbo Help", f"Hilfedatei fehlt: {path}")
                 return
-            self.show_turbo_help_compiler_dock()
-            editor = self._turbo_help_active_editor()
+            opened = self.show_turbo_help_compiler_dock()
+            editor = (opened if callable(getattr(opened, "load_document", None))
+                      else self._turbo_help_active_editor())
             if editor is None:
                 self.show_error("Turbo Help", "Der Hilfecompiler-Editor ist nicht verfügbar.")
                 return
+            # load_document selects the one requested source and focuses it;
+            # saving the previous modified tab may be canceled by the user.
             editor.load_document(path)
 
         def _project_turbo_help_context(self, item, position):
@@ -125291,20 +125653,9 @@ border-radius: 7px;}}"""
                     self.turbo_help_compiler_editor = editor
 
             if editor is None:
-                source = (Path(__file__).resolve().parent / "help" /
-                          "turbo_vision" / "System.Help.thlp")
-                root = getattr(self, "project_turbo_help_root", None)
-                first = next(
-                    (Path(root.child(i).data(0, Qt.UserRole + 302))
-                     for i in range(root.childCount())
-                     if root.child(i).data(0, Qt.UserRole + 302)
-                     and Path(root.child(i).data(0, Qt.UserRole + 302)).is_file()),
-                    None,
-                ) if root is not None else None
-                editor = TurboHelpEditor(
-                    first if first is not None else
-                    (source if source.is_file() else None), self
-                )
+                # An untouched placeholder may be replaced by the first clicked
+                # THLP leaf. Do not preload a sample or every project file.
+                editor = TurboHelpEditor(None, self)
                 editor.compiled.connect(self._turbo_help_compiled)
                 editor.document_saved.connect(self._turbo_help_document_saved)
                 self.turbo_help_compiler_editor = editor
@@ -125343,10 +125694,8 @@ border-radius: 7px;}}"""
                     for i in range(root.childCount())
                     if root.child(i).data(0, Qt.UserRole + 302)
                 ]
-                # Jede registrierte Quelle genau einmal in den Tabs anzeigen.
-                for path in editor.project_sources:
-                    if path.is_file():
-                        editor.load_document(path)
+                # Project sources are F2 compiler inputs, not implicit editor tabs.
+                # A tree-leaf click opens only the requested THLP document.
 
             self._activate_exclusive_tool_workspace(dock)
             dock.show()
@@ -125412,6 +125761,14 @@ border-radius: 7px;}}"""
             # der laufenden Turbo-Vision-Konsolenanwendung durch F1 geoeffnet.
             # Das Kompilat wird bei der EXE-Erzeugung als App.hlp bereitgestellt.
             self._turbo_help_catalog_path = Path(mo_path).resolve()
+            # F2 also deploys the runtime search paths, even before the EXE exists.
+            from turbo_help_settings import write_application_help_manifest
+            try:
+                _runtime_exe = self._turbo_help_project_executable()
+                write_application_help_manifest(
+                    _runtime_exe, getattr(self, "project_help_settings", None))
+            except (OSError, ValueError) as exc:
+                self.log(f"TURBO HELP PATHS WARNING: {exc}")
             self._turbo_help_catalog_project = (
                 str(Path(self.current_project_path).resolve())
                 if getattr(self, "current_project_path", None) else None
@@ -126504,6 +126861,7 @@ border-radius: 7px;}}"""
             scroll.setMinimumSize(0, 0)
             panel = ProjectSettingsPanel(self, scroll)
             panel.set_debug_options(getattr(self, "project_debug_options", stage530_default_debug_options()))
+            panel.set_help_settings(getattr(self, "project_help_settings", None))
             panel.set_stack_cookie_options(getattr(
                 self, "project_windows_compiler_security_options",
                 stage531_default_compiler_security_options(),
@@ -126670,7 +127028,14 @@ border-radius: 7px;}}"""
             panel.set_dark_mode(self.application_dark_mode(self.dark_mode_enabled))
             scroll.setWidget(panel)
             dock.setWidget(scroll)
-            dock.setTitleBarWidget(DockTitleBar(dock))
+            titlebar = DockTitleBar(dock)
+            titlebar.layout().removeWidget(titlebar.close_button)
+            titlebar.layout().insertSpacing(1, 100)
+            titlebar.close_button.setText("schließen")
+            titlebar.close_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            titlebar.close_button.setToolTip("Projekt-Einstellungen ausblenden")
+            titlebar.layout().insertWidget(2, titlebar.close_button)
+            dock.setTitleBarWidget(titlebar)
 
             # Stage 187: Das Projekt-Settings-Dock gehört zwischen das
             # Dateisystem links und den Projekt-/Informationsbaum rechts.
@@ -126789,6 +127154,7 @@ border-radius: 7px;}}"""
             self._ensure_project_settings_dock()
             self._enter_project_settings_workspace()
             self.project_settings_panel.set_debug_options(getattr(self, "project_debug_options", stage530_default_debug_options()))
+            self.project_settings_panel.set_help_settings(getattr(self, "project_help_settings", None))
             self.project_settings_panel.set_stack_cookie_options(getattr(
                 self, "project_windows_compiler_security_options",
                 stage531_default_compiler_security_options(),
@@ -126841,6 +127207,8 @@ border-radius: 7px;}}"""
                     _target, bool(_slot_opt.get("static_numeric_internal_slots", False)),
                     bool(_slot_opt.get("dynamic_typed_variables", False)),
                 )
+                self.project_settings_panel.set_dbase_size_level(
+                    _target, self.project_windows_dbase_size_level.get(_target, "O0"))
                 self.project_settings_panel.set_dbase_peephole_settings(
                     _target, self.project_windows_dbase_peephole.get(_target, {}),
                 )
@@ -128076,6 +128444,34 @@ border-radius: 7px;}}"""
                         document.invalidate_assembly_result("dBASE-Slot-Optimierung geändert")
                     except Exception:
                         pass
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_windows_dbase_size_level(
+            self, target: str, level: str, *, mark_modified: bool = True,
+        ) -> None:
+            from dbase_size_optimizer import normalize_dbase_optimization_level
+            key = self._project_windows_target_key(target)
+            selected = normalize_dbase_optimization_level(level)
+            state = getattr(self, "project_windows_dbase_size_level", None)
+            if not isinstance(state, dict):
+                self.project_windows_dbase_size_level = {"pe32": "O0", "pe64": "O0"}
+                state = self.project_windows_dbase_size_level
+            changed = state.get(key, "O0") != selected
+            state[key] = selected
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and panel.dbase_size_level(key) != selected:
+                panel.set_dbase_size_level(key, selected)
+            if changed and mark_modified:
+                # Recompile is required: existing ASM/COFF may reflect old O-level.
+                for index in range(self.document_tabs.count()):
+                    document = self.document_tabs.widget(index)
+                    if (isinstance(document, DocumentEditor)
+                            and document.is_dbase_document
+                            and document.build_target == key):
+                        document.invalidate_assembly_result(
+                            "dBASE-Optimierungsstufe geändert: neu kompilieren")
                 self.set_project_modified(True)
                 if self.current_project_path is not None:
                     self.save_project()
@@ -133918,6 +134314,27 @@ border: 2px solid #2a69aa;
         ) -> None:
             self._show_c64_tool_dock("pixel_screen", initial_path=initial_path)
 
+        def _project_editor_target_changed(self, document: DocumentEditor) -> None:
+            """Store the effective source/ASM target when the user changes it."""
+            if getattr(self, "_restoring_project_editor_target", False):
+                return
+            if document.path is None:
+                return
+            target = str(document.build_target or "").casefold()
+            if target not in {"c64", "amiga", "pe32", "pe64", "linux32", "linux64"}:
+                return
+            key = str(Path(document.path).expanduser().resolve()).casefold()
+            targets = getattr(self, "_project_editor_compiler_targets", None)
+            if not isinstance(targets, dict):
+                targets = {}
+                self._project_editor_compiler_targets = targets
+            if targets.get(key) == target:
+                return
+            targets[key] = target
+            self.set_project_modified(True)
+            if self.current_project_path is not None:
+                self.save_project()
+
         def _add_document_tab(self, document: DocumentEditor) -> None:
             index = self.document_tabs.addTab(document, document.display_name)
             self.document_tabs.setTabToolTip(index, self._document_tooltip(document))
@@ -133944,6 +134361,16 @@ border: 2px solid #2a69aa;
             )
             self.document_tabs.tabBar().setTabButton(index, QTabBar.RightSide, None)
 
+            # Stage 669: restore source-specific compiler target from the .pro,
+            # then persist changes made in either linked target ComboBox.
+            if document.path is not None:
+                saved_target = getattr(self, "_project_editor_compiler_targets", {}).get(
+                    str(Path(document.path).expanduser().resolve()).casefold())
+                if saved_target:
+                    document.set_build_target(saved_target)
+            document.generated_build_target_combo.currentTextChanged.connect(
+                lambda _text, value=document: self._project_editor_target_changed(value)
+            )
             document.modification_changed.connect(
                 lambda modified=False, value=document: self._document_modified(
                     value, modified
@@ -133953,6 +134380,9 @@ border: 2px solid #2a69aa;
             document.start_requested.connect(self.start_assembled_document)
             document.assemble_generated_requested.connect(
                 self.assemble_generated_document
+            )
+            document.link_generated_requested.connect(
+                self.link_project_dbase_module_document
             )
             document.start_generated_requested.connect(
                 self.start_generated_assembly_document
@@ -134129,6 +134559,7 @@ border: 2px solid #2a69aa;
             ):
                 self._c64_basic_keyboard_visibility_changed(document, True)
 
+            self._sync_selected_dbase_module_link_buttons(document)
             self._update_document_tab(document)
             self._update_editor_status_panels()
 
@@ -134913,14 +135344,30 @@ border: 2px solid #2a69aa;
                 self.show_error("Ordinalimporte konnten nicht erzeugt werden", message)
                 self.statusBar().showMessage("Ordinalimport-Erzeugung fehlgeschlagen")
                 return False
+            if (str(language_name).startswith("dBase") and
+                    document.build_target in {"pe32", "pe64"}):
+                from dbase_size_optimizer import optimize_dbase_size_assembly
+                _o_level = self.project_windows_dbase_size_level.get(
+                    document.build_target, "O0")
+                _o_result = optimize_dbase_size_assembly(generated.assembly, level=_o_level)
+                if _o_result.replacements:
+                    generated = replace(generated, assembly=_o_result.assembly)
+                document.dbase_size_compile_snapshot = _o_result.level
+                self.log(
+                    f"dBASE {_o_result.level} {document.build_target.upper()}: "
+                    f"{_o_result.replacements} Instruktionen eingespart")
             # Stage 609: both frontends use the same strictly guarded PE ASM
             # peephole before externalization/AT&T conversion and COFF linking.
             # Pascal source-line mapping is maintained if a rewrite adds lines.
             if (document.build_target in {"pe32", "pe64"}
                     and (document.is_dbase_document or document.is_pascal_document)):
                 from windows_peephole import optimize_windows_assembly, normalize_peephole_options
+                _dbase_level = self.project_windows_dbase_size_level.get(
+                    document.build_target, "O0") if (document.is_dbase_document or
+                    str(language_name).startswith("dBase")) else "O1"
                 _peephole_options = normalize_peephole_options(
-                    self.project_windows_dbase_peephole.get(document.build_target, {}))
+                    self.project_windows_dbase_peephole.get(document.build_target, {})
+                    if _dbase_level == "O1" else {})
                 _peephole_result = optimize_windows_assembly(
                     generated.assembly, target=document.build_target,
                     options=_peephole_options,
@@ -135055,11 +135502,14 @@ border: 2px solid #2a69aa;
                 self._update_document_tab(open_assembly)
 
             document.invalidate_assembly_result("Neu kompiliert")
+            document._dbase_module_coff_digest = ""
+            document._dbase_module_link_digest = ""
             document.set_generated_assembly(
                 generated.assembly,
                 assembly_path,
                 select_tab=True,
             )
+            document.refresh_project_module_link_buttons()
             document.generated_source_kind = getattr(
                 generated, "source_kind", "program"
             )
@@ -135966,13 +136416,15 @@ border: 2px solid #2a69aa;
                         _scope_language == "dbase"
                         and _scope_kind == "library"
                         and document.path is not None
-                        and self._project_named_matches_path(
-                            document.path, target=str(document.build_target))
+                        and (self._is_selected_dbase_module_document(document)
+                             or self._project_named_matches_path(
+                                 document.path, target=str(document.build_target)))
                     )
                     generated = compile_dbase_to_assembly(
                     source,
                     peephole_options=self.project_windows_dbase_peephole.get(
-                        document.build_target, {}),
+                        document.build_target, {}) if self.project_windows_dbase_size_level.get(
+                            document.build_target, "O0") == "O1" else {},
                     filename=str(document.path),
                     target=document.build_target,
                     source_kind="library" if _dbase_library else "program",
@@ -135988,7 +136440,17 @@ border: 2px solid #2a69aa;
                         ),
                     ),
                 )
-            except (ImportError, DBaseCompilerError, AssemblerError, LinuxDBaseError) as exc:
+                    if self._is_selected_dbase_program_document(document):
+                        from dbase_module_coff import (
+                            strip_program_entry_assembly, strip_dbase_library_entry_assembly,
+                        )
+                        assembly_object = (
+                            strip_dbase_library_entry_assembly(generated.assembly)
+                            if generated.source_kind == "library"
+                            else strip_program_entry_assembly(generated.assembly)
+                        )
+                        generated = replace(generated, assembly=assembly_object)
+            except (ImportError, DBaseCompilerError, AssemblerError, LinuxDBaseError, ValueError) as exc:
                 message = str(exc)
                 self.log("dBase Compilerfehler: " + message)
                 error_line = getattr(exc, "line", 0) or 0
@@ -136124,6 +136586,389 @@ border: 2px solid #2a69aa;
                 self.populate_file_list()
             return True
 
+        # Stage 667: separate COFF assembly and PE linking for the selected
+        # dBASE Programme -> Module project leaf.  Other documents keep the
+        # original Compile -> Assemble/Link -> Start workflow.
+        def _dbase_project_document_role(self, document: DocumentEditor) -> str:
+            """Find actual project membership, independent of TreeWidget focus.
+
+            Clicking editor tabs or using the ASM toolbar can change the
+            selected tree item.  That must never turn a Programme .o build
+            into the generic PE linker (unresolved dBASE runtime symbols).
+            """
+            if not isinstance(document, DocumentEditor) or not document.is_dbase_document:
+                return ""
+            if document.path is None or document.build_target not in {"pe32", "pe64"}:
+                return ""
+            try:
+                actual = Path(document.path).expanduser().resolve()
+            except (OSError, ValueError):
+                return ""
+            groups = getattr(self, "project_dbase_group_nodes", {}) or {}
+            for role in ("modules", "programs"):
+                group = groups.get(role)
+                if group is None:
+                    continue
+                for index in range(group.childCount()):
+                    leaf = group.child(index)
+                    if self._project_item_kind(leaf) != PROJECT_NODE_DBASE_FILE:
+                        continue
+                    item_path = str(leaf.data(0, Qt.UserRole + 302) or "").strip()
+                    if not item_path:
+                        continue
+                    try:
+                        if Path(item_path).expanduser().resolve() == actual:
+                            return role
+                    except (OSError, ValueError):
+                        continue
+            return ""
+
+        def _is_selected_dbase_module_document(self, document: DocumentEditor) -> bool:
+            if not isinstance(document, DocumentEditor) or not document.is_dbase_document:
+                return False
+            if document.build_target not in {"pe32", "pe64"}:
+                return False
+            tree = getattr(self, "project_tree", None)
+            item = tree.currentItem() if tree is not None else None
+            if item is not None and self._project_item_kind(item) == PROJECT_NODE_DBASE_FILE:
+                if str(item.data(0, Qt.UserRole + 306) or "").casefold() == "modules":
+                    if getattr(document, "_dbase_project_tree_item", None) is item:
+                        return True
+                    item_path = str(item.data(0, Qt.UserRole + 302) or "").strip()
+                    if item_path and document.path is not None:
+                        try:
+                            if Path(item_path).resolve() == Path(document.path).resolve():
+                                return True
+                        except (OSError, ValueError):
+                            pass
+            # Tab focus changes and programmatic builds must not depend on
+            # which Project-Informationen leaf happens to be highlighted.
+            role_finder = getattr(self, "_dbase_project_document_role", None)
+            return bool(role_finder is not None and role_finder(document) == "modules")
+
+        def _is_selected_dbase_program_document(self, document: DocumentEditor) -> bool:
+            """A dBASE Programme leaf is an object-only contributor (never _start)."""
+            if not isinstance(document, DocumentEditor) or not document.is_dbase_document:
+                return False
+            if document.build_target not in {"pe32", "pe64"}:
+                return False
+            tree = getattr(self, "project_tree", None)
+            item = tree.currentItem() if tree is not None else None
+            if item is not None and self._project_item_kind(item) == PROJECT_NODE_DBASE_FILE:
+                if str(item.data(0, Qt.UserRole + 306) or "").casefold() == "programs":
+                    if getattr(document, "_dbase_project_tree_item", None) is item:
+                        return True
+                    item_path = str(item.data(0, Qt.UserRole + 302) or "").strip()
+                    if item_path and document.path is not None:
+                        try:
+                            if Path(item_path).resolve() == Path(document.path).resolve():
+                                return True
+                        except (OSError, ValueError):
+                            pass
+            # Tab focus changes and programmatic builds must not depend on
+            # which Project-Informationen leaf happens to be highlighted.
+            role_finder = getattr(self, "_dbase_project_document_role", None)
+            return bool(role_finder is not None and role_finder(document) == "programs")
+
+        def _sync_selected_dbase_module_link_buttons(self, document=None) -> None:
+            if document is None:
+                document = self.current_document()
+            if isinstance(document, DocumentEditor):
+                document._dbase_module_selected = self._is_selected_dbase_module_document(document)
+                document._dbase_program_selected = self._is_selected_dbase_program_document(document)
+                document._dbase_module_active_profile_kind = (
+                    self._project_named_current_scope()[1]
+                    if document._dbase_module_selected else ""
+                )
+                document.refresh_project_module_link_buttons()
+
+        def assemble_project_dbase_program_object(self, document: DocumentEditor) -> bool:
+            """Assemble a Programme leaf into a relocatable COFF .o; no link."""
+            if not self._is_selected_dbase_program_document(document):
+                return False
+            if document.path is None and not self._save_document(document, save_as=True):
+                return False
+            from dbase_module_coff import namespace_module_object, strip_program_entry_assembly
+            source = document.generated_assembly_editor.toPlainText()
+            if not source.strip():
+                self.show_error("Kein Assemblercode", "Bitte das dBASE-Programm zuerst kompilieren.")
+                return False
+            target = document.build_target
+            asm_path = document.generated_assembly_path or self._dbase_assembly_output_path(document)
+            object_path = self._project_generated_object_path(
+                document.path, target,
+                output_directory=self._document_windows_pascal_unit_output_path(document),
+            )
+            try:
+                # Old ASM tabs may predate Stage 668; never write a COFF
+                # with _start merely because the source was not recompiled.
+                if "__d64_dbase_startup_begin__" in source:
+                    source = strip_program_entry_assembly(source)
+                assembler = assemble_pe64_object_source if target == "pe64" else assemble_pe32_object_source
+                writer = write_coff64_object if target == "pe64" else write_coff32_object
+                compiled = assembler(
+                    source, filename=str(asm_path),
+                    include_dirs=(
+                        str(Path(asm_path).parent), str(Path(document.path).parent),
+                        *self._project_windows_asm_include_paths(target, "dbase"),
+                    ),
+                )
+                if any(name.casefold() in {"_start", "__d64_dll_entry"}
+                       for name in compiled.symbols):
+                    raise ValueError(
+                        "Programme dürfen keine PE/DLL-Einstiegspunkte definieren. "
+                        "Bitte mit Stage 668 neu kompilieren."
+                    )
+                compiled = namespace_module_object(
+                    compiled, document.path, hide_tobject_exports=True)
+                self._write_assembled_program(object_path, writer(compiled))
+            except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError) as exc:
+                document.show_generated_assembly_error(
+                    str(exc), getattr(exc, "line", 0) or 0, "COFF-Assemblerfehler")
+                self.show_error("dBASE-Programmobjekt konnte nicht erzeugt werden", str(exc))
+                return False
+            document.generated_assembly_status_label.setText(
+                f"Objekt erzeugt: {object_path.name}")
+            document.hints_editor.setPlainText(
+                f"dBASE-Programm als COFF-Objekt erzeugt (ohne PE-Einstieg):\n"
+                f"Quelle: {document.path}\nObjekt: {object_path}\n"
+                "Der Link wird über dBASE Programme -> Module ausgeführt."
+            )
+            self.log(f"DBASE PROGRAMME OBJECT {target.upper()}: {document.path} -> {object_path}")
+            self.statusBar().showMessage(f"COFF-Objekt erzeugt: {object_path.name}")
+            if object_path.parent == self.current_directory:
+                self.populate_file_list()
+            return True
+
+        def assemble_project_dbase_module_object(self, document: DocumentEditor) -> bool:
+            """Assemble selected dBASE module into namespaced COFF32/COFF64 .o only."""
+            if not self._is_selected_dbase_module_document(document):
+                return False
+            document._dbase_module_selected = True
+            document._dbase_module_coff_digest = ""
+            document._dbase_module_link_digest = ""
+            document.refresh_project_module_link_buttons()
+            if document.path is None:
+                if not self._save_document(document, save_as=True):
+                    return False
+            source = document.generated_assembly_editor.toPlainText()
+            if not source.strip():
+                self.show_error("Kein Assemblercode", "Zuerst das dBASE-Modul kompilieren.")
+                return False
+            target = document.build_target
+            asm_path = document.generated_assembly_path or self._dbase_assembly_output_path(document)
+            object_path = self._project_generated_object_path(
+                document.path, target,
+                output_directory=self._document_windows_pascal_unit_output_path(document),
+            )
+            try:
+                assembler = assemble_pe64_object_source if target == "pe64" else assemble_pe32_object_source
+                writer = write_coff64_object if target == "pe64" else write_coff32_object
+                compiled = assembler(
+                    source, filename=str(asm_path),
+                    include_dirs=(
+                        str(Path(asm_path).parent), str(Path(document.path).parent),
+                        *self._project_windows_asm_include_paths(target, "dbase"),
+                    ),
+                )
+                # The Module owns _start / __d64_dll_entry.
+                self._write_assembled_program(object_path, writer(compiled))
+            except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError) as exc:
+                document.show_generated_assembly_error(str(exc), getattr(exc, "line", 0) or 0,
+                                                       "COFF-Assemblerfehler")
+                self.show_error("Modul konnte nicht assembliert werden", str(exc))
+                return False
+            document._dbase_module_coff_path = object_path
+            document._dbase_module_coff_digest = document.generated_assembly_digest()
+            document._dbase_module_coff_target = target
+            document._dbase_module_link_path = None
+            document._dbase_module_link_digest = ""
+            document.refresh_project_module_link_buttons()
+            label = "COFF64" if target == "pe64" else "COFF32"
+            document.generated_assembly_status_label.setText(f"{label} erstellt: {object_path.name}")
+            document.hints_editor.setPlainText(
+                f"Modul assembliert (ohne Link)\n\nQuelle: {document.path}\n"
+                f"Objekt: {object_path}\nFormat: Microsoft {label} / relocierbar\n"
+                "Nächster Schritt: Link mit den zugewiesenen Programme-Objekten."
+            )
+            self.log(f"DBASE MODULE ASSEMBLE {target.upper()}: {document.path} -> {object_path}")
+            self.statusBar().showMessage(f"Modulobjekt erstellt: {object_path.name}")
+            if object_path.parent == self.current_directory:
+                self.populate_file_list()
+            return True
+
+        def link_project_dbase_module_document(self, document: DocumentEditor) -> bool:
+            """Link the selected Module as EXE/DLL plus associated Programme .o files."""
+            if not self._is_selected_dbase_module_document(document):
+                return False
+            document._dbase_module_selected = True
+            document._dbase_module_link_digest = ""
+            document.refresh_project_module_link_buttons()
+            if document._dbase_module_coff_path is None:
+                self.show_error("Modul nicht assembliert", "Bitte zuerst Assemble drücken.")
+                return False
+            target = document.build_target
+            output_dir = self._document_windows_output_path(document) or Path(self.current_directory)
+            # The active project profile, *not* the name of a Programme leaf,
+            # selects the PE target and the object contributors.
+            scope_language, scope_kind = self._project_named_current_scope()
+            if scope_language != "dbase" or scope_kind not in {"program", "library"}:
+                self.show_error(
+                    "dBASE-Projekt auswählen",
+                    "In den Projekt-Einstellungen zuerst 'Programm: ...' oder "
+                    "'Bibliothek: ...' als dBASE-Projekt auswählen."
+                )
+                return False
+            from project_named_targets import profile_name as named_project_profile_name
+            name = str(named_project_profile_name(
+                getattr(self, "_named_project_names", {}), "dbase", scope_kind) or "").strip()
+            extension = ".dll" if scope_kind == "library" else ".exe"
+            if name.casefold().endswith(extension):
+                name = name[:-len(extension)]
+            if not name or name in {".", ".."} or re.search(r'[<>:"/\\|?*\x00-\x1f]', name):
+                self.show_error("Projektname ungültig", f"Ungültiger Projektname: {name!r}")
+                return False
+            # 'Programme' is an optional collection of object contributors.
+            # Assignments are per-leaf; the group ComboBox only provides a
+            # default and can be overridden on an individual child.
+            group = getattr(self, "project_dbase_group_nodes", {}).get("programs")
+            program_sources = []
+            if group is not None:
+                for index in range(group.childCount()):
+                    leaf = group.child(index)
+                    source_text = str(leaf.data(0, Qt.UserRole + 302) or "").strip()
+                    if (source_text and self._project_named_effective_assignment(leaf)
+                            == f"dbase|{scope_kind}"):
+                        program_sources.append(source_text)
+            # A Module is an EXE entry owner or the DLL class-library owner.
+            if scope_kind == "library" and str(getattr(document, "generated_source_kind", "")) != "library":
+                self.show_error("DLL-Modul", "Bitte das Modul als dBASE-Bibliothek neu kompilieren und assemblieren.")
+                return False
+            if scope_kind == "program" and str(getattr(document, "generated_source_kind", "")) == "library":
+                self.show_error("EXE-Modul", "Bitte das Modul als dBASE-Programm neu kompilieren und assemblieren.")
+                return False
+            try:
+                from dbase_module_coff import module_link_inputs
+                object_inputs = module_link_inputs(
+                    document._dbase_module_coff_path, program_sources,
+                    lambda path: self._project_generated_object_path(
+                        path, target,
+                        output_directory=self._document_windows_pascal_unit_output_path(document),
+                    ),
+                )
+                # Machine type MUST match; never feed an old 32-bit object to
+                # the PE32+ linker or silently rebuild from stale sources.
+                parser = parse_coff64_object if target == "pe64" else parse_coff32_object
+                expected_entry = "__d64_dll_entry" if scope_kind == "library" else "_start"
+                for number, path in enumerate(object_inputs):
+                    binary = Path(path).read_bytes()
+                    if not _coff_target_header_matches(binary, target):
+                        raise ValueError(f"COFF-Architektur passt nicht zu {target}: {path}")
+                    parsed = parser(binary)
+                    symbols = {str(sym).casefold() for sym in parsed.symbols}
+                    if number == 0 and expected_entry.casefold() not in symbols:
+                        raise ValueError(
+                            f"Das ausgewählte Modul muss den Projekteinstieg "
+                            f"{expected_entry} bereitstellen: {path}"
+                        )
+                    if number > 0 and symbols.intersection({"_start", "__d64_dll_entry"}):
+                        raise ValueError(
+                            f"Programmobjekt enthält noch einen EXE/DLL-Einstieg: {path}\n"
+                            "Bitte das Blatt unter Programme mit Stage 668 erneut "
+                            "kompilieren und assemblieren."
+                        )
+                for source, obj in zip(program_sources, object_inputs[1:]):
+                    if (Path(source).is_file()
+                            and Path(source).stat().st_mtime_ns > Path(obj).stat().st_mtime_ns):
+                        raise ValueError(
+                            f"Programm wurde nach dem Assemblieren geändert: {source}\n"
+                            "Bitte die zugehörige .o-Datei neu erzeugen."
+                        )
+                if (document._dbase_module_coff_target != target
+                        or document._dbase_module_coff_digest != document.generated_assembly_digest()):
+                    raise ValueError("Das Modulobjekt ist veraltet. Bitte zuerst Assemble drücken.")
+                output_path = (Path(output_dir) / (name + extension)).resolve()
+                ces_enabled = self._stage549_sync_debug_options_for_build(target)
+                linker = link_coff64_inputs if target == "pe64" else link_coff32_inputs
+                is_dll = scope_kind == "library"
+                program = linker(
+                    object_inputs,
+                    entry_symbol="__d64_dll_entry" if is_dll else "_start",
+                    gui=(True if is_dll else normalize_windows_application_mode(
+                        document.windows_application_mode) != "Console"),
+                    dll=is_dll, dll_name=output_path.name if is_dll else None,
+                    pack_dll=(self._dbase_console_runtime_pack_enabled(target)
+                              if is_dll else False),
+                    **({"ces_enabled": bool(ces_enabled)} if target == "pe32" else {}),
+                )
+                self._write_assembled_program(output_path, program.executable)
+                project_base = (Path(self.current_project_path).parent
+                                if getattr(self, "current_project_path", None)
+                                else Path(document.path).parent)
+                embed_project_manifest_resource(
+                    output_path, self.project_windows_manifests.get(target), project_base,
+                    dll=is_dll,
+                )
+                if (b'c64_dbase_runtime.dll' in program.executable.lower()
+                        and not self._prepare_dbase_console_runtime(output_path, target)):
+                    raise ValueError("Die passende dBASE-Konsolenruntime fehlt.")
+                if (not is_dll and self.project_windows_compact_enabled.get(target, False)):
+                    from d64dbase.pe_image_compact import compact_pe_file
+                    compact_pe_file(output_path)
+                if not self._sign_windows_output_if_enabled(output_path, target):
+                    raise ValueError("Signieren der EXE fehlgeschlagen")
+                # Help catalog belongs to the generated EXE; DLLs carry no
+                # independent Turbo-Vision help window.
+                from turbo_help_sidecar import compile_project_help
+                help_root = getattr(self, "project_turbo_help_root", None)
+                if not is_dll and help_root is not None and help_root.childCount():
+                    help_sources = [Path(help_root.child(i).data(0, Qt.UserRole + 302))
+                                    for i in range(help_root.childCount())]
+                    try:
+                        compile_project_help(help_sources, output_path)
+                    except (OSError, ValueError) as exc:
+                        self.log(f"TURBO HELP HLP WARNING: {exc}")
+                from turbo_help_settings import write_application_help_manifest
+                try:
+                    write_application_help_manifest(
+                        output_path, getattr(self, "project_help_settings", None))
+                except (OSError, ValueError) as exc:
+                    self.log(f"TURBO HELP PATHS WARNING: {exc}")
+            except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError,
+                    ResourceCompilerError) as exc:
+                document._dbase_module_link_path = None
+                document._dbase_module_link_digest = ""
+                document.refresh_project_module_link_buttons()
+                self.log(f"DBASE MODULE LINK FEHLER: {exc}")
+                document.generated_assembly_status_label.setText("Link fehlgeschlagen")
+                self.show_error("dBASE-Modul konnte nicht gelinkt werden", str(exc))
+                return False
+            document.assembled_program = program
+            document.assembled_program_path = output_path
+            document.assembled_target = target
+            document.assembled_assembly_digest = document.generated_assembly_digest()
+            document._dbase_module_link_path = output_path
+            document._dbase_module_link_digest = document.generated_assembly_digest()
+            document._dbase_module_link_target = target
+            document._dbase_module_link_is_dll = is_dll
+            document._dbase_module_link_profile_kind = scope_kind
+            document._dbase_module_active_profile_kind = scope_kind
+            document._dbase_module_link_inputs = tuple(
+                (str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in object_inputs
+            )
+            document.refresh_project_module_link_buttons()
+            document.generated_assembly_status_label.setText(f"Gelinkt: {output_path.name}")
+            document.hints_editor.setPlainText(
+                f"Link erfolgreich ({target.upper()})\n\n"
+                + "Objekte:\n" + "\n".join(f"  {path}" for path in object_inputs)
+                + f"\n\nEXE: {output_path}"
+            )
+            self.log(f"DBASE MODULE LINK {target.upper()}: {', '.join(p.name for p in object_inputs)} -> {output_path}")
+            self.statusBar().showMessage(f"Link erfolgreich: {output_path.name}")
+            if output_path.parent == self.current_directory:
+                self.populate_file_list()
+            return True
+
         def _stage549_sync_debug_options_for_build(self, target: str) -> bool:
             """Snapshot the selected architecture's *current* Debug page at link time.
 
@@ -136237,6 +137082,10 @@ border: 2px solid #2a69aa;
             """
             if not isinstance(document, DocumentEditor):
                 return False
+            if self._is_selected_dbase_module_document(document):
+                return self.assemble_project_dbase_module_object(document)
+            if self._is_selected_dbase_program_document(document):
+                return self.assemble_project_dbase_program_object(document)
             # Stage 596: the selected project kind is authoritative for link
             # output on project-owned source files.  Never silently produce an
             # EXE when the user selected a library; the language compiler must
@@ -136288,8 +137137,17 @@ border: 2px solid #2a69aa;
             if (document.build_target in {"pe32", "pe64"}
                     and (document.is_dbase_document or document.is_pascal_document)):
                 from windows_peephole import normalize_peephole_options
+                _size_level_now = self.project_windows_dbase_size_level.get(
+                    document.build_target, "O0") if document.is_dbase_document else "O1"
+                _size_level_before = getattr(document, "dbase_size_compile_snapshot", None)
+                if (document.is_dbase_document and _size_level_before is not None
+                        and _size_level_before != _size_level_now):
+                    self.show_error("dBASE-Optimierungsstufe geändert",
+                                    "Bitte dBASE-Quelle mit der aktuellen O-Stufe neu kompilieren.")
+                    return False
                 _now = normalize_peephole_options(
-                    self.project_windows_dbase_peephole.get(document.build_target, {}))
+                    self.project_windows_dbase_peephole.get(document.build_target, {})
+                    if _size_level_now == "O1" else {})
                 _at_compile = getattr(document, "peephole_compile_snapshot", None)
                 if _at_compile is not None and _at_compile != _now:
                     self.show_error("Peephole-Einstellungen geaendert",
@@ -136388,10 +137246,15 @@ border: 2px solid #2a69aa;
                         and self.project_windows_assembler_syntax.get(
                             document.build_target, "intel") != "att"):
                     from windows_peephole import optimize_windows_assembly
+                    _link_options = self.project_windows_dbase_peephole.get(
+                        document.build_target, {})
+                    if (document.is_dbase_document and
+                            self.project_windows_dbase_size_level.get(
+                                document.build_target, "O0") == "O0"):
+                        _link_options = {}
                     _link_result = optimize_windows_assembly(
                         assembly_source, target=document.build_target,
-                        options=self.project_windows_dbase_peephole.get(
-                            document.build_target, {}))
+                        options=_link_options)
                     assembly_source = _link_result.assembly
                     if _link_result.replacements:
                         self.log(f"PEEPHOLE LINK {document.build_target.upper()}: "
@@ -136717,6 +137580,14 @@ border: 2px solid #2a69aa;
                             # Hilfedateifehler darf keine erfolgreich gelinkte
                             # EXE als Assemblerfehler erscheinen lassen.
                             self.log(f"TURBO HELP HLP WARNING: {exc}")
+                    # Deliver the application help search paths with the EXE.
+                    from turbo_help_settings import write_application_help_manifest
+                    try:
+                        _manifest = write_application_help_manifest(
+                            output_path, getattr(self, "project_help_settings", None))
+                        self.log(f"TURBO HELP PATHS: {_manifest}")
+                    except (OSError, ValueError) as exc:
+                        self.log(f"TURBO HELP PATHS WARNING: {exc}")
                 # Stage 552: the on-disk PE import directory of a packed EXE
                 # lists only cabinet/kernel32. Use the *link manifest* to find
                 # original imports, including those from externalized .inc, and
@@ -137497,6 +138368,11 @@ border: 2px solid #2a69aa;
             if not self.assemble_document(document):
                 return False
 
+            if self._is_selected_dbase_module_document(document):
+                return self.assemble_project_dbase_module_object(document)
+            if self._is_selected_dbase_program_document(document):
+                return self.assemble_project_dbase_program_object(document)
+
             if not self._f2_document_is_main_program(document):
                 if document.build_target in {"pe32", "pe64"}:
                     ok = self.create_coff32_object_document(document)
@@ -137558,6 +138434,10 @@ border: 2px solid #2a69aa;
             ):
                 return False
 
+            if self._is_selected_dbase_module_document(document):
+                return self.assemble_project_dbase_module_object(document)
+            if self._is_selected_dbase_program_document(document):
+                return self.assemble_project_dbase_program_object(document)
             extra_inputs = self._project_link_inputs_for_document(document)
             if not self.assemble_generated_document(
                 document,
@@ -138680,6 +139560,8 @@ border: 2px solid #2a69aa;
             if not isinstance(document, DocumentEditor):
                 return False
             self.document_tabs.setCurrentWidget(document)
+            if self._is_selected_dbase_module_document(document):
+                return self.start_generated_assembly_document(document)
             if document.is_dbase_document:
                 return self._start_existing_dbase_executable(document)
 
@@ -138706,6 +139588,14 @@ border: 2px solid #2a69aa;
             if not isinstance(document, DocumentEditor):
                 return False
             self.document_tabs.setCurrentWidget(document)
+            if self._is_selected_dbase_module_document(document):
+                document.refresh_project_module_link_buttons()
+                if not document.start_generated_button.isEnabled():
+                    self.show_error("Link erforderlich", "Bitte zuerst Assemble und Link ausführen.")
+                    return False
+                document.assembled_program_path = Path(document._dbase_module_link_path)
+                document.assembled_target = document.build_target
+                return self._launch_assembled_document(document)
             if document.is_dbase_document:
                 return self._start_existing_dbase_executable(document)
             current_digest = document.generated_assembly_digest()
@@ -140275,6 +141165,17 @@ border: 2px solid #2a69aa;
             if area != spec_area:
                 return False
 
+            if (dock is getattr(self, "right_dock", None)
+                    and self._turbo_help_project_info_workspace_active()):
+                # Do NOT activate the hidden filesystem dock during Help.
+                if spec_area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                    return False
+                self.addDockWidget(spec_area, dock)
+                dock.setFloating(False)
+                dock.show()
+                self._sync_turbo_help_project_information_side()
+                return True
+
             if not self._apply_primary_side_dock_layout(
                 dock, spec_area, orientation, order
             ):
@@ -140631,6 +141532,9 @@ border: 2px solid #2a69aa;
             )
             self.project_tree.itemDoubleClicked.connect(self._on_project_item_double_clicked)
             self.project_tree.itemClicked.connect(self._on_project_c64_leaf_clicked)
+            self.project_tree.currentItemChanged.connect(
+                lambda current, previous: self._sync_selected_dbase_module_link_buttons()
+            )
             self.project_tree.itemChanged.connect(self._on_project_item_changed)
             self.project_name_combo.currentIndexChanged.connect(
                 self._project_named_choice_changed)
@@ -140835,6 +141739,22 @@ border: 2px solid #2a69aa;
                 self._named_project_assignments[key] = assignment
             else:
                 self._named_project_assignments.pop(key, None)
+            # A choice on 'dBASE Programme -> Programme' is a bulk
+            # assignment for all its existing leaves. Each leaf retains its
+            # own chooser and can be changed independently afterwards.
+            if (self._project_item_kind(item) == PROJECT_NODE_DBASE_GROUP
+                    and str(item.data(0, Qt.UserRole + 306) or "").casefold() == "programs"):
+                for index in range(item.childCount()):
+                    child = item.child(index)
+                    if self._project_item_kind(child) != PROJECT_NODE_DBASE_FILE:
+                        continue
+                    child_key = self._project_named_leaf_key(child)
+                    if not child_key:
+                        continue
+                    if assignment:
+                        self._named_project_assignments[child_key] = assignment
+                    else:
+                        self._named_project_assignments.pop(child_key, None)
             self.set_project_modified(True)
             self._project_named_schedule_refresh()
 
@@ -140846,6 +141766,7 @@ border: 2px solid #2a69aa;
             if chosen != getattr(self, "_named_project_selected", ("", "")):
                 self._named_project_selected = chosen
                 self.set_project_modified(True)
+                self._sync_selected_dbase_module_link_buttons()
 
         def _project_named_text_changed(self, language: str, value: str) -> None:
             if getattr(self, "_named_project_loading", False):
@@ -141290,6 +142211,11 @@ border: 2px solid #2a69aa;
                     _target,
                     _project_bool_entry(values, _settings["dbase_static_numeric_slots_key"], False),
                     _project_bool_entry(values, _settings["dbase_dynamic_typed_variables_key"], False),
+                    mark_modified=False,
+                )
+                self.set_project_windows_dbase_size_level(
+                    _target,
+                    (values.get(_settings["dbase_size_level_key"], ()) or [{"value": "O0"}])[0].get("value", "O0"),
                     mark_modified=False,
                 )
                 self.set_project_windows_dbase_peephole_settings(
@@ -142791,6 +143717,8 @@ border: 2px solid #2a69aa;
                 for _field in ("register_width", "processor_flags", "stack_state"):
                     entries[_settings[f"dbase_peephole_{_field}_key"]] = [
                         {"value": "true" if _peephole[_field] else "false"}]
+                entries[_settings["dbase_size_level_key"]] = [{
+                    "value": self.project_windows_dbase_size_level.get(_target, "O0")}]
                 entries[_settings["prolog_with_descriptors_key"]] = [{
                     "value": (
                         "true"
@@ -143162,6 +144090,11 @@ border: 2px solid #2a69aa;
                 {"path": path, "last_id": int(self.project_dbase_id_counters.get(key, 0))}
                 for path, key in entry_paths
             ]
+            # Stage 663: persist Help roots and paths with the project.
+            from turbo_help_settings import normalize_help_settings
+            entries[PROJECT_HELP_SETTINGS_KEY] = [normalize_help_settings(
+                getattr(self, "project_help_settings", None))]
+
             # Stage 530: all project-save routes persist BOTH ABI profiles.
             panel = getattr(self, "project_settings_panel", None)
             options_by_target = (
@@ -143241,6 +144174,20 @@ border: 2px solid #2a69aa;
             }
             for target, options in self.project_windows_pascal_parallel_options.items():
                 entries[PROJECT_WINDOWS_COMPILER_PARALLEL_KEYS[target]] = [dict(options)]
+            # The source and generated-ASM target ComboBoxes share one value.
+            # Persist the choice for each file, even if its tab is closed.
+            selected = dict(getattr(self, "_project_editor_compiler_targets", {}))
+            for idx in range(self.document_tabs.count()):
+                doc = self.document_tabs.widget(idx)
+                if not isinstance(doc, DocumentEditor) or doc.path is None:
+                    continue
+                key = str(Path(doc.path).expanduser().resolve()).casefold()
+                if doc.build_target in {"c64", "amiga", "pe32", "pe64", "linux32", "linux64"}:
+                    selected[key] = doc.build_target
+            entries["__project_editor_compiler_targets__"] = [
+                {"path": path, "target": target}
+                for path, target in sorted(selected.items())
+            ]
             self._project_named_entries(entries)
             return entries
 
@@ -143402,11 +144349,15 @@ border: 2px solid #2a69aa;
             if designer is not None:
                 designer.set_project_column_widths(self.project_dbase_data_column_widths)
             self.current_project_path = None
+            self._project_editor_compiler_targets = {}
+            from turbo_help_settings import default_help_settings
+            self.project_help_settings = default_help_settings()
             self.project_debug_options = stage530_default_debug_options()
             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
             self.project_windows_pascal_optimization_options = stage537_default_pascal_optimization_options()
             self.project_windows_pascal_import_options = stage541_default_pascal_import_options()
+            self.project_windows_dbase_size_level = {"pe32": "O0", "pe64": "O0"}
             self.project_windows_dbase_peephole = {
                 _target: {"register_width": False, "processor_flags": False,
                           "stack_state": False} for _target in ("pe32", "pe64")}
@@ -143415,11 +144366,14 @@ border: 2px solid #2a69aa;
             _panel = getattr(self, "project_settings_panel", None)
             if _panel is not None:
                 _panel.set_debug_options(self.project_debug_options)
+                _panel.set_help_settings(self.project_help_settings)
                 _panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
                 _panel.set_parallel_options(self.project_windows_pascal_parallel_options)
                 _panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
                 _panel.set_pascal_import_options(self.project_windows_pascal_import_options)
                 for _target in ("pe32", "pe64"):
+                    _panel.set_dbase_size_level(
+                        _target, self.project_windows_dbase_size_level[_target])
                     _panel.set_dbase_peephole_settings(
                         _target, self.project_windows_dbase_peephole[_target])
             self.current_project_kind = "generic"
@@ -143562,11 +144516,15 @@ border: 2px solid #2a69aa;
             if designer is not None:
                 designer.set_project_column_widths(self.project_dbase_data_column_widths)
             self.current_project_path = None
+            self._project_editor_compiler_targets = {}
+            from turbo_help_settings import default_help_settings
+            self.project_help_settings = default_help_settings()
             self.project_debug_options = stage530_default_debug_options()
             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
             self.project_windows_pascal_optimization_options = stage537_default_pascal_optimization_options()
             self.project_windows_pascal_import_options = stage541_default_pascal_import_options()
+            self.project_windows_dbase_size_level = {"pe32": "O0", "pe64": "O0"}
             self.project_windows_dbase_peephole = {
                 _target: {"register_width": False, "processor_flags": False,
                           "stack_state": False} for _target in ("pe32", "pe64")}
@@ -143575,11 +144533,14 @@ border: 2px solid #2a69aa;
             _panel = getattr(self, "project_settings_panel", None)
             if _panel is not None:
                 _panel.set_debug_options(self.project_debug_options)
+                _panel.set_help_settings(self.project_help_settings)
                 _panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
                 _panel.set_parallel_options(self.project_windows_pascal_parallel_options)
                 _panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
                 _panel.set_pascal_import_options(self.project_windows_pascal_import_options)
                 for _target in ("pe32", "pe64"):
+                    _panel.set_dbase_size_level(
+                        _target, self.project_windows_dbase_size_level[_target])
                     _panel.set_dbase_peephole_settings(
                         _target, self.project_windows_dbase_peephole[_target])
             self.project_path_edit.clear()
@@ -144185,6 +145146,29 @@ border: 2px solid #2a69aa;
             }
             counters_modified = self._initialize_dbase_table_id_counters(entries)
             self.current_project_path = resolved
+            self._project_editor_compiler_targets = {
+                str(Path(row["path"]).expanduser().resolve()).casefold():
+                    str(row["target"]).casefold()
+                for row in entries.get("__project_editor_compiler_targets__", ())
+                if row.get("path") and row.get("target") in
+                    {"c64", "amiga", "pe32", "pe64", "linux32", "linux64"}
+            }
+            # Projects can be opened while editor tabs from an earlier
+            # project are still alive.  Restore their saved tool targets too.
+            self._restoring_project_editor_target = True
+            try:
+                for idx in range(self.document_tabs.count()):
+                    doc = self.document_tabs.widget(idx)
+                    if isinstance(doc, DocumentEditor) and doc.path is not None:
+                        target = self._project_editor_compiler_targets.get(
+                            str(Path(doc.path).expanduser().resolve()).casefold())
+                        if target:
+                            doc.set_build_target(target)
+            finally:
+                self._restoring_project_editor_target = False
+            from turbo_help_settings import normalize_help_settings
+            self.project_help_settings = normalize_help_settings(
+                (entries.get(PROJECT_HELP_SETTINGS_KEY) or [{}])[0])
             self.project_debug_options = {
                 target: DebugOptions(**(entries.get(f"__stage530_debug_{target}__") or [{}])[0])
                 for target in ("pe32", "pe64")
@@ -144214,6 +145198,7 @@ border: 2px solid #2a69aa;
             _debug_panel = getattr(self, "project_settings_panel", None)
             if _debug_panel is not None:
                 _debug_panel.set_debug_options(self.project_debug_options)
+                _debug_panel.set_help_settings(self.project_help_settings)
                 _debug_panel.set_stack_cookie_options(self.project_windows_compiler_security_options)
                 _debug_panel.set_parallel_options(self.project_windows_pascal_parallel_options)
                 _debug_panel.set_pascal_optimization_options(self.project_windows_pascal_optimization_options)
@@ -145031,6 +146016,7 @@ border: 2px solid #2a69aa;
             if self._document_index(document) < 0:
                 return
             self.document_tabs.setCurrentWidget(document)
+            self._sync_selected_dbase_module_link_buttons(document)
             self._update_document_tab(document)
             document.focus_preferred_editor()
 
@@ -147180,8 +148166,31 @@ QFileDialog QComboBox QAbstractItemView {
         # Doppelklick darf weder einen zweiten Designer starten noch
         # einen zweiten Formular-Ladevorgang in die Queue stellen.
         # ---------------------------------------------------------------------------
+        def _hide_turbo_help_for_project_leaf(self, item) -> None:
+            """Leaving Turbo Help for a different project leaf restores docks."""
+            kind = self._project_item_kind(item)
+            if kind in (PROJECT_NODE_TURBO_HELP_ROOT, PROJECT_NODE_TURBO_HELP_FILE):
+                return True
+            if item.parent() is None:
+                return True
+            dock = getattr(self, "turbo_help_compiler_dock", None)
+            if dock is None or not dock.isVisible():
+                return True
+            editor = self._turbo_help_active_editor()
+            if editor is not None and not editor.save_all_documents():
+                # A canceled Save As must not discard or hide the editor.
+                return False
+            dock.hide()
+            snapshot = getattr(self, "_exclusive_tool_workspace", None)
+            if snapshot is not None and snapshot.get("owner") is dock:
+                self._restore_exclusive_tool_workspace(dock)
+            return True
+
         def _on_project_item_double_clicked(self, item: QTreeWidgetItem, column: int = 0) -> None:
             kind = self._project_item_kind(item)
+            if kind != PROJECT_NODE_TURBO_HELP_FILE:
+                if not self._hide_turbo_help_for_project_leaf(item):
+                    return
             if kind == PROJECT_NODE_TURBO_HELP_FILE:
                 self._project_turbo_help_open(item)
                 return
@@ -147220,6 +148229,10 @@ QFileDialog QComboBox QAbstractItemView {
                 self._project_turbo_help_open(item)
                 return
                 
+            # Stage 663: switching to another tree leaf closes the Help dock,
+            # but does not close the persistent Projekt-Informationen tree.
+            if not self._hide_turbo_help_for_project_leaf(item):
+                return
             if self._project_item_kind(item) == PROJECT_NODE_C64_SPRITE_FILE:
                 self.open_project_item(item)
                 return
@@ -148682,6 +149695,9 @@ QFileDialog QComboBox QAbstractItemView {
             _column: int = 0,
         ) -> None:
             kind = self._project_item_kind(item)
+            if kind != PROJECT_NODE_TURBO_HELP_FILE:
+                if not self._hide_turbo_help_for_project_leaf(item):
+                    return
             # Stage 620: Sprite-Blatt und zugehoeriges Dock als EINEN Vorgang
             # hinter dem Splash laden. Sonst wird _show_c64_tool_dock im
             # Projektbaum ohne den ueblichen show_*_dock-Slot aufgerufen.
@@ -149035,6 +150051,8 @@ QFileDialog QComboBox QAbstractItemView {
 
         def _project_information_dock_location_changed(self, area) -> None:
             if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                if self._turbo_help_project_info_workspace_active():
+                    QTimer.singleShot(0, self._sync_turbo_help_project_information_side)
                 self._enforce_project_information_dock_width()
                 QTimer.singleShot(0, self._enforce_project_information_dock_width)
                 if bool(getattr(self, "_settings_workspace_active", False)):
@@ -149042,6 +150060,46 @@ QFileDialog QComboBox QAbstractItemView {
                     QTimer.singleShot(0, self._dock_desktop_properties_next_to_project)
                 if bool(getattr(self, "_dbase_table_workspace_active", False)):
                     QTimer.singleShot(0, self._normalize_dbase_table_designer_docking)
+
+        def _turbo_help_project_info_workspace_active(self) -> bool:
+            snapshot = getattr(self, "_exclusive_tool_workspace", None)
+            help_dock = getattr(self, "turbo_help_compiler_dock", None)
+            return bool(snapshot is not None and help_dock is not None
+                        and snapshot.get("owner") is help_dock)
+
+        def _sync_turbo_help_project_information_side(self) -> None:
+            """Keep the Help editor opposite the visible project information dock."""
+            if (not self._turbo_help_project_info_workspace_active()
+                    or self._exclusive_tool_workspace_transitioning):
+                return
+            info = getattr(self, "right_dock", None)
+            help_dock = getattr(self, "turbo_help_compiler_dock", None)
+            if (info is None or help_dock is None or not info.isVisible()
+                    or info.isFloating()):
+                return
+            area = self.dockWidgetArea(info)
+            if area not in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                return
+            side = (Qt.RightDockWidgetArea if area == Qt.LeftDockWidgetArea
+                    else Qt.LeftDockWidgetArea)
+            snapshot = self._exclusive_tool_workspace
+            snapshot["help_info_side"] = area
+            snapshot["help_info_width"] = max(1, int(info.width()))
+            if not help_dock.isFloating() and self.dockWidgetArea(help_dock) != side:
+                self.addDockWidget(side, help_dock)
+            self._expand_exclusive_tool_workspace(help_dock)
+
+        def _project_information_dock_visibility_changed(self, visible: bool) -> None:
+            """Remember explicit project-info visibility changes during Help."""
+            if (not self._turbo_help_project_info_workspace_active()
+                    or self._exclusive_tool_workspace_transitioning):
+                return
+            dock = getattr(self, "right_dock", None)
+            if dock is None or (not visible and not dock.isHidden()):
+                return  # transient floating/reparenting signal
+            self._exclusive_tool_workspace["visibility"][dock] = bool(visible)
+            if visible:
+                QTimer.singleShot(0, self._sync_turbo_help_project_information_side)
 
         def _create_right_dock(self) -> None:
             self.right_dock = QDockWidget("Projekt / Informationen", self)
@@ -149196,6 +150254,9 @@ QFileDialog QComboBox QAbstractItemView {
             )
             self.right_dock.dockLocationChanged.connect(
                 self._project_information_dock_location_changed
+            )
+            self.right_dock.visibilityChanged.connect(
+                self._project_information_dock_visibility_changed
             )
             self.addDockWidget(Qt.RightDockWidgetArea, self.right_dock)
             self._enforce_project_information_dock_width()
@@ -150636,6 +151697,14 @@ QFileDialog QComboBox QAbstractItemView {
                 self,
                 dark_mode=dark_mode,
             )
+            # Entwicklung-Hilfe: project search paths and CHM decompressor.
+            from turbo_help_settings import normalize_help_settings, search_directories
+            _help_opts = normalize_help_settings(getattr(self, "project_help_settings", None))
+            _dev = _help_opts["entwicklung"]
+            dialog.extract_mode = _dev["compressor"]
+            dialog.extract_hh_path = _dev["hh_path"]
+            dialog.owner_help_directories = search_directories(
+                _help_opts, "entwicklung", getattr(self, "current_project_path", None))
             # Noch vor CHM-Extraktion, erstem Seitenladen und exec_() wird die
             # Web-Oberflaeche auf den zuvor ermittelten Modus festgelegt.
             dialog.set_dark_mode(dark_mode)
@@ -150655,13 +151724,19 @@ QFileDialog QComboBox QAbstractItemView {
                     display_name="E-Baukasten-Hilfe",
                 )
             else:
-                last_file = str(
-                    self.settings.value("chm/last_file", "") or ""
-                )
+                last_file = str(self.settings.value("chm/last_file", "") or "")
                 if last_file and Path(last_file).is_file():
                     dialog.open_chm(last_file)
                 else:
-                    QTimer.singleShot(0, dialog.choose_chm)
+                    candidates = []
+                    for _directory in search_directories(
+                            _help_opts, "entwicklung", getattr(self, "current_project_path", None)):
+                        if _directory.is_dir():
+                            candidates.extend(sorted(_directory.glob("*.chm")))
+                    if candidates:
+                        dialog.open_chm(str(candidates[0]))
+                    else:
+                        QTimer.singleShot(0, dialog.choose_chm)
             dialog.exec_()
 
         def show_system_information_dialog(self) -> None:

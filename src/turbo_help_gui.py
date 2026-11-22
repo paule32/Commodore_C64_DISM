@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QShortcut, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 from turbo_help_compiler import HelpCompileError, HelpCompiler, read_po, write_mo, write_po
+from turbo_help_editor_widgets import TurboHelpSourceEditor
 
 DEFAULT_SOURCE = '%topic "index"\n<b>Turbo Vision - dBASE Hilfe</b>\n\nWillkommen zur Hilfe.\n'
 
@@ -28,6 +29,8 @@ class TurboHelpEditor(QWidget):
         self.resolve_output_executable = None  # supplied by dBase2Many project settings
         self.source_path = None
         self.editor = None
+        self._active_tab = None  # independent of currentIndex, which changes during mouse clicks
+        self._tab_switch_lock = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(5)
@@ -72,9 +75,41 @@ class TurboHelpEditor(QWidget):
     def _path_for(self, edit):
         return getattr(edit, '_thlp_path', None)
 
+    def _save_changes_before_switch(self):
+        """Save the active source before the user leaves its tab (Stage 662).
+
+        A canceled Save As dialog or failed write must leave the old tab active.
+        Untouched new tabs do not trigger a Save As prompt just for switching.
+        """
+        old = self._active_tab
+        if (old is not None and self.tabs.indexOf(old) >= 0
+                and old.document().isModified()):
+            return self._save_edit(old)
+        return True
+
     def _sync_current(self, _index=-1):
-        self.editor = self._current_editor()
-        self.source_path = self._path_for(self.editor) if self.editor else None
+        """Handle mouse, keyboard and programmatic tab changes consistently."""
+        if self._tab_switch_lock:
+            return False
+        target = self._current_editor()
+        old = self._active_tab
+        if old is not None and target is not old and self.tabs.indexOf(old) >= 0:
+            if not self._save_changes_before_switch():
+                # QTabWidget emits currentChanged *after* changing its index.
+                # Restore the former tab without entering this handler again.
+                self._tab_switch_lock = True
+                try:
+                    self.tabs.setCurrentWidget(old)
+                finally:
+                    self._tab_switch_lock = False
+                old.setFocus(Qt.OtherFocusReason)
+                return False
+        self._active_tab = target
+        self.editor = target
+        self.source_path = self._path_for(target) if target is not None else None
+        if target is not None:
+            target.setFocus(Qt.OtherFocusReason)
+        return True
 
     def _refresh_tab(self, edit):
         index = self.tabs.indexOf(edit)
@@ -88,7 +123,7 @@ class TurboHelpEditor(QWidget):
         self.tabs.setTabToolTip(index, str(path) if path else 'Noch nicht gespeichert')
 
     def _append_tab(self, text, path=None):
-        edit = QPlainTextEdit(self.tabs)
+        edit = TurboHelpSourceEditor(self.tabs)
         edit.setObjectName('turbo_help_source_editor')
         edit.setFont(QFont('Consolas', 10))
         edit.setTabStopDistance(edit.fontMetrics().horizontalAdvance(' ') * 4)
@@ -115,6 +150,8 @@ class TurboHelpEditor(QWidget):
         return edit
 
     def new_document(self):
+        if not self._save_changes_before_switch():
+            return None
         template = DEFAULT_SOURCE if self.tabs.count() == 0 else '%topic "Neues Thema"\n\n'
         self._append_tab(template)
         self.status_label.setText('Neuer Hilfetext: Speichern unter ... (*.thlp)')
@@ -135,12 +172,18 @@ class TurboHelpEditor(QWidget):
             for index in range(self.tabs.count()):
                 widget = self.tabs.widget(index)
                 if self._path_for(widget) == source:
-                    self.tabs.setCurrentIndex(index)
-                    widget.setFocus()
-                    return True
+                    if widget is not self._current_editor():
+                        if not self._save_changes_before_switch():
+                            return False
+                        self.tabs.setCurrentIndex(index)
+                    widget.setFocus(Qt.OtherFocusReason)
+                    return self._current_editor() is widget
             content = source.read_text(encoding='utf-8-sig')
         except (OSError, UnicodeError, ValueError) as exc:
             QMessageBox.critical(self, 'Hilfecompiler', f'Datei kann nicht geöffnet werden:\n{exc}')
+            return False
+        # Never discard edits to another tab when loading a new project leaf.
+        if not self._save_changes_before_switch():
             return False
         # An untouched placeholder can be replaced, but never a modified document.
         if self.tabs.count() == 1:
@@ -184,7 +227,8 @@ class TurboHelpEditor(QWidget):
         edit._thlp_path = path
         edit.document().setModified(False)
         self._refresh_tab(edit)
-        self._sync_current()
+        if self._current_editor() is edit:
+            self.source_path = path
         self.status_label.setText(f'Gespeichert: {path.name}')
         self.document_saved.emit(str(path), edit)
         return True

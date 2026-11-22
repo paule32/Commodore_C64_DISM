@@ -7420,6 +7420,7 @@ class _DBaseCodeGenerator:
         if any(returns_ansi_string(ffi.return_type)
                for ffi in self.ffi_prototypes.values()):
             self.emit('import __dbase_ffi_lstrlenA, "kernel32.dll", "lstrlenA"')
+        self.emit("; __d64_dbase_startup_begin__")
         self.emit("global _start")
         self.emit("entry _start")
         self.emit()
@@ -7514,6 +7515,8 @@ class _DBaseCodeGenerator:
         else:
             self.emit("    push dword ptr [__dbase_exit_code]")
             self.emit("    call ExitProcess")
+
+        self.emit("; __d64_dbase_startup_end__")
 
         # Spezialisierte dBase-Member liegen im selben .text-Abschnitt. Die
         # Labels duerfen nach _start folgen, da der interne Assembler Forward-

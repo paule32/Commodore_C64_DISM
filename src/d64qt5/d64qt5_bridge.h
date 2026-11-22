@@ -108,6 +108,10 @@ D64QT5_API void DBaseQtProcessEvents(void);
  * F1 is installed with Qt::ApplicationShortcut for the Qt5 console/DEBUG UI.
  * No external turbo_help_host.exe or independent viewer is used. */
 D64QT5_API int DBaseQtHelpShowMo(const char *utf8File);
+/* Stage 664: Show the topic associated with an unsigned 32-bit help number.
+ * Searches <EXE-stem>.hlp like F1; returns 1 on success, 0 on failure.
+ * The help number is independent of GNU-MO entry positions/offsets. */
+D64QT5_API int DBaseQtHelpShowTopicId(unsigned int helpNumber);
 D64QT5_API void DBaseQtSetDebugVisible(int visible);
 D64QT5_API void DBaseQtAppendConsole(const char *text, int length);
 D64QT5_API void DBaseQtAppendDebug(const char *text, int length);

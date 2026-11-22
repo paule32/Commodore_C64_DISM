@@ -1,0 +1,1287 @@
+--- a/dbase_size_optimizer.py
++++ b/dbase_size_optimizer.py
+@@ -1,5 +1,5 @@
+ # -*- coding: utf-8 -*-
+-"""Stage 671: O0/O1 size optimizer for compiler-generated dBASE Intel ASM.
++"""Stage 672: O0/O1 size optimizer for compiler-generated dBASE Intel ASM.
+ 
+ O0 is a strict identity transform.  O1 only rewrites provably equivalent
+ control-flow patterns inside the .text section.  Every source line is retained:
+@@ -104,4 +104,10 @@
+ 
+         i += 1
+ 
+-    return DBaseSizeOptimizationResult(''.join(lines), level, changed)
++    # Stage 672: static runtime text output calls share one dispatch body.
++    # Called only in O1, after the original control-flow peepholes.
++    from dbase_output_compactor import compact_dbase_static_outputs
++    compacted = compact_dbase_static_outputs(''.join(lines))
++    return DBaseSizeOptimizationResult(
++        compacted.assembly, level, changed + compacted.instructions_saved)
++
+--- a/test_stage671.py
++++ b/test_stage671.py
+@@ -77,7 +77,10 @@
+     assert modified.replacements>=2
+     assert 'jne __dbase_catch_next_39' in modified.assembly
+     assert modified.assembly.count('; O1:')>=2
+-    assert len(modified.assembly.splitlines())==len(assembly.splitlines())
++    assert len(modified.assembly.splitlines())>=len(assembly.splitlines())
++    # Stage 672: original line numbers are preserved; the shared output helper
++    # is appended after the old source, not inserted before existing lines.
++    assert '__dbase_o1_output_write:' in modified.assembly
+     assert '__dbase_vmt_exception:' in modified.assembly
+ 
+ 
+--- a/examples/dbase/App001.generated.pe32.O1.asm
++++ b/examples/dbase/App001.generated.pe32.O1.asm
+@@ -55,117 +55,117 @@
+     call DBaseQtShutdownRequested
+     test eax, eax
+     jne __dbase_program_cleanup_1
+-    cmp dword ptr [__dbase_output_debug_override], -1
+-    jne __dbase_output_override_ready_14
+-    cmp dword ptr [__dbase_output_format_screen], 0
+-    je __dbase_output_console_15
+-    jmp __dbase_output_show_done_16
+-__dbase_output_override_ready_14:
+-    cmp dword ptr [__dbase_output_debug_override], 0
+-    je __dbase_output_console_15
+-__dbase_output_show_done_16:
+-    cmp dword ptr [__dbase_output_debug_visible], 0
+-    jne __dbase_output_already_visible_18
+-    mov dword ptr [__dbase_output_debug_visible], 1
+-    push 1
+-    call DBaseQtSetDebugVisible
+-    add esp, 4
+-__dbase_output_already_visible_18:
+     push 4
+     push __dbase_text_1
+-    call DBaseQtAppendDebug
+-    add esp, 8
+-    jmp __dbase_output_done_17
++    call __dbase_o1_output_write
++    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_override_ready_14:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_show_done_16:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_already_visible_18:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_console_15:
+-    push 4
+-    push __dbase_text_1
+-    call DBaseConsoleWrite
+-    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_done_17:
+-    cmp dword ptr [__dbase_output_debug_override], -1
+-    jne __dbase_output_override_ready_19
+-    cmp dword ptr [__dbase_output_format_screen], 0
+-    je __dbase_output_console_20
+-    jmp __dbase_output_show_done_21
+-__dbase_output_override_ready_19:
+-    cmp dword ptr [__dbase_output_debug_override], 0
+-    je __dbase_output_console_20
+-__dbase_output_show_done_21:
+-    cmp dword ptr [__dbase_output_debug_visible], 0
+-    jne __dbase_output_already_visible_23
+-    mov dword ptr [__dbase_output_debug_visible], 1
+-    push 1
+-    call DBaseQtSetDebugVisible
+-    add esp, 4
+-__dbase_output_already_visible_23:
+     push 2
+     push __dbase_text_2
+-    call DBaseQtAppendDebug
+-    add esp, 8
+-    jmp __dbase_output_done_22
++    call __dbase_o1_output_write
++    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_override_ready_19:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_show_done_21:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_already_visible_23:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_console_20:
+-    push 2
+-    push __dbase_text_2
+-    call DBaseConsoleWrite
+-    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_done_22:
+     call DBaseQtProcessEvents
+     call DBaseQtShutdownRequested
+     test eax, eax
+     jne __dbase_program_cleanup_1
+-    cmp dword ptr [__dbase_output_debug_override], -1
+-    jne __dbase_output_override_ready_24
+-    cmp dword ptr [__dbase_output_format_screen], 0
+-    je __dbase_output_console_25
+-    jmp __dbase_output_show_done_26
+-__dbase_output_override_ready_24:
+-    cmp dword ptr [__dbase_output_debug_override], 0
+-    je __dbase_output_console_25
+-__dbase_output_show_done_26:
+-    cmp dword ptr [__dbase_output_debug_visible], 0
+-    jne __dbase_output_already_visible_28
+-    mov dword ptr [__dbase_output_debug_visible], 1
+-    push 1
+-    call DBaseQtSetDebugVisible
+-    add esp, 4
+-__dbase_output_already_visible_28:
+     push 5
+     push __dbase_text_3
+-    call DBaseQtAppendDebug
+-    add esp, 8
+-    jmp __dbase_output_done_27
++    call __dbase_o1_output_write
++    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_override_ready_24:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_show_done_26:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_already_visible_28:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_console_25:
+-    push 5
+-    push __dbase_text_3
+-    call DBaseConsoleWrite
+-    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_done_27:
+-    cmp dword ptr [__dbase_output_debug_override], -1
+-    jne __dbase_output_override_ready_29
+-    cmp dword ptr [__dbase_output_format_screen], 0
+-    je __dbase_output_console_30
+-    jmp __dbase_output_show_done_31
+-__dbase_output_override_ready_29:
+-    cmp dword ptr [__dbase_output_debug_override], 0
+-    je __dbase_output_console_30
+-__dbase_output_show_done_31:
+-    cmp dword ptr [__dbase_output_debug_visible], 0
+-    jne __dbase_output_already_visible_33
+-    mov dword ptr [__dbase_output_debug_visible], 1
+-    push 1
+-    call DBaseQtSetDebugVisible
+-    add esp, 4
+-__dbase_output_already_visible_33:
+     push 2
+     push __dbase_text_2
+-    call DBaseQtAppendDebug
+-    add esp, 8
+-    jmp __dbase_output_done_32
++    call __dbase_o1_output_write
++    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_override_ready_29:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_show_done_31:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_already_visible_33:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_console_30:
+-    push 2
+-    push __dbase_text_2
+-    call DBaseConsoleWrite
+-    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_done_32:
+     call DBaseQtProcessEvents
+     call DBaseQtShutdownRequested
+@@ -294,32 +294,32 @@
+     call DBaseConsoleWrite
+     add esp, 8
+ __dbase_output_done_43:
+-    cmp dword ptr [__dbase_output_debug_override], -1
+-    jne __dbase_output_override_ready_45
+-    cmp dword ptr [__dbase_output_format_screen], 0
+-    je __dbase_output_console_46
+-    jmp __dbase_output_show_done_47
+-__dbase_output_override_ready_45:
+-    cmp dword ptr [__dbase_output_debug_override], 0
+-    je __dbase_output_console_46
+-__dbase_output_show_done_47:
+-    cmp dword ptr [__dbase_output_debug_visible], 0
+-    jne __dbase_output_already_visible_49
+-    mov dword ptr [__dbase_output_debug_visible], 1
+-    push 1
+-    call DBaseQtSetDebugVisible
+-    add esp, 4
+-__dbase_output_already_visible_49:
+     push 2
+     push __dbase_text_2
+-    call DBaseQtAppendDebug
+-    add esp, 8
+-    jmp __dbase_output_done_48
++    call __dbase_o1_output_write
++    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_override_ready_45:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_show_done_47:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_already_visible_49:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_console_46:
+-    push 2
+-    push __dbase_text_2
+-    call DBaseConsoleWrite
+-    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_done_48:
+     call DBaseQtProcessEvents
+     call DBaseQtShutdownRequested
+@@ -340,59 +340,59 @@
+     jmp __dbase_exception_finally_6
+ __dbase_catch_dispatch_5:
+ __dbase_exception_finally_6:
+-    cmp dword ptr [__dbase_output_debug_override], -1
+-    jne __dbase_output_override_ready_51
+-    cmp dword ptr [__dbase_output_format_screen], 0
+-    je __dbase_output_console_52
+-    jmp __dbase_output_show_done_53
+-__dbase_output_override_ready_51:
+-    cmp dword ptr [__dbase_output_debug_override], 0
+-    je __dbase_output_console_52
+-__dbase_output_show_done_53:
+-    cmp dword ptr [__dbase_output_debug_visible], 0
+-    jne __dbase_output_already_visible_55
+-    mov dword ptr [__dbase_output_debug_visible], 1
+-    push 1
+-    call DBaseQtSetDebugVisible
+-    add esp, 4
+-__dbase_output_already_visible_55:
+     push 8
+     push __dbase_text_6
+-    call DBaseQtAppendDebug
+-    add esp, 8
+-    jmp __dbase_output_done_54
++    call __dbase_o1_output_write
++    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_override_ready_51:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_show_done_53:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_already_visible_55:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_console_52:
+-    push 8
+-    push __dbase_text_6
+-    call DBaseConsoleWrite
+-    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_done_54:
+-    cmp dword ptr [__dbase_output_debug_override], -1
+-    jne __dbase_output_override_ready_56
+-    cmp dword ptr [__dbase_output_format_screen], 0
+-    je __dbase_output_console_57
+-    jmp __dbase_output_show_done_58
+-__dbase_output_override_ready_56:
+-    cmp dword ptr [__dbase_output_debug_override], 0
+-    je __dbase_output_console_57
+-__dbase_output_show_done_58:
+-    cmp dword ptr [__dbase_output_debug_visible], 0
+-    jne __dbase_output_already_visible_60
+-    mov dword ptr [__dbase_output_debug_visible], 1
+-    push 1
+-    call DBaseQtSetDebugVisible
+-    add esp, 4
+-__dbase_output_already_visible_60:
+     push 2
+     push __dbase_text_2
+-    call DBaseQtAppendDebug
+-    add esp, 8
+-    jmp __dbase_output_done_59
++    call __dbase_o1_output_write
++    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_override_ready_56:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_show_done_58:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_already_visible_60:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_console_57:
+-    push 2
+-    push __dbase_text_2
+-    call DBaseConsoleWrite
+-    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_done_59:
+     call DBaseQtProcessEvents
+     call DBaseQtShutdownRequested
+@@ -409,32 +409,32 @@
+     jne __dbase_program_cleanup_1
+     jmp __dbase_exception_continue_4
+ __dbase_exception_unhandled_3:
+-    cmp dword ptr [__dbase_output_debug_override], -1
+-    jne __dbase_output_override_ready_62
+-    cmp dword ptr [__dbase_output_format_screen], 0
+-    je __dbase_output_console_63
+-    jmp __dbase_output_show_done_64
+-__dbase_output_override_ready_62:
+-    cmp dword ptr [__dbase_output_debug_override], 0
+-    je __dbase_output_console_63
+-__dbase_output_show_done_64:
+-    cmp dword ptr [__dbase_output_debug_visible], 0
+-    jne __dbase_output_already_visible_66
+-    mov dword ptr [__dbase_output_debug_visible], 1
+-    push 1
+-    call DBaseQtSetDebugVisible
+-    add esp, 4
+-__dbase_output_already_visible_66:
+     push 24
+     push __dbase_text_7
+-    call DBaseQtAppendDebug
+-    add esp, 8
+-    jmp __dbase_output_done_65
++    call __dbase_o1_output_write
++    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_override_ready_62:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_show_done_64:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_already_visible_66:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_console_63:
+-    push 24
+-    push __dbase_text_7
+-    call DBaseConsoleWrite
+-    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_done_65:
+     cmp dword ptr [__dbase_output_debug_override], -1
+     jne __dbase_output_override_ready_67
+@@ -463,32 +463,32 @@
+     call DBaseConsoleWrite
+     add esp, 8
+ __dbase_output_done_70:
+-    cmp dword ptr [__dbase_output_debug_override], -1
+-    jne __dbase_output_override_ready_72
+-    cmp dword ptr [__dbase_output_format_screen], 0
+-    je __dbase_output_console_73
+-    jmp __dbase_output_show_done_74
+-__dbase_output_override_ready_72:
+-    cmp dword ptr [__dbase_output_debug_override], 0
+-    je __dbase_output_console_73
+-__dbase_output_show_done_74:
+-    cmp dword ptr [__dbase_output_debug_visible], 0
+-    jne __dbase_output_already_visible_76
+-    mov dword ptr [__dbase_output_debug_visible], 1
+-    push 1
+-    call DBaseQtSetDebugVisible
+-    add esp, 4
+-__dbase_output_already_visible_76:
+     push 2
+     push __dbase_text_8
+-    call DBaseQtAppendDebug
+-    add esp, 8
+-    jmp __dbase_output_done_75
++    call __dbase_o1_output_write
++    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_override_ready_72:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_show_done_74:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_already_visible_76:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_console_73:
+-    push 2
+-    push __dbase_text_8
+-    call DBaseConsoleWrite
+-    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_done_75:
+     cmp dword ptr [__dbase_output_debug_override], -1
+     jne __dbase_output_override_ready_77
+@@ -517,32 +517,32 @@
+     call DBaseConsoleWrite
+     add esp, 8
+ __dbase_output_done_80:
+-    cmp dword ptr [__dbase_output_debug_override], -1
+-    jne __dbase_output_override_ready_82
+-    cmp dword ptr [__dbase_output_format_screen], 0
+-    je __dbase_output_console_83
+-    jmp __dbase_output_show_done_84
+-__dbase_output_override_ready_82:
+-    cmp dword ptr [__dbase_output_debug_override], 0
+-    je __dbase_output_console_83
+-__dbase_output_show_done_84:
+-    cmp dword ptr [__dbase_output_debug_visible], 0
+-    jne __dbase_output_already_visible_86
+-    mov dword ptr [__dbase_output_debug_visible], 1
+-    push 1
+-    call DBaseQtSetDebugVisible
+-    add esp, 4
+-__dbase_output_already_visible_86:
+     push 2
+     push __dbase_text_2
+-    call DBaseQtAppendDebug
+-    add esp, 8
+-    jmp __dbase_output_done_85
++    call __dbase_o1_output_write
++    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_override_ready_82:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_show_done_84:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++__dbase_output_already_visible_86:
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_console_83:
+-    push 2
+-    push __dbase_text_2
+-    call DBaseConsoleWrite
+-    add esp, 8
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
++    ; O1: zentraler Ausgabeaufruf
+ __dbase_output_done_85:
+     call DBaseQtProcessEvents
+ __dbase_exception_continue_4:
+@@ -1108,3 +1108,33 @@
+     resd 1
+ __dbase_exception_objects_head:
+     resd 1
++; Stage 672 / O1: gemeinsame Laufzeit-Ausgabe fuer statische Texte
++section .text
++__dbase_o1_output_write:
++    cmp dword ptr [__dbase_output_debug_override], -1
++    jne __dbase_o1_output_override_ready
++    cmp dword ptr [__dbase_output_format_screen], 0
++    je __dbase_o1_output_console
++    jmp __dbase_o1_output_debug
++__dbase_o1_output_override_ready:
++    cmp dword ptr [__dbase_output_debug_override], 0
++    je __dbase_o1_output_console
++__dbase_o1_output_debug:
++    cmp dword ptr [__dbase_output_debug_visible], 0
++    jne __dbase_o1_output_visible
++    mov dword ptr [__dbase_output_debug_visible], 1
++    push 1
++    call DBaseQtSetDebugVisible
++    add esp, 4
++__dbase_o1_output_visible:
++    push dword ptr [esp+8]
++    push dword ptr [esp+8]
++    call DBaseQtAppendDebug
++    add esp, 8
++    ret
++__dbase_o1_output_console:
++    push dword ptr [esp+8]
++    push dword ptr [esp+8]
++    call DBaseConsoleWrite
++    add esp, 8
++    ret
+--- /dev/null
++++ b/dbase_output_compactor.py
+@@ -0,0 +1,266 @@
++# -*- coding: utf-8 -*-
++"""Stage 672: factor repeated, static dBASE runtime output dispatches (O1 only).
++
++The pass accepts only the exact compiler-generated selector and *identical*
++static literal/length pairs in the GUI and console branches.  It deliberately
++leaves dynamic output intact: its arguments must be loaded after
++DBaseQtSetDebugVisible, which can synchronously run GUI code.
++
++Every original source line remains in place.  The shared helper is appended
++in a fresh .text section after the original source, preserving diagnostic
++line numbers and all existing data, import and VMT declarations.
++"""
++from __future__ import annotations
++
++import re
++from dataclasses import dataclass
++
++_START = re.compile(r'cmp dword ptr \[__dbase_output_debug_override\], -1', re.I)
++_TEXT = re.compile(r'__dbase_text_\d+', re.I)
++_INT = re.compile(r'\d+')
++
++@dataclass(frozen=True)
++class OutputCompaction:
++    assembly: str
++    instructions_saved: int = 0
++    blocks: int = 0
++
++
++def _line(lines: list[str], index: int) -> str:
++    if 0 <= index < len(lines):
++        return lines[index].strip()
++    return ''
++
++
++def _capture(lines: list[str], index: int, regex: str) -> str | None:
++    m = re.fullmatch(regex, _line(lines, index), re.I)
++    return m.group(1) if m else None
++
++
++def _check(lines: list[str], index: int, expected: str) -> bool:
++    return _line(lines, index).casefold() == expected.casefold()
++
++
++def _match_block(lines: list[str], i: int, bits: int):
++    """Return (exclusive end, literal, size, labels) or None.
++
++    Labels are captured rather than guessed, and the signature matches the
++    *complete* branch structure emitted by _emit_runtime_output_choice.
++    """
++    if not _START.fullmatch(_line(lines, i)):
++        return None
++    ready = _capture(lines, i + 1, r'jne (__dbase_output_override_ready_\d+)')
++    console = _capture(lines, i + 3, r'je (__dbase_output_console_\d+)')
++    show = _capture(lines, i + 4, r'jmp (__dbase_output_show_done_\d+)')
++    if not (ready and console and show):
++        return None
++    if not all((
++        _check(lines, i + 2, 'cmp dword ptr [__dbase_output_format_screen], 0'),
++        _check(lines, i + 5, ready + ':'),
++        _check(lines, i + 6, 'cmp dword ptr [__dbase_output_debug_override], 0'),
++        _check(lines, i + 7, 'je ' + console),
++        _check(lines, i + 8, show + ':'),
++        _check(lines, i + 9, 'cmp dword ptr [__dbase_output_debug_visible], 0'),
++        _check(lines, i + 11, 'mov dword ptr [__dbase_output_debug_visible], 1'),
++    )):
++        return None
++    visible = _capture(lines, i + 10, r'jne (__dbase_output_already_visible_\d+)')
++    if not visible:
++        return None
++    if bits == 32:
++        if not all((
++            _check(lines, i + 12, 'push 1'),
++            _check(lines, i + 13, 'call DBaseQtSetDebugVisible'),
++            _check(lines, i + 14, 'add esp, 4'),
++            _check(lines, i + 15, visible + ':'),
++        )):
++            return None
++        first = 16
++        length = _capture(lines, i + first, r'push (\d+)')
++        literal = _capture(lines, i + first + 1, r'push (__dbase_text_\d+)')
++        done = _capture(lines, i + first + 4, r'jmp (__dbase_output_done_\d+)')
++        if not (length and literal and done):
++            return None
++        if not all((
++            _check(lines, i + first + 2, 'call DBaseQtAppendDebug'),
++            _check(lines, i + first + 3, 'add esp, 8'),
++            _check(lines, i + first + 5, console + ':'),
++            _check(lines, i + first + 6, 'push ' + length),
++            _check(lines, i + first + 7, 'push ' + literal),
++            _check(lines, i + first + 8, 'call DBaseConsoleWrite'),
++            _check(lines, i + first + 9, 'add esp, 8'),
++            _check(lines, i + first + 10, done + ':'),
++        )):
++            return None
++        end = i + first + 11
++    else:
++        if not all((
++            _check(lines, i + 12, 'mov ecx, 1'),
++            _check(lines, i + 13, 'sub rsp, 40'),
++            _check(lines, i + 14, 'call DBaseQtSetDebugVisible'),
++            _check(lines, i + 15, 'add rsp, 40'),
++            _check(lines, i + 16, visible + ':'),
++        )):
++            return None
++        first = 17
++        literal = _capture(lines, i + first, r'mov rcx, (__dbase_text_\d+)')
++        length = _capture(lines, i + first + 1, r'mov edx, (\d+)')
++        done = _capture(lines, i + first + 5, r'jmp (__dbase_output_done_\d+)')
++        if not (length and literal and done):
++            return None
++        if not all((
++            _check(lines, i + first + 2, 'sub rsp, 40'),
++            _check(lines, i + first + 3, 'call DBaseQtAppendDebug'),
++            _check(lines, i + first + 4, 'add rsp, 40'),
++            _check(lines, i + first + 6, console + ':'),
++            _check(lines, i + first + 7, 'mov rcx, ' + literal),
++            _check(lines, i + first + 8, 'mov edx, ' + length),
++            _check(lines, i + first + 9, 'sub rsp, 40'),
++            _check(lines, i + first + 10, 'call DBaseConsoleWrite'),
++            _check(lines, i + first + 11, 'add rsp, 40'),
++            _check(lines, i + first + 12, done + ':'),
++        )):
++            return None
++        end = i + first + 13
++    return end, literal, length, (ready, console, show, visible, done)
++
++
++def _shared_routine(bits: int) -> str:
++    routine = [
++        '; Stage 672 / O1: gemeinsame Laufzeit-Ausgabe fuer statische Texte',
++        'section .text',
++        '__dbase_o1_output_write:',
++    ]
++    if bits == 64:
++        routine += [
++            '    sub rsp, 56',  # 32 bytes shadow space + 16 bytes arguments, stack aligned
++            '    mov qword ptr [rsp+40], rcx',
++            '    mov dword ptr [rsp+48], edx',
++        ]
++    routine += [
++        '    cmp dword ptr [__dbase_output_debug_override], -1',
++        '    jne __dbase_o1_output_override_ready',
++        '    cmp dword ptr [__dbase_output_format_screen], 0',
++        '    je __dbase_o1_output_console',
++        '    jmp __dbase_o1_output_debug',
++        '__dbase_o1_output_override_ready:',
++        '    cmp dword ptr [__dbase_output_debug_override], 0',
++        '    je __dbase_o1_output_console',
++        '__dbase_o1_output_debug:',
++        '    cmp dword ptr [__dbase_output_debug_visible], 0',
++        '    jne __dbase_o1_output_visible',
++        '    mov dword ptr [__dbase_output_debug_visible], 1',
++    ]
++    if bits == 32:
++        routine += [
++            '    push 1',
++            '    call DBaseQtSetDebugVisible',
++            '    add esp, 4',
++            '__dbase_o1_output_visible:',
++            '    push dword ptr [esp+8]',  # original length (esp+8)
++            '    push dword ptr [esp+8]',  # original pointer (after first push)
++            '    call DBaseQtAppendDebug',
++            '    add esp, 8',
++            '    ret',
++            '__dbase_o1_output_console:',
++            '    push dword ptr [esp+8]',
++            '    push dword ptr [esp+8]',
++            '    call DBaseConsoleWrite',
++            '    add esp, 8',
++            '    ret',
++        ]
++    else:
++        routine += [
++            '    mov ecx, 1',
++            '    call DBaseQtSetDebugVisible',
++            '__dbase_o1_output_visible:',
++            '    mov rcx, qword ptr [rsp+40]',
++            '    mov edx, dword ptr [rsp+48]',
++            '    call DBaseQtAppendDebug',
++            '    add rsp, 56',
++            '    ret',
++            '__dbase_o1_output_console:',
++            '    mov rcx, qword ptr [rsp+40]',
++            '    mov edx, dword ptr [rsp+48]',
++            '    call DBaseConsoleWrite',
++            '    add rsp, 56',
++            '    ret',
++        ]
++    return '\n'.join(routine) + '\n'
++
++
++def _instruction_count(lines: list[str]) -> int:
++    return sum(bool(s.strip()) and not s.strip().startswith(';') and
++               not s.strip().endswith(':') and not s.strip().lower().startswith('section ')
++               for s in lines)
++
++
++def compact_dbase_static_outputs(assembly: str, *, min_blocks: int = 3) -> OutputCompaction:
++    """Centralize three or more identical-shape static output selectors.
++
++    Unsupported output forms (dynamic strings, runtime number buffers, other
++    debug writers) are left untouched.  No transformation occurs if a selector
++    label is referenced from outside its original block.
++    """
++    if re.search(r'^\s*__dbase_o1_output_write\s*:', assembly, re.M | re.I):
++        return OutputCompaction(assembly)
++    arch = re.search(r'^\s*bits\s+(32|64)\b', assembly, re.M | re.I)
++    if arch is None:
++        return OutputCompaction(assembly)
++    bits = int(arch.group(1))
++    lines = assembly.splitlines(keepends=True)
++    section = None
++    blocks = []
++    i = 0
++    while i < len(lines):
++        raw = lines[i].strip()
++        m = re.match(r'^section\s+([^\s;]+)', raw, re.I)
++        if m:
++            section = m.group(1).casefold()
++        if section == '.text':
++            candidate = _match_block(lines, i, bits)
++            if candidate:
++                end, literal, length, labels = candidate
++                body = ''.join(lines[i:end])
++                # A label can only disappear as an executable destination when
++                # no other code jumps to that internal selector label.
++                if all(len(re.findall(r'(?<![\w.$?@])' + re.escape(name) + r'(?![\w.$?@])',
++                                      assembly, flags=re.I)) ==
++                       len(re.findall(r'(?<![\w.$?@])' + re.escape(name) + r'(?![\w.$?@])',
++                                      body, flags=re.I)) for name in labels):
++                    blocks.append((i, end, literal, length))
++                    i = end
++                    continue
++        i += 1
++    if len(blocks) < min_blocks:
++        return OutputCompaction(assembly)
++
++    original = 0
++    rewritten = 0
++    for start, end, literal, length in blocks:
++        original += _instruction_count(lines[start:end])
++        wrapper = ([f'    push {length}', f'    push {literal}',
++                    '    call __dbase_o1_output_write', '    add esp, 8'] if bits == 32 else
++                   [f'    mov rcx, {literal}', f'    mov edx, {length}',
++                    '    sub rsp, 40', '    call __dbase_o1_output_write', '    add rsp, 40'])
++        rewritten += len(wrapper)
++        for j, text in enumerate(wrapper):
++            ending = '\r\n' if lines[start+j].endswith('\r\n') else ('\n' if lines[start+j].endswith('\n') else '')
++            lines[start+j] = text + ending
++        for pos in range(start+len(wrapper), end):
++            if re.fullmatch(r'[\w.$?@]+:', lines[pos].strip()):
++                continue  # preserve label names and original line mapping
++            ending = '\r\n' if lines[pos].endswith('\r\n') else ('\n' if lines[pos].endswith('\n') else '')
++            lines[pos] = '    ; O1: zentraler Ausgabeaufruf' + ending
++
++    helper = _shared_routine(bits)
++    helper_instructions = _instruction_count(helper.splitlines())
++    saved = original - rewritten - helper_instructions
++    # A size optimization cannot spend more instructions than it removes.
++    if saved <= 0:
++        return OutputCompaction(assembly)
++    newline = '\r\n' if '\r\n' in assembly else '\n'
++    if not assembly.endswith(('\n', '\r')):
++        lines.append(newline)
++    result = ''.join(lines) + helper.replace('\n', newline)
++    return OutputCompaction(result, saved, len(blocks))
+--- /dev/null
++++ b/test_stage672.py
+@@ -0,0 +1,169 @@
++# -*- coding: utf-8 -*-
++"""Stage 672: O1 dispatch de-duplication for repeated static outputs."""
++from __future__ import annotations
++
++from pathlib import Path
++import pytest
++from dbase_size_optimizer import optimize_dbase_size_assembly
++from dbase_output_compactor import compact_dbase_static_outputs
++from d64dbase import compile_dbase_to_assembly
++
++ROOT = Path(__file__).resolve().parent
++SOURCE = '? "Hallo"\n? "Welt"\n? "Nummer"\n? "vier"\n'
++
++
++@pytest.mark.parametrize('target', ['pe32', 'pe64'])
++def test_real_generator_shared_dispatch_and_o0(target):
++    asm = compile_dbase_to_assembly(SOURCE, target=target).assembly
++    off = optimize_dbase_size_assembly(asm, level='O0')
++    on = optimize_dbase_size_assembly(asm, level='O1')
++    assert off.assembly == asm
++    assert '__dbase_o1_output_write:' not in off.assembly
++    assert on.assembly.count('__dbase_o1_output_write:') == 1
++    assert on.assembly.count('call __dbase_o1_output_write') >= 4
++    assert 'call DBaseQtAppendDebug' in on.assembly
++    assert 'call DBaseConsoleWrite' in on.assembly
++    assert on.replacements > 0
++    assert on.assembly.startswith('bits '+ ('64' if target == 'pe64' else '32')) or 'section .text' in on.assembly
++    assert optimize_dbase_size_assembly(on.assembly, level='O1').assembly == on.assembly
++    # All old source lines stay on their original numbers (helper only appended).
++    initial_lines = len(asm.splitlines())
++    assert on.assembly.splitlines()[initial_lines].startswith('; Stage 672 / O1:')
++
++
++@pytest.mark.parametrize('target', ['pe32', 'pe64'])
++def test_dynamic_output_is_not_hoisted_before_debug_visibility(target):
++    # Both dynamic arms read their pointer/length *after* the visibility call;
++    # a correct optimizer must not hoist those reads into an early wrapper.
++    asm = compile_dbase_to_assembly('? "one"\n? "two"\n? "three"\n', target=target).assembly
++    # Replace one static writer pair with dynamic memory operands: only this
++    # block must remain unchanged, while the other blocks can be compacted.
++    first = asm.index('call DBaseQtAppendDebug')
++    # Replace the literal+length in both arms of that matching output block.
++    beginning = asm.rfind('cmp dword ptr [__dbase_output_debug_override], -1', 0, first)
++    ending = asm.index('__dbase_output_done_', first)
++    end_label_end = asm.index('\n', asm.index(':', ending))
++    block = asm[beginning:end_label_end]
++    import re
++    if target == 'pe32':
++        block_new = re.sub(r'push \d+\n\s+push __dbase_text_\d+',
++                           'push dword ptr [runtime_length]\n    push dword ptr [runtime_pointer]',block)
++    else:
++        block_new = re.sub(r'mov rcx, __dbase_text_\d+\n\s+mov edx, \d+',
++                           'mov rcx, qword ptr [runtime_pointer]\n    mov edx, dword ptr [runtime_length]',block)
++    changed = asm[:beginning] + block_new + asm[end_label_end:]
++    optimized = compact_dbase_static_outputs(changed)
++    assert block_new in optimized.assembly
++    assert optimized.blocks >= 3  # other static output blocks remain
++
++
++def test_uploaded_app001_static_output_and_source_map():
++    sample = Path('/mnt/data/App001.generated.pe32.asm')
++    asm = sample.read_text('utf8') if sample.exists() else (ROOT/'tests/fixtures/App001.generated.pe32.asm').read_text('utf8')
++    result = compact_dbase_static_outputs(asm)
++    assert result.blocks >= 8
++    assert result.instructions_saved > 0
++    assert result.assembly.count('call __dbase_o1_output_write') == result.blocks
++    assert '__dbase_vmt_exception:' in result.assembly
++    assert 'dd __dbase_class_object' in result.assembly
++    assert result.assembly.splitlines()[:len(asm.splitlines())] != asm.splitlines()  # call replacements
++    assert result.assembly.splitlines()[len(asm.splitlines())].startswith('; Stage 672 / O1:')
++
++
++def test_unrelated_jumps_and_custom_assembler_remain_untouched():
++    src = ('bits 32\nsection .text\nstart:\n'
++           '    jmp done\ndone:\n    ret\nsection .data\nvalue:\n    dd 1\n')
++    result = compact_dbase_static_outputs(src)
++    assert result.assembly == src
++    assert result.blocks == 0
++
++
++def test_no_external_entry_to_rewritten_internal_labels():
++    base = compile_dbase_to_assembly(SOURCE, target='pe32').assembly
++    import re
++    # An external use of a local selector label prevents its transformation.
++    label = re.search(r'(__dbase_output_console_\d+):', base).group(1)
++    altered = base + '\nsection .text\n; artificially referenced selector\n    jmp ' + label + '\n'
++    result = compact_dbase_static_outputs(altered)
++    assert result.blocks >= 3
++    # It must preserve the first block because an external jump reaches it.
++    assert '    je ' + label in result.assembly
++    assert '    jmp ' + label in result.assembly
++
++
++@pytest.mark.parametrize('target', ['pe32', 'pe64'])
++def test_assembled_machine_code_is_shorter_and_links(target):
++    from test_stage605_link import _load_pe_linker
++    native = _load_pe_linker()
++    source = compile_dbase_to_assembly(SOURCE,target=target).assembly
++    optimized = optimize_dbase_size_assembly(source,level='O1').assembly
++    assemble = native['assemble_pe32_object_source' if target=='pe32' else 'assemble_pe64_object_source']
++    original_obj = assemble(source)
++    smaller_obj = assemble(optimized)
++    assert len(smaller_obj.code) < len(original_obj.code)
++    assert set(original_obj.symbols) <= set(smaller_obj.symbols)
++    assert len(smaller_obj.code) < len(original_obj.code) * 0.95
++
++
++def test_uploaded_app001_real_pe32_link_with_external_import_sidecar(tmp_path):
++    """Real user upload: O0/O1 should both produce a linkable PE32 executable."""
++    from test_stage605_link import _load_pe_linker
++    import shutil
++    root = Path('/mnt/data')
++    asm_path = root/'App001.generated.pe32.asm'
++    include_path = root/'App001.generated.pe32.extern.inc'
++    if not asm_path.exists():
++        asm_path = ROOT/'tests/fixtures/App001.generated.pe32.asm'
++    if not include_path.exists():
++        include_path = ROOT/'tests/fixtures/App001.generated.pe32.extern.inc'
++    if not asm_path.exists() or not include_path.exists():
++        pytest.skip('App001 ASM + import sidecar fixture not installed')
++    source = asm_path.read_text('utf8')
++    shutil.copyfile(include_path, tmp_path/include_path.name)
++    native = _load_pe_linker()
++    old_obj = native['assemble_pe32_object_source'](source,
++        filename=str(tmp_path/asm_path.name),include_dirs=(str(tmp_path),))
++    compact_source = optimize_dbase_size_assembly(source, level='O1').assembly
++    new_obj = native['assemble_pe32_object_source'](compact_source,
++        filename=str(tmp_path/asm_path.name),include_dirs=(str(tmp_path),))
++    assert len(new_obj.code) < len(old_obj.code)
++    assert new_obj.imports == old_obj.imports
++    assert new_obj.data == old_obj.data
++    old_coff = native['write_coff32_object'](old_obj)
++    new_coff = native['write_coff32_object'](new_obj)
++    old_exe = native['link_coff32_objects']((old_coff,),entry_symbol='_start',gui=True)
++    new_exe = native['link_coff32_objects']((new_coff,),entry_symbol='_start',gui=True)
++    assert len(new_exe.executable) < len(old_exe.executable)
++    assert new_exe.executable.startswith(b'MZ')
++    assert old_exe.executable.startswith(b'MZ')
++
++
++@pytest.mark.parametrize('target', ['pe32', 'pe64'])
++def test_multi_coff_objects_with_compacted_output_link(tmp_path, target):
++    from test_stage605_link import _load_pe_linker
++    from dbase_module_coff import strip_program_entry_assembly, namespace_module_object
++    from pascal_console_dependencies import inspect_pe
++    native = _load_pe_linker()
++    assemble = native['assemble_pe32_object_source' if target=='pe32' else 'assemble_pe64_object_source']
++    write = native['write_coff32_object' if target=='pe32' else 'write_coff64_object']
++    link = native['link_coff32_inputs' if target=='pe32' else 'link_coff64_inputs']
++    docs = []
++    for name in ('App001', 'Utility'):
++        src = tmp_path/f'{name}.prg'
++        src.write_text(SOURCE, encoding='utf8')
++        asm = optimize_dbase_size_assembly(
++            compile_dbase_to_assembly(SOURCE, target=target).assembly,
++            level='O1').assembly
++        if name == 'Utility':
++            asm = strip_program_entry_assembly(asm)
++            obj = namespace_module_object(assemble(asm), src)
++        else:
++            obj = assemble(asm)
++        outfile = src.with_suffix('.o')
++        outfile.write_bytes(write(obj))
++        docs.append(outfile)
++    image = link(docs,entry_symbol='_start',gui=True).executable
++    exe = tmp_path/'App001.exe'
++    exe.write_bytes(image)
++    assert image[:2] == b'MZ'
++    assert inspect_pe(exe)[0] == (0x14c if target=='pe32' else 0x8664)
+--- /dev/null
++++ b/STAGE672_DBASE_O1_SHARED_OUTPUT_ROUTINES_README.md
+@@ -0,0 +1,78 @@
++# Stage 672 – O1: Wiederholte dBASE-Ausgaberoutinen zusammenfassen
++
++**Verbindliche Grundlage:** Stage 671. Keine Änderung an der Projektdatei oder an den RadioButtons.
++
++## Verhalten
++
++Die bestehende Auswahl **Compiler → dBASE → Optimierung → O0/O1** bleibt erhalten:
++
++- **O0 (Standard):** `optimize_dbase_size_assembly` ist eine strikte Identität; weder Branch-Peepholes noch Ausgaberoutinen-Zusammenfassung.
++- **O1 (Längen Optimierung):** Nach der Stage-671-Sprungoptimierung reduziert ein neuer Pass (`dbase_output_compactor.py`) wiederholte statische `?/??`-Ausgabeblöcke. Er verlangt mindestens drei vollständige, unveränderte, vom dBASE-Compiler erzeugte Auswahlblöcke.
++
++Die bisherigen dBASE-Routinen wählen pro Ausgabe dynamisch zwischen dem Debug-Tab (`DBaseQtAppendDebug`) und der Windows-Konsole (`DBaseConsoleWrite`). Die Entscheidung beachtet zuerst `SET DEBUG ON/OFF` (Override), sonst `SET FORMAT TO SCREEN/CONSOLE`. Der Debug-Tab wird nur beim ersten benötigten Schreiben eingeblendet (`DBaseQtSetDebugVisible`).
++
++Statt bei jeder statischen Textausgabe denselben Entscheidungs-/Sichtbarkeits-Code zu emittieren, übergibt O1 nur noch **statischen Textzeiger und Textlänge** an `__dbase_o1_output_write`. Der gemeinsame Helfer prüft die aktuellen Laufzeit-Schalter und führt genau einen Ausgabeaufruf durch. Der gesamte Helper wird **einmal pro Objektdatei** als **lokales Symbol** emittiert; die bisherige Namenstrennung zwischen COFF-Modulen bleibt bestehen.
++
++### PE32-Aufruf
++
++```asm
++    push 5
++    push __dbase_text_1
++    call __dbase_o1_output_write
++    add esp, 8
++```
++
++Der Helfer übernimmt das alte cdecl-Aufrufschema und lädt beide Parameter korrekt von seinem Stack. Durch dieselbe Kopie der Override-/Sichtbarkeits-Logik bleiben Seiteneffekte der Ausgabe erhalten.
++
++### PE32+-Aufruf
++
++```asm
++    mov rcx, __dbase_text_1
++    mov edx, 5
++    sub rsp, 40
++    call __dbase_o1_output_write
++    add rsp, 40
++```
++
++Der 64-Bit-Helfer reserviert seinen eigenen 32-Byte-Shadow-Space plus lokale Slots (`sub rsp, 56`), sichert `RCX` und `EDX` vor dem Sichtbarkeitsaufruf und stellt sie anschließend für den eigentlichen Debug-/Konsolenaufruf wieder her.
++
++### Sicherheit und Grenzen
++
++- Es werden **nur** exakte, vollständige vom Compiler erzeugte statische Textausgabeblöcke erkannt. Abweichungen bleiben unverändert.
++- Ausgaben dynamischer Variablen, numerischer Formatpuffer oder frei formulierter ASM-Blöcke bleiben vorerst unberührt. Ihre Parameter werden bewusst erst **nach** `DBaseQtSetDebugVisible` geladen; frühzeitiges Laden könnte bei GUI-Callbacks einen anderen Wert verwenden.
++- Die fünf ursprünglichen internen Branch-Labels bleiben in den Zeilen erhalten; externe Querverweise verhindern eine Zusammenfassung.
++- Jede ursprüngliche Zeile bleibt an derselben Zeilennummer, indem wegfallende Anweisungen in Kommentare umgewandelt werden. Der Helper steht **hinter** dem bisherigen ASM-Ende in einer neuen `.text`-Sektion, sodass die bisherigen Zeilen-/Source-Map-Nummern unverändert bleiben.
++- `.data`, `.bss`, Runtime-Imports, VMTs und Exception-Handling werden nicht verändert.
++- Bei weniger als drei passenden Ausgaben oder wenn die tatsächliche Anzahl der Maschineninstruktionen nicht sinkt, findet diese neue Optimierung nicht statt.
++- Die native Runtime-DLL wird durch Stage 672 nicht geändert (Anforderungen aus Stage 670 bezüglich der VMT-ABI bleiben bestehen).
++
++## Messung am hochgeladenen App001-Beispiel
++
++Die Testbasis sind `App001.generated.pe32.asm` (1.110 Zeilen) und `App001.generated.pe32.extern.inc` aus dem Nutzerupload. Beide Dateien liegen als Test-Fixtures im ZIP; das optimierte ASM und die zugehörige Include-Datei stehen unter `examples/dbase/`.
++
++| Variante | `.text`-Bytes (COFF32) | Gelinkte EXE |
++|---|---:|---:|
++| O0 (keine Optimierung) | 3.711 | 6.144 Byte |
++| O1 (bisher Stage 671) | 3.701 | 6.144 Byte |
++| O1 (neu Stage 672) | **2.626** | **5.120 Byte** |
++
++In Stage 672 werden im Beispiel **10** Ausgabe-Sites zusammengefasst. Die `.text`-Einsparung gegenüber O0 beträgt **1.085 Byte (29,2 %)**, die PE-Datei ist wegen Section-Alignment um **1.024 Byte (16,7 %)** kleiner. Die Anzahl der Imports bleibt unverändert. Die EXEs wurden durch die echten internen COFF32-/PE32-Routinen erstellt (MZ/PE); ein nativer Windows-Ausführungstest ist damit nicht ersetzt.
++
++## Tests
++
++- `test_stage672.py`: **12 Tests** – O0-Identität, PE32/PE32+-Codegen, idempotente O1-Ausgabe, keine verfrühte dynamische Parameterladung, Querverweis-Schutz, Original-App001-COFF32/PE32-Link und zwei kombinierte COFF32-/COFF64-Module mit identischen lokalen Helpern.
++- `test_stage671.py`: **8 Tests** – alte Sprungoptimierungen, `.pro`-Persistenz und Quellzeilennummern (angepasster Test für den nur angehängten Helper).
++- `test_stage670.py` und `test_stage609.py`: **19 Tests, 8 Subtests** – VMT und Peepholes.
++- `test_stage669.py`: **8 Tests** – Objekt-Assembler und Runtime-Imports.
++- `test_stage668.py` (gezielt): **3 Tests** – zwei Module/PE32-/PE32+-Links und Sammelzuweisung.
++
++**50 geprüfte Tests** (plus 8 Subtests) bestanden. Ein ungeteilter, sehr großer historischer Gesamttest lief zuvor in ein Zeitlimit; deshalb ist ein vollständiger GUI-/Windows-Regressionstest nicht bestätigt.
++
++## Dateien
++
++- `dbase_output_compactor.py` – neuer, ABI-spezifischer O1-Transformationspass.
++- `dbase_size_optimizer.py` – bindet den Pass hinter den bereits vorhandenen Sprungoptimierungen ein.
++- `test_stage672.py` – neue gezielte Regressionstests.
++- `test_stage671.py` – aktualisierte Zeilennummernprüfung.
++- `tests/fixtures/App001.generated.pe32.extern.inc` – die nun mitgelieferte Runtime-Import-Fixture.
++- `examples/dbase/App001.generated.pe32.O1.asm` und `.extern.inc` – nachvollziehbare Beispielausgabe.
+--- /dev/null
++++ b/tests/fixtures/App001.generated.pe32.extern.inc
+@@ -0,0 +1,74 @@
++import DBaseQtSetWorkstationMode, "libd64_qt5.dll", "DBaseQtSetWorkstationMode"
++import DBaseQtSetDebugTheme, "libd64_qt5.dll", "DBaseQtSetDebugTheme"
++import DBaseQtRuntimeStartup, "libd64_qt5.dll", "DBaseQtRuntimeStartup"
++import DBaseQtRuntimeShutdown, "libd64_qt5.dll", "DBaseQtRuntimeShutdown"
++import DBaseQtShowWindow, "libd64_qt5.dll", "DBaseQtShowWindow"
++import DBaseQtProcessEvents, "libd64_qt5.dll", "DBaseQtProcessEvents"
++import DBaseQtSetDebugVisible, "libd64_qt5.dll", "DBaseQtSetDebugVisible"
++import DBaseQtAppendConsole, "libd64_qt5.dll", "DBaseQtAppendConsole"
++import DBaseQtAppendDebug, "libd64_qt5.dll", "DBaseQtAppendDebug"
++import DBaseQtSetOutputColor, "libd64_qt5.dll", "DBaseQtSetOutputColor"
++import DBaseQtFillBackground, "libd64_qt5.dll", "DBaseQtFillBackground"
++import DBaseQtClearScreen, "libd64_qt5.dll", "DBaseQtClearScreen"
++import DBaseQtClearScreenChar, "libd64_qt5.dll", "DBaseQtClearScreenChar"
++import DBaseQtClearScreenColor, "libd64_qt5.dll", "DBaseQtClearScreenColor"
++import DBaseQtSetBorderColor, "libd64_qt5.dll", "DBaseQtSetBorderColor"
++import DBaseQtMarkProgramFinished, "libd64_qt5.dll", "DBaseQtMarkProgramFinished"
++import DBaseQtExec, "libd64_qt5.dll", "DBaseQtExec"
++import DBaseQtShutdownRequested, "libd64_qt5.dll", "DBaseQtShutdownRequested"
++import DBaseQtShutdown, "libd64_qt5.dll", "DBaseQtShutdown"
++import DBaseQtMenuCreate, "libd64_qt5.dll", "DBaseQtMenuCreate"
++import DBaseQtMenuSetText, "libd64_qt5.dll", "DBaseQtMenuSetText"
++import DBaseQtMenuSetSeparator, "libd64_qt5.dll", "DBaseQtMenuSetSeparator"
++import DBaseQtMenuSetShortcut, "libd64_qt5.dll", "DBaseQtMenuSetShortcut"
++import DBaseQtMenuSetOnClick, "libd64_qt5.dll", "DBaseQtMenuSetOnClick"
++import DBaseQtEnsureDefaultMenu, "libd64_qt5.dll", "DBaseQtEnsureDefaultMenu"
++import DBaseQtSetColorNormal, "libd64_qt5.dll", "DBaseQtSetColorNormal"
++import DBaseQtSessionCreate, "libd64_qt5.dll", "DBaseQtSessionCreate"
++import DBaseQtGetLoginSession, "libd64_qt5.dll", "DBaseQtGetLoginSession"
++import DBaseQtSessionLogin, "libd64_qt5.dll", "DBaseQtSessionLogin"
++import DBaseQtDatabaseCreate, "libd64_qt5.dll", "DBaseQtDatabaseCreate"
++import DBaseQtDatabaseSetPath, "libd64_qt5.dll", "DBaseQtDatabaseSetPath"
++import DBaseQtDatabaseSetDatabaseName, "libd64_qt5.dll", "DBaseQtDatabaseSetDatabaseName"
++import DBaseQtDatabaseSetUserName, "libd64_qt5.dll", "DBaseQtDatabaseSetUserName"
++import DBaseQtDatabaseSetPassword, "libd64_qt5.dll", "DBaseQtDatabaseSetPassword"
++import DBaseQtDatabaseSetAlias, "libd64_qt5.dll", "DBaseQtDatabaseSetAlias"
++import DBaseQtDatabaseSetSession, "libd64_qt5.dll", "DBaseQtDatabaseSetSession"
++import DBaseQtDatabaseSetActive, "libd64_qt5.dll", "DBaseQtDatabaseSetActive"
++import DBaseQtDatabaseOpen, "libd64_qt5.dll", "DBaseQtDatabaseOpen"
++import DBaseQtDatabaseClose, "libd64_qt5.dll", "DBaseQtDatabaseClose"
++import DBaseQtDatabaseCommit, "libd64_qt5.dll", "DBaseQtDatabaseCommit"
++import __dbase_gcvt, "msvcrt.dll", "_gcvt"
++import __dbase_malloc, "msvcrt.dll", "malloc"
++import __dbase_exc_free, "msvcrt.dll", "free"
++import __dbase_exc_strlenA, "kernel32.dll", "lstrlenA"
++import __dbase_exc_object_free, "libd64_runtime.dll", "jit_object_free"
++import __dbase_memcpy, "msvcrt.dll", "memcpy"
++import __dbase_memcmp, "msvcrt.dll", "memcmp"
++import ExitProcess, "kernel32.dll", "ExitProcess"
++import DBaseConsoleEnsure, "c64_dbase_runtime.dll", "DBaseConsoleEnsure"
++import DBaseConsoleWrite, "c64_dbase_runtime.dll", "DBaseConsoleWrite"
++import DBaseConsoleShutdown, "c64_dbase_runtime.dll", "DBaseConsoleShutdown"
++import DBaseConsoleSetTitle, "c64_dbase_runtime.dll", "DBaseConsoleSetTitle"
++import DBaseCharIsLowerCP1252, "c64_dbase_runtime.dll", "DBaseCharIsLowerCP1252"
++import DBaseCharIsUpperCP1252, "c64_dbase_runtime.dll", "DBaseCharIsUpperCP1252"
++import DBaseCharIsLowerUtf8, "c64_dbase_runtime.dll", "DBaseCharIsLowerUtf8"
++import DBaseCharIsUpperUtf8, "c64_dbase_runtime.dll", "DBaseCharIsUpperUtf8"
++import DBaseStringLengthN, "c64_dbase_runtime.dll", "DBaseStringLengthN"
++import DBaseWfmClassifyType, "c64_dbase_runtime.dll", "DBaseWfmClassifyType"
++import DBaseWfmFormatValue, "c64_dbase_runtime.dll", "DBaseWfmFormatValue"
++import __dbase_obj_jit_object_instance_new, "libd64_runtime.dll", "jit_object_instance_new"
++import __dbase_obj_jit_object_instance_free, "libd64_runtime.dll", "jit_object_instance_free"
++import __dbase_obj_jit_object_free, "libd64_runtime.dll", "jit_object_free"
++import __dbase_obj_jit_object_class_type, "libd64_runtime.dll", "jit_object_class_type"
++import __dbase_obj_jit_class_parent, "libd64_runtime.dll", "jit_class_parent"
++import __dbase_obj_jit_class_name, "libd64_runtime.dll", "jit_class_name"
++import __dbase_obj_jit_class_instance_size, "libd64_runtime.dll", "jit_class_instance_size"
++import __dbase_obj_jit_inherits_from_object, "libd64_runtime.dll", "jit_inherits_from_object"
++import __dbase_obj_jit_get_virtual_object, "libd64_runtime.dll", "jit_get_virtual_object"
++import __dbase_cls_api_lstrlenA, "kernel32.dll", "lstrlenA"
++import __dbase_cls_api_lstrcpyA, "kernel32.dll", "lstrcpyA"
++import __dbase_cls_api_lstrcatA, "kernel32.dll", "lstrcatA"
++import __dbase_cls_api_LocalAlloc, "kernel32.dll", "LocalAlloc"
++import __dbase_cls_api_LocalFree, "kernel32.dll", "LocalFree"
++import __dbase_ffi_lstrlenA, "kernel32.dll", "lstrlenA"
+--- /dev/null
++++ b/examples/dbase/App001.generated.pe32.extern.inc
+@@ -0,0 +1,74 @@
++import DBaseQtSetWorkstationMode, "libd64_qt5.dll", "DBaseQtSetWorkstationMode"
++import DBaseQtSetDebugTheme, "libd64_qt5.dll", "DBaseQtSetDebugTheme"
++import DBaseQtRuntimeStartup, "libd64_qt5.dll", "DBaseQtRuntimeStartup"
++import DBaseQtRuntimeShutdown, "libd64_qt5.dll", "DBaseQtRuntimeShutdown"
++import DBaseQtShowWindow, "libd64_qt5.dll", "DBaseQtShowWindow"
++import DBaseQtProcessEvents, "libd64_qt5.dll", "DBaseQtProcessEvents"
++import DBaseQtSetDebugVisible, "libd64_qt5.dll", "DBaseQtSetDebugVisible"
++import DBaseQtAppendConsole, "libd64_qt5.dll", "DBaseQtAppendConsole"
++import DBaseQtAppendDebug, "libd64_qt5.dll", "DBaseQtAppendDebug"
++import DBaseQtSetOutputColor, "libd64_qt5.dll", "DBaseQtSetOutputColor"
++import DBaseQtFillBackground, "libd64_qt5.dll", "DBaseQtFillBackground"
++import DBaseQtClearScreen, "libd64_qt5.dll", "DBaseQtClearScreen"
++import DBaseQtClearScreenChar, "libd64_qt5.dll", "DBaseQtClearScreenChar"
++import DBaseQtClearScreenColor, "libd64_qt5.dll", "DBaseQtClearScreenColor"
++import DBaseQtSetBorderColor, "libd64_qt5.dll", "DBaseQtSetBorderColor"
++import DBaseQtMarkProgramFinished, "libd64_qt5.dll", "DBaseQtMarkProgramFinished"
++import DBaseQtExec, "libd64_qt5.dll", "DBaseQtExec"
++import DBaseQtShutdownRequested, "libd64_qt5.dll", "DBaseQtShutdownRequested"
++import DBaseQtShutdown, "libd64_qt5.dll", "DBaseQtShutdown"
++import DBaseQtMenuCreate, "libd64_qt5.dll", "DBaseQtMenuCreate"
++import DBaseQtMenuSetText, "libd64_qt5.dll", "DBaseQtMenuSetText"
++import DBaseQtMenuSetSeparator, "libd64_qt5.dll", "DBaseQtMenuSetSeparator"
++import DBaseQtMenuSetShortcut, "libd64_qt5.dll", "DBaseQtMenuSetShortcut"
++import DBaseQtMenuSetOnClick, "libd64_qt5.dll", "DBaseQtMenuSetOnClick"
++import DBaseQtEnsureDefaultMenu, "libd64_qt5.dll", "DBaseQtEnsureDefaultMenu"
++import DBaseQtSetColorNormal, "libd64_qt5.dll", "DBaseQtSetColorNormal"
++import DBaseQtSessionCreate, "libd64_qt5.dll", "DBaseQtSessionCreate"
++import DBaseQtGetLoginSession, "libd64_qt5.dll", "DBaseQtGetLoginSession"
++import DBaseQtSessionLogin, "libd64_qt5.dll", "DBaseQtSessionLogin"
++import DBaseQtDatabaseCreate, "libd64_qt5.dll", "DBaseQtDatabaseCreate"
++import DBaseQtDatabaseSetPath, "libd64_qt5.dll", "DBaseQtDatabaseSetPath"
++import DBaseQtDatabaseSetDatabaseName, "libd64_qt5.dll", "DBaseQtDatabaseSetDatabaseName"
++import DBaseQtDatabaseSetUserName, "libd64_qt5.dll", "DBaseQtDatabaseSetUserName"
++import DBaseQtDatabaseSetPassword, "libd64_qt5.dll", "DBaseQtDatabaseSetPassword"
++import DBaseQtDatabaseSetAlias, "libd64_qt5.dll", "DBaseQtDatabaseSetAlias"
++import DBaseQtDatabaseSetSession, "libd64_qt5.dll", "DBaseQtDatabaseSetSession"
++import DBaseQtDatabaseSetActive, "libd64_qt5.dll", "DBaseQtDatabaseSetActive"
++import DBaseQtDatabaseOpen, "libd64_qt5.dll", "DBaseQtDatabaseOpen"
++import DBaseQtDatabaseClose, "libd64_qt5.dll", "DBaseQtDatabaseClose"
++import DBaseQtDatabaseCommit, "libd64_qt5.dll", "DBaseQtDatabaseCommit"
++import __dbase_gcvt, "msvcrt.dll", "_gcvt"
++import __dbase_malloc, "msvcrt.dll", "malloc"
++import __dbase_exc_free, "msvcrt.dll", "free"
++import __dbase_exc_strlenA, "kernel32.dll", "lstrlenA"
++import __dbase_exc_object_free, "libd64_runtime.dll", "jit_object_free"
++import __dbase_memcpy, "msvcrt.dll", "memcpy"
++import __dbase_memcmp, "msvcrt.dll", "memcmp"
++import ExitProcess, "kernel32.dll", "ExitProcess"
++import DBaseConsoleEnsure, "c64_dbase_runtime.dll", "DBaseConsoleEnsure"
++import DBaseConsoleWrite, "c64_dbase_runtime.dll", "DBaseConsoleWrite"
++import DBaseConsoleShutdown, "c64_dbase_runtime.dll", "DBaseConsoleShutdown"
++import DBaseConsoleSetTitle, "c64_dbase_runtime.dll", "DBaseConsoleSetTitle"
++import DBaseCharIsLowerCP1252, "c64_dbase_runtime.dll", "DBaseCharIsLowerCP1252"
++import DBaseCharIsUpperCP1252, "c64_dbase_runtime.dll", "DBaseCharIsUpperCP1252"
++import DBaseCharIsLowerUtf8, "c64_dbase_runtime.dll", "DBaseCharIsLowerUtf8"
++import DBaseCharIsUpperUtf8, "c64_dbase_runtime.dll", "DBaseCharIsUpperUtf8"
++import DBaseStringLengthN, "c64_dbase_runtime.dll", "DBaseStringLengthN"
++import DBaseWfmClassifyType, "c64_dbase_runtime.dll", "DBaseWfmClassifyType"
++import DBaseWfmFormatValue, "c64_dbase_runtime.dll", "DBaseWfmFormatValue"
++import __dbase_obj_jit_object_instance_new, "libd64_runtime.dll", "jit_object_instance_new"
++import __dbase_obj_jit_object_instance_free, "libd64_runtime.dll", "jit_object_instance_free"
++import __dbase_obj_jit_object_free, "libd64_runtime.dll", "jit_object_free"
++import __dbase_obj_jit_object_class_type, "libd64_runtime.dll", "jit_object_class_type"
++import __dbase_obj_jit_class_parent, "libd64_runtime.dll", "jit_class_parent"
++import __dbase_obj_jit_class_name, "libd64_runtime.dll", "jit_class_name"
++import __dbase_obj_jit_class_instance_size, "libd64_runtime.dll", "jit_class_instance_size"
++import __dbase_obj_jit_inherits_from_object, "libd64_runtime.dll", "jit_inherits_from_object"
++import __dbase_obj_jit_get_virtual_object, "libd64_runtime.dll", "jit_get_virtual_object"
++import __dbase_cls_api_lstrlenA, "kernel32.dll", "lstrlenA"
++import __dbase_cls_api_lstrcpyA, "kernel32.dll", "lstrcpyA"
++import __dbase_cls_api_lstrcatA, "kernel32.dll", "lstrcatA"
++import __dbase_cls_api_LocalAlloc, "kernel32.dll", "LocalAlloc"
++import __dbase_cls_api_LocalFree, "kernel32.dll", "LocalFree"
++import __dbase_ffi_lstrlenA, "kernel32.dll", "lstrlenA"

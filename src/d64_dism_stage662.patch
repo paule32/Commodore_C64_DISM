@@ -1,0 +1,233 @@
+--- a/d64_dism.py
++++ b/d64_dism.py
+@@ -125157,24 +125157,34 @@
+         # erfolgt in einem separaten Qt5-Bridge-DEBUG-Fenster (GNU-MO-Datei).
+         # Die Bridge stellt weder Compiler noch Hilfecompiler-Menü bereit.
+         # -------------------------------------------------------------------
+         def _turbo_help_active_editor(self):
+-            """Resolve the actual editor widget; never trust QAction/Qt bool results.
+-
+-            A project-tree click may open the dock for the first time, or a
+-            restored dock may already own the editor while the cached reference
+-            is missing/invalid. Only a real TurboHelpEditor is returned.
++            """Find a live help editor, including after a restored Qt dock.
++
++            The installed application can load the widget class through more
++            than one module identity. Verify its actual editor API rather
++            than relying solely on ``isinstance`` (Stage 662).
+             """
+-            from turbo_help_gui import TurboHelpEditor
++            def valid(candidate):
++                try:
++                    return (candidate is not None and not isinstance(candidate, bool)
++                            and callable(getattr(candidate, "load_document", None))
++                            and getattr(candidate, "tabs", None) is not None)
++                except RuntimeError:  # already deleted Qt wrapper
++                    return False
+ 
+             editor = getattr(self, "turbo_help_compiler_editor", None)
+-            if isinstance(editor, TurboHelpEditor):
++            if valid(editor):
+                 return editor
+             dock = getattr(self, "turbo_help_compiler_dock", None)
+-            candidate = dock.widget() if dock is not None else None
+-            if isinstance(candidate, TurboHelpEditor):
+-                self.turbo_help_compiler_editor = candidate
+-                return candidate
++            if dock is not None:
++                try:
++                    candidate = dock.widget()
++                except RuntimeError:
++                    candidate = None
++                if valid(candidate):
++                    self.turbo_help_compiler_editor = candidate
++                    return candidate
+             return None
+ 
+         def _add_project_turbo_help_file(self, path, *, title="", mark_modified=True):
+             root = getattr(self, "project_turbo_help_root", None)
+@@ -125258,26 +125268,32 @@
+         def _project_turbo_help_open(self, item):
+             if not item.data(0, Qt.UserRole + 302):
+                 for edit, pending in getattr(self, "_turbo_help_pending_leaves", {}).items():
+                     if pending is item:
+-                        self.show_turbo_help_compiler_dock()
+-                        editor = self._turbo_help_active_editor()
++                        opened = self.show_turbo_help_compiler_dock()
++                        editor = (opened if callable(getattr(opened, "load_document", None))
++                                  else self._turbo_help_active_editor())
+                         if editor is None:
+                             self.show_error("Turbo Help", "Der Hilfecompiler-Editor ist nicht verfügbar.")
+                             return
+                         editor.tabs.setCurrentWidget(edit)
+-                        edit.setFocus()
++                        current = getattr(editor.tabs, "currentWidget", None)
++                        if not callable(current) or current() is edit:
++                            edit.setFocus(Qt.OtherFocusReason)
+                         return
+                 return
+             path = Path(str(item.data(0, Qt.UserRole + 302) or ""))
+             if not path.is_file():
+                 self.show_error("Turbo Help", f"Hilfedatei fehlt: {path}")
+                 return
+-            self.show_turbo_help_compiler_dock()
+-            editor = self._turbo_help_active_editor()
++            opened = self.show_turbo_help_compiler_dock()
++            editor = (opened if callable(getattr(opened, "load_document", None))
++                      else self._turbo_help_active_editor())
+             if editor is None:
+                 self.show_error("Turbo Help", "Der Hilfecompiler-Editor ist nicht verfügbar.")
+                 return
++            # load_document selects the one requested source and focuses it;
++            # saving the previous modified tab may be canceled by the user.
+             editor.load_document(path)
+ 
+         def _project_turbo_help_context(self, item, position):
+             kind = self._project_item_kind(item)
+@@ -125342,22 +125358,11 @@
+                     editor = dock_widget
+                     self.turbo_help_compiler_editor = editor
+ 
+             if editor is None:
+-                source = (Path(__file__).resolve().parent / "help" /
+-                          "turbo_vision" / "System.Help.thlp")
+-                root = getattr(self, "project_turbo_help_root", None)
+-                first = next(
+-                    (Path(root.child(i).data(0, Qt.UserRole + 302))
+-                     for i in range(root.childCount())
+-                     if root.child(i).data(0, Qt.UserRole + 302)
+-                     and Path(root.child(i).data(0, Qt.UserRole + 302)).is_file()),
+-                    None,
+-                ) if root is not None else None
+-                editor = TurboHelpEditor(
+-                    first if first is not None else
+-                    (source if source.is_file() else None), self
+-                )
++                # An untouched placeholder may be replaced by the first clicked
++                # THLP leaf. Do not preload a sample or every project file.
++                editor = TurboHelpEditor(None, self)
+                 editor.compiled.connect(self._turbo_help_compiled)
+                 editor.document_saved.connect(self._turbo_help_document_saved)
+                 self.turbo_help_compiler_editor = editor
+ 
+@@ -125394,12 +125399,10 @@
+                     Path(root.child(i).data(0, Qt.UserRole + 302))
+                     for i in range(root.childCount())
+                     if root.child(i).data(0, Qt.UserRole + 302)
+                 ]
+-                # Jede registrierte Quelle genau einmal in den Tabs anzeigen.
+-                for path in editor.project_sources:
+-                    if path.is_file():
+-                        editor.load_document(path)
++                # Project sources are F2 compiler inputs, not implicit editor tabs.
++                # A tree-leaf click opens only the requested THLP document.
+ 
+             self._activate_exclusive_tool_workspace(dock)
+             dock.show()
+             dock.raise_()
+--- a/turbo_help_gui.py
++++ b/turbo_help_gui.py
+@@ -27,8 +27,10 @@
+         self.use_project_list = False
+         self.resolve_output_executable = None  # supplied by dBase2Many project settings
+         self.source_path = None
+         self.editor = None
++        self._active_tab = None  # independent of currentIndex, which changes during mouse clicks
++        self._tab_switch_lock = False
+         layout = QVBoxLayout(self)
+         layout.setContentsMargins(6, 6, 6, 6)
+         layout.setSpacing(5)
+         tools = QHBoxLayout()
+@@ -71,11 +73,43 @@
+ 
+     def _path_for(self, edit):
+         return getattr(edit, '_thlp_path', None)
+ 
++    def _save_changes_before_switch(self):
++        """Save the active source before the user leaves its tab (Stage 662).
++
++        A canceled Save As dialog or failed write must leave the old tab active.
++        Untouched new tabs do not trigger a Save As prompt just for switching.
++        """
++        old = self._active_tab
++        if (old is not None and self.tabs.indexOf(old) >= 0
++                and old.document().isModified()):
++            return self._save_edit(old)
++        return True
++
+     def _sync_current(self, _index=-1):
+-        self.editor = self._current_editor()
+-        self.source_path = self._path_for(self.editor) if self.editor else None
++        """Handle mouse, keyboard and programmatic tab changes consistently."""
++        if self._tab_switch_lock:
++            return False
++        target = self._current_editor()
++        old = self._active_tab
++        if old is not None and target is not old and self.tabs.indexOf(old) >= 0:
++            if not self._save_changes_before_switch():
++                # QTabWidget emits currentChanged *after* changing its index.
++                # Restore the former tab without entering this handler again.
++                self._tab_switch_lock = True
++                try:
++                    self.tabs.setCurrentWidget(old)
++                finally:
++                    self._tab_switch_lock = False
++                old.setFocus(Qt.OtherFocusReason)
++                return False
++        self._active_tab = target
++        self.editor = target
++        self.source_path = self._path_for(target) if target is not None else None
++        if target is not None:
++            target.setFocus(Qt.OtherFocusReason)
++        return True
+ 
+     def _refresh_tab(self, edit):
+         index = self.tabs.indexOf(edit)
+         if index < 0:
+@@ -114,8 +148,10 @@
+         edit.setFocus()
+         return edit
+ 
+     def new_document(self):
++        if not self._save_changes_before_switch():
++            return None
+         template = DEFAULT_SOURCE if self.tabs.count() == 0 else '%topic "Neues Thema"\n\n'
+         self._append_tab(template)
+         self.status_label.setText('Neuer Hilfetext: Speichern unter ... (*.thlp)')
+         return self._current_editor()
+@@ -134,14 +170,20 @@
+                 raise ValueError('Nur .thlp-Dateien werden akzeptiert')
+             for index in range(self.tabs.count()):
+                 widget = self.tabs.widget(index)
+                 if self._path_for(widget) == source:
+-                    self.tabs.setCurrentIndex(index)
+-                    widget.setFocus()
+-                    return True
++                    if widget is not self._current_editor():
++                        if not self._save_changes_before_switch():
++                            return False
++                        self.tabs.setCurrentIndex(index)
++                    widget.setFocus(Qt.OtherFocusReason)
++                    return self._current_editor() is widget
+             content = source.read_text(encoding='utf-8-sig')
+         except (OSError, UnicodeError, ValueError) as exc:
+             QMessageBox.critical(self, 'Hilfecompiler', f'Datei kann nicht geöffnet werden:\n{exc}')
++            return False
++        # Never discard edits to another tab when loading a new project leaf.
++        if not self._save_changes_before_switch():
+             return False
+         # An untouched placeholder can be replaced, but never a modified document.
+         if self.tabs.count() == 1:
+             blank = self.tabs.widget(0)
+@@ -183,9 +225,10 @@
+             return False
+         edit._thlp_path = path
+         edit.document().setModified(False)
+         self._refresh_tab(edit)
+-        self._sync_current()
++        if self._current_editor() is edit:
++            self.source_path = path
+         self.status_label.setText(f'Gespeichert: {path.name}')
+         self.document_saved.emit(str(path), edit)
+         return True
+ 
