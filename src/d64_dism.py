@@ -108020,7 +108020,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             # Stage 447: one architecture-specific runtime DLL builder per Windows profile.
             runtime_group = QGroupBox("dBASE Runtime", input_body)
             runtime_row = QHBoxLayout()
-            self.console_runtime_build_button = QPushButton("dBASE Runtime DLL erstellen", runtime_group)
+            self.console_runtime_build_button = QPushButton("dBASE Runtime DLL bereitstellen", runtime_group)
             self.console_runtime_build_button.setObjectName(
                 f"project_windows_{target_tag}_dbase_runtime_build")
             self.console_runtime_directory_edit = QLineEdit(runtime_group)
@@ -108043,12 +108043,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.console_runtime_pack_checkbox.setObjectName(
                 f"project_windows_{target_tag}_dbase_runtime_pack")
             self.console_runtime_pack_checkbox.setToolTip(
-                "Aktiviert D64Z/MSZIP für c64_dbase_runtime.dll und dBASE-Runtime-"
-                "Projektbibliotheken (z. B. RuntimeDB.dll), auch wenn das "
-                "allgemeine PE-Packing ausgeschaltet ist. "
-                "Bei aktivem Linker-Packing wird die DLL automatisch gepackt. "
-                "Der separate DLL-Entpacker startet beim DLL_PROCESS_ATTACH; "
-                "ein NTFS-Kompressionsattribut wird nicht benötigt.")
+                "D64Z/MSZIP gilt für benannte dBASE-Klassenbibliotheken "
+                "(z. B. RuntimeDB.dll). Die zusammengeführte native "
+                "libd64_runtime.dll wird separat durch die MinGW-Toolchain "
+                "erstellt und hier nur bereitgestellt.")
             self.console_runtime_pack_checkbox.setChecked(bool(
                 getattr(self.owner, "project_windows_console_dll_pack", {}).get(self.target, False)
             ))
@@ -108587,7 +108585,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.dbase_size_o0_radio = QRadioButton(
                 "O0  -  keine Optimierung", self.dbase_size_group)
             self.dbase_size_o1_radio = QRadioButton(
-                "O1  -  Längen Optimierung", self.dbase_size_group)
+                "O1  -  Länge Optimierung - JNE JE", self.dbase_size_group)
+            self.dbase_size_o2_radio = QRadioButton(
+                "O2  -  Static String Optimierung", self.dbase_size_group)
+            self.dbase_size_o2_radio.setObjectName(
+                f"project_windows_{target_tag}_dbase_size_o2")
+            self.dbase_size_o2_radio.setToolTip(
+                "Enthält O1; statische Texte über einen einzigen Zeiger an die "
+                "Qt5-Runtime ausgeben. Benötigt die Stage-674-Qt5-DLL.")
             self.dbase_size_o0_radio.setObjectName(
                 f"project_windows_{target_tag}_dbase_size_o0")
             self.dbase_size_o1_radio.setObjectName(
@@ -108598,6 +108603,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "Die Fehler-Zeilennummern bleiben unverändert.")
             size_group_layout.addWidget(self.dbase_size_o0_radio)
             size_group_layout.addWidget(self.dbase_size_o1_radio)
+            size_group_layout.addWidget(self.dbase_size_o2_radio)
             dbase_opt_layout.addWidget(self.dbase_size_group)
             self.dbase_visual_group = QGroupBox(
                 "Visuelle Elemente", self.dbase_optimization_page
@@ -108802,9 +108808,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.pe_packing_checkbox.setChecked(PE_PACKING_DEFAULT)
             self.pe_packing_checkbox.setToolTip(
                 "Komprimiert den Programmcode in einen D64Z/MSZIP-Block. "
-                "Die dBASE-Konsolenruntime c64_dbase_runtime.dll sowie "
-                "dBASE-Klassenbibliotheken (z. B. RuntimeDB.dll) erhalten "
-                "einen eigenen DLL-Entpacker. "
+                "Die native libd64_runtime.dll wird nicht mit dieser "
+                "Projektoption gepackt. Benannte dBASE-Klassenbibliotheken "
+                "(z. B. RuntimeDB.dll) erhalten einen eigenen DLL-Entpacker. "
                 "Für EXE und DLL gelten getrennte Startpfade."
             )
             pe_packing_layout.addWidget(self.pe_packing_checkbox)
@@ -109335,7 +109341,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.pascal_unit_output_edit.editingFinished.connect(self._pascal_unit_output_edited)
             self.input_relative_checkbox.toggled.connect(self._input_relative_toggled)
             self.output_relative_checkbox.toggled.connect(self._output_relative_toggled)
-            for _radio in (self.dbase_size_o0_radio, self.dbase_size_o1_radio):
+            for _radio in (self.dbase_size_o0_radio, self.dbase_size_o1_radio, self.dbase_size_o2_radio):
                 _radio.toggled.connect(self._dbase_size_level_changed)
             self.dbase_external_ui_checkbox.toggled.connect(self._dbase_visual_changed)
             self.dbase_store_binary_checkbox.toggled.connect(self._dbase_visual_changed)
@@ -110262,13 +110268,15 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                          options["dynamic_typed_variables"], mark_modified=True)
 
         def dbase_size_level(self) -> str:
-            return "O1" if self.dbase_size_o1_radio.isChecked() else "O0"
+            return ("O2" if self.dbase_size_o2_radio.isChecked() else
+                    "O1" if self.dbase_size_o1_radio.isChecked() else "O0")
 
         def set_dbase_size_level(self, level: str) -> None:
             from dbase_size_optimizer import normalize_dbase_optimization_level
             self._syncing = True
             try:
                 selected = normalize_dbase_optimization_level(level)
+                self.dbase_size_o2_radio.setChecked(selected == "O2")
                 self.dbase_size_o1_radio.setChecked(selected == "O1")
                 self.dbase_size_o0_radio.setChecked(selected == "O0")
             finally:
@@ -121311,7 +121319,7 @@ border-radius: 7px;}}"""
                 statement_text,
                 add_newline,
             ):
-                """Stage 449: formatting is shared in c64_dbase_runtime.dll.
+                """Stage 449: formatting is shared in libd64_runtime.dll.
 
                 A packed WFM ValueSlot (type, number, pointer, byte length)
                 is passed without copying or changing the source slot.  The
@@ -123269,9 +123277,9 @@ border-radius: 7px;}}"""
             # may be built without the ordinary PRG import header.
             from d64dbase.char_case_runtime import CASE_EXPORTS
             needed_case_imports = [
-                f'import {name}, "c64_dbase_runtime.dll", "{name}"'
+                f'import {name}, "libd64_runtime.dll", "{name}"'
                 for name in CASE_EXPORTS if f'call {name}' in assembly
-                and f'import {name}, "c64_dbase_runtime.dll", "{name}"' not in assembly
+                and f'import {name}, "libd64_runtime.dll", "{name}"' not in assembly
             ]
             if needed_case_imports:
                 asm_lines = assembly.splitlines(keepends=True)
@@ -129161,9 +129169,9 @@ border-radius: 7px;}}"""
             )
 
         def create_dbase_runtime_dll(self, target: str, directory: str = None) -> bool:
-            """Stage 447/607: actual PE32/PE32+ DLL creation using internal linker."""
+            """Stage 676: install the already built, merged native runtime."""
             try:
-                from d64dbase.runtime_builder import create_runtime_dll
+                from d64dbase.native_runtime_deploy import deploy_runtime
                 key = str(target).casefold()
                 if key not in ("pe32", "pe64"):
                     raise ValueError(f"Ungültiges DLL-Ziel: {target}")
@@ -129171,32 +129179,15 @@ border-radius: 7px;}}"""
                     self.set_project_windows_console_dll_directory(key, directory)
                 selected = self.project_windows_console_dll_directories.get(key, "")
                 if not selected:
-                    # No path configured: use current project workspace by default.
                     selected = str(getattr(self, "current_directory", Path.cwd()))
-                destination = create_runtime_dll(
-                    key, Path(selected), get_exports=_pe_export_name_ordinals,
-                    assemble32=assemble_pe32_object_source,
-                    coff32=write_coff32_object, link32=link_coff32_objects,
-                    assemble64=assemble_pe64_object_source,
-                    coff64=write_coff64_object, link64=link_coff64_objects,
-                    pack_dll=self._dbase_console_runtime_pack_enabled(key),
-                )
-                if self._dbase_console_runtime_pack_enabled(key):
-                    from d64dbase.pe_dll_payload import is_payload_packed, parse_pe
-                    if not is_payload_packed(destination):
-                        raise ValueError('D64Z-Payload der DLL konnte nicht bestätigt werden')
-                    pack_info = (f'; D64Z/MSZIP-Payload gepackt (PE-Loader), '
-                                 f'Dateigröße {destination.stat().st_size} Bytes; '
-                                 'kein NTFS-Attribut erforderlich')
-                else:
-                    pack_info = '; nicht gepackt'
-                message = (f"dBASE Runtime DLL ({key}) erfolgreich erstellt: "
-                           f"{destination}{pack_info}")
+                destination = deploy_runtime(
+                    Path(selected) / 'App.exe', key, get_exports=_pe_export_name_ordinals)
+                message = f"dBASE Native-Runtime ({key}) bereitgestellt: {destination}"
                 self.log(message)
                 self.statusBar().showMessage(message, 10000)
                 return True
-            except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError) as exc:
-                self.show_error("dBASE Runtime DLL erstellen", str(exc))
+            except (OSError, ValueError) as exc:
+                self.show_error("dBASE Runtime DLL bereitstellen", str(exc))
                 return False
 
         def set_project_windows_assembler_cache(self, target: str, value: str, *, mark_modified=True) -> None:
@@ -135350,7 +135341,7 @@ border: 2px solid #2a69aa;
                 _o_level = self.project_windows_dbase_size_level.get(
                     document.build_target, "O0")
                 _o_result = optimize_dbase_size_assembly(generated.assembly, level=_o_level)
-                if _o_result.replacements:
+                if _o_result.assembly != generated.assembly:
                     generated = replace(generated, assembly=_o_result.assembly)
                 document.dbase_size_compile_snapshot = _o_result.level
                 self.log(
@@ -135367,7 +135358,7 @@ border: 2px solid #2a69aa;
                     str(language_name).startswith("dBase")) else "O1"
                 _peephole_options = normalize_peephole_options(
                     self.project_windows_dbase_peephole.get(document.build_target, {})
-                    if _dbase_level == "O1" else {})
+                    if _dbase_level in {"O1", "O2"} else {})
                 _peephole_result = optimize_windows_assembly(
                     generated.assembly, target=document.build_target,
                     options=_peephole_options,
@@ -136424,7 +136415,7 @@ border: 2px solid #2a69aa;
                     source,
                     peephole_options=self.project_windows_dbase_peephole.get(
                         document.build_target, {}) if self.project_windows_dbase_size_level.get(
-                            document.build_target, "O0") == "O1" else {},
+                            document.build_target, "O0") in {"O1", "O2"} else {},
                     filename=str(document.path),
                     target=document.build_target,
                     source_kind="library" if _dbase_library else "program",
@@ -136909,9 +136900,10 @@ border: 2px solid #2a69aa;
                     output_path, self.project_windows_manifests.get(target), project_base,
                     dll=is_dll,
                 )
-                if (b'c64_dbase_runtime.dll' in program.executable.lower()
-                        and not self._prepare_dbase_console_runtime(output_path, target)):
-                    raise ValueError("Die passende dBASE-Konsolenruntime fehlt.")
+                if (b'libd64_runtime.dll' in program.executable.lower()
+                        or b'c64_dbase_runtime.dll' in program.executable.lower()):
+                    if not self._prepare_dbase_console_runtime(output_path, target):
+                        raise ValueError("Die passende dBASE Native-Runtime fehlt.")
                 if (not is_dll and self.project_windows_compact_enabled.get(target, False)):
                     from d64dbase.pe_image_compact import compact_pe_file
                     compact_pe_file(output_path)
@@ -137045,7 +137037,7 @@ border: 2px solid #2a69aa;
                     if error:
                         errors.append(f"Nach Kopieren ({destination}): {error}")
                         continue
-                    self.log(f"PASCAL CONSOLE RUNTIME OK: {candidate} -> {destination}")
+                    self.log(f"PASCAL QT5 CONSOLE RUNTIME OK: {candidate} -> {destination}")
                     return True
                 except OSError as exc:
                     errors.append(f"Kopierfehler {candidate} -> {destination}: {exc}")
@@ -137060,11 +137052,11 @@ border: 2px solid #2a69aa;
                 details.append("Gefundene, aber ungeeignete DLLs oder Kopierfehler:")
                 details.extend("  " + error for error in errors)
             else:
-                details.append("Keine libd64_console.dll an den geprüften Orten gefunden.")
+                details.append("Keine libd64_qt5.dll mit Pascal-Konsolenexports an den geprüften Orten gefunden.")
             details.append("Geprüfte DLL-Pfade:")
             details.extend("  " + str(path) for path in paths)
             self._stage551_pascal_console_last_error = "\n".join(details)
-            self.log("PASCAL CONSOLE RUNTIME FEHLT/UNGÜLTIG:\n" +
+            self.log("PASCAL QT5 CONSOLE RUNTIME FEHLT/UNGÜLTIG:\n" +
                      self._stage551_pascal_console_last_error)
             return False
 
@@ -137147,7 +137139,7 @@ border: 2px solid #2a69aa;
                     return False
                 _now = normalize_peephole_options(
                     self.project_windows_dbase_peephole.get(document.build_target, {})
-                    if _size_level_now == "O1" else {})
+                    if _size_level_now in {"O1", "O2"} else {})
                 _at_compile = getattr(document, "peephole_compile_snapshot", None)
                 if _at_compile is not None and _at_compile != _now:
                     self.show_error("Peephole-Einstellungen geaendert",
@@ -137394,7 +137386,7 @@ border: 2px solid #2a69aa;
                     is_library = source_kind == "library"
                     is_form = source_kind == "form"
                     # Stage 608: obtain the live GUI value for dBASE class DLLs;
-                    # it is a different binary from c64_dbase_runtime.dll.
+                    # it is a different binary from libd64_runtime.dll.
                     _dbase_library_pack = (
                         self._dbase_class_library_packing_enabled(document.build_target)
                         if is_library and document.is_dbase_document else None
@@ -137595,9 +137587,26 @@ border: 2px solid #2a69aa;
                 if (document.is_pascal_document
                         and document.build_target in {"pe32", "pe64"}
                         and output_path.suffix.casefold() in {".exe", ".dll"}):
+                    from pascal_console_dependencies import (
+                        required_console_exports, obsolete_console_dependencies,
+                    )
+                    _old_console_imports = obsolete_console_dependencies(
+                        output_path, getattr(program, "import_manifest", None))
+                    if _old_console_imports:
+                        message = (
+                            "Das Pascal-Projekt enthaelt noch Imports von "
+                            "libd64_console.dll (" + ", ".join(sorted(_old_console_imports))
+                            + "). Bitte betroffene Pascal-Objekte bzw. DLLs mit "
+                            "Stage 675 neu kompilieren/assemblieren und erneut linken."
+                        )
+                        document.show_generated_assembly_error(
+                            message, status_text="Veralteter Konsolenimport")
+                        self.show_error("Veralteter Konsolenimport", message)
+                        self.statusBar().showMessage("Veralteter Konsolenimport")
+                        return False
                     from pascal_console_dependencies import required_console_exports
                     has_asm_console = _windows_asm_imports_dll(
-                        assembly_source, assembly_path, "libd64_console.dll",
+                        assembly_source, assembly_path, "libd64_qt5.dll",
                         self._project_windows_asm_include_paths(
                             document.build_target, _project_document_compiler_language(document) or "dbase"),
                     )
@@ -137610,12 +137619,11 @@ border: 2px solid #2a69aa;
                         source_path=document.path,
                     ):
                         message = (
-                            "Die erzeugte EXE/DLL benötigt libd64_console.dll, "
-                            "aber neben dem Zielimage wurde keine passende DLL "
-                            "mit allen benötigten Exporten gefunden.\n\n"
-                            "Bitte unter MSYS2 MINGW32/MINGW64 "
-                            "runtime/compiler/build.console.win32.sh bzw. "
-                            "build.console.win64.sh erstellen und erneut linken. "
+                            "Die erzeugte EXE/DLL benötigt libd64_qt5.dll "
+                            "mit den integrierten Pascal-Konsolenexports, "
+                            "aber keine passende DLL wurde gefunden.\n\n"
+                            "Bitte d64qt5/build.sh unter MSYS2 MINGW32/MINGW64 "
+                            "neu erstellen und anschließend erneut linken. "
                             "Siehe Protokoll für Details.\n\n"
                             + "\n".join(
                                 str(getattr(self, "_stage551_pascal_console_last_error", ""))
@@ -137625,8 +137633,8 @@ border: 2px solid #2a69aa;
                         document.show_generated_assembly_error(
                             message, status_text="Konsolenruntime fehlt"
                         )
-                        self.show_error("Pascal-Konsolenruntime fehlt", message)
-                        self.statusBar().showMessage("Pascal-Konsolenruntime fehlt")
+                        self.show_error("Pascal Qt5-Konsolenruntime fehlt", message)
+                        self.statusBar().showMessage("Pascal Qt5-Konsolenruntime fehlt")
                         return False
                 # Pascal DLL ownership contract must accompany the final
                 # linked DLL, not only the intermediate Unit/PUI directory.
@@ -137668,9 +137676,10 @@ border: 2px solid #2a69aa;
                 if (document.is_dbase_document
                     and document.build_target in {"pe32", "pe64"}
                     and output_path.suffix.casefold() in {".exe", ".dll"}
-                    and (b'c64_dbase_runtime.dll' in program.executable.lower()
+                    and (b'libd64_runtime.dll' in program.executable.lower()
+                         or b'c64_dbase_runtime.dll' in program.executable.lower()
                          or _windows_asm_imports_dll(
-                             assembly_source, assembly_path, 'c64_dbase_runtime.dll',
+                             assembly_source, assembly_path, 'libd64_runtime.dll',
                              self._project_windows_asm_include_paths(
                             document.build_target, _project_document_compiler_language(document) or "dbase")
                          ))):
@@ -138584,7 +138593,8 @@ border: 2px solid #2a69aa;
                 if (document.is_dbase_document
                     and document.build_target in {"pe32", "pe64"}
                     and output_path.suffix.casefold() in {".exe", ".dll"}
-                    and '"c64_dbase_runtime.dll"' in source):
+                    and ('"libd64_runtime.dll"' in source
+                         or '"c64_dbase_runtime.dll"' in source)):
                     if not self._prepare_dbase_console_runtime(output_path, document.build_target):
                         return False
                 if document.build_target in {"pe32", "pe64"}:
@@ -139622,7 +139632,7 @@ border: 2px solid #2a69aa;
             """Stage 608: current visible PE packing checkbox wins over stale caches.
 
             Applies to dBASE RuntimeDB/class-library DLLs, not just the
-            separate c64_dbase_runtime.dll console helper from Stage 607.
+            merged libd64_runtime.dll (Stage 676).
             """
             key = self._project_windows_target_key(target)
             enabled = bool(self.project_windows_pe_packing_enabled.get(
@@ -139647,49 +139657,30 @@ border: 2px solid #2a69aa;
             return enabled or manual
 
         def _prepare_dbase_console_runtime(self, output_path: Path, target: str) -> bool:
-            """Stage 446: PE32/PE32+ dBASE DLL, built and deployed without make.
+            """Stage 676: deploy the merged native libd64_runtime.dll.
 
-            WFM has its own Qt5 console bridge and does not import this DLL.
-            Deploy before direct start AND before Workstation Runner handoff.
+            The old in-process assembler must never create a console-only DLL
+            with this name: that would remove JitObject/Pascal exports.
             """
             try:
-                from d64dbase.console_runtime import deploy_runtime
-                installed = deploy_runtime(
-                    output_path, target,
-                    get_exports=_pe_export_name_ordinals,
-                    assemble32=assemble_pe32_object_source,
-                    coff32=write_coff32_object, link32=link_coff32_objects,
-                    assemble64=assemble_pe64_object_source,
-                    coff64=write_coff64_object, link64=link_coff64_objects,
-                    pack_dll=self._dbase_console_runtime_pack_enabled(target),
-                )
-                from d64dbase.pe_dll_payload import is_payload_packed, packed_payload_info
-                packed = is_payload_packed(installed)
-                requested = self._dbase_console_runtime_pack_enabled(target)
-                if packed != requested:
+                from d64dbase.native_runtime_deploy import deploy_runtime
+                if b'c64_dbase_runtime.dll' in Path(output_path).read_bytes().lower():
                     raise ValueError(
-                        "D64Z/MSZIP-Status der Konsolen-DLL stimmt nicht "
-                        "mit den Projekt-Einstellungen überein"
-                    )
-                info = packed_payload_info(installed) if packed else None
-                ratio = (
-                    f"; .text {info['original_bytes']} -> "
-                    f"{info['compressed_bytes']} Bytes (MSZIP)"
-                    if info else ""
-                )
-                self.log(
-                    f"DBASE CONSOLE DLL ({target}): {installed} "
-                    f"({'D64Z/MSZIP gepackt' if packed else 'ungepackt'}){ratio}"
-                )
+                        'Veralteter Import c64_dbase_runtime.dll gefunden. '
+                        'Bitte das dBASE-Modul und alle zugeordneten Programme '
+                        'mit Stage 676 neu kompilieren, assemblieren und linken.')
+                installed = deploy_runtime(
+                    output_path, target, get_exports=_pe_export_name_ordinals)
+                self.log(f"DBASE NATIVE RUNTIME ({target}): {installed}")
                 return True
-            except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError) as exc:
+            except (OSError, ValueError) as exc:
                 self.show_error(
-                    "dBASE Runtime-DLL fehlt oder ist inkompatibel",
-                    "Die passende c64_dbase_runtime.dll konnte nicht neben "
-                    "der erzeugten EXE bereitgestellt werden.\n\n"
-                    f"Ziel: {target}\nEXE: {output_path}\nFehler: {exc}\n\n"
-                    "Prüfe die Datei d64dbase/bin/pe32 bzw. pe64. "
-                    "Die IDE kann die DLL auch mit der internen Toolchain erzeugen.",
+                    "dBASE Native-Runtime fehlt oder ist inkompatibel",
+                    f"Die zusammengeführte libd64_runtime.dll konnte nicht "
+                    f"bereitgestellt werden.\nZiel: {target}\n"
+                    f"EXE/DLL: {output_path}\nFehler: {exc}\n\n"
+                    "Bitte die native Runtime neu kompilieren und das "
+                    "PE32-/PE32+-DLL-Binary im Runtime-Verzeichnis ablegen.",
                 )
                 return False
 
@@ -140550,7 +140541,8 @@ border: 2px solid #2a69aa;
                 # Check the *actual linked binary* (not a possibly stale editor).
                 if document.is_dbase_document and output_path.suffix.casefold() == ".exe":
                     try:
-                        needs_console = b"c64_dbase_runtime.dll" in output_path.read_bytes().lower()
+                        needs_console = (b"libd64_runtime.dll" in output_path.read_bytes().lower()
+                                         or b"c64_dbase_runtime.dll" in output_path.read_bytes().lower())
                     except OSError:
                         needs_console = False
                     if needs_console and not self._prepare_dbase_console_runtime(output_path, document.build_target):

@@ -33,6 +33,8 @@ HEADERS += d64_turbo_editor.hpp \
 DEF_FILE = d64qt5_bridge.def
 
 win32 {
+    # Stage 675: the eleven Pascal console exports are part of libd64_qt5.dll.
+    SOURCES += d64_pascal_console.cpp
     debug {
         TARGET  = libd64_qt5d
         DESTDIR = debug

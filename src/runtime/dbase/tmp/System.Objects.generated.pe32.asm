@@ -1,27 +1,9 @@
 %include "System.Objects.generated.pe32.extern.inc"
 bits 32
-; dBASE Runtime CLASS DLL – no Qt GUI / no EXE startup
-global __d64_dll_entry
-entry __d64_dll_entry
-export "__dbase_cls_tobject_vmt", __dbase_cls_tobject_vmt
-export "__dbase_cls_tobject_create", __dbase_cls_tobject_create
-export "__dbase_cls_tobject___ini__", __dbase_cls_tobject___ini__
-export "__dbase_cls_tobject___del__", __dbase_cls_tobject___del__
-export "__dbase_cls_tobject_free", __dbase_cls_tobject_free
-export "__dbase_cls_tobject_freeinstance", __dbase_cls_tobject_freeinstance
-export "__dbase_cls_tobject_classtype", __dbase_cls_tobject_classtype
-export "__dbase_cls_tobject_classparent", __dbase_cls_tobject_classparent
-export "__dbase_cls_tobject_classnameaddress", __dbase_cls_tobject_classnameaddress
-export "__dbase_cls_tobject_classname", __dbase_cls_tobject_classname
-export "__dbase_cls_tobject_instancesize", __dbase_cls_tobject_instancesize
-export "__dbase_cls_tobject_inheritsfrom", __dbase_cls_tobject_inheritsfrom
+
 
 section .text
 
-__d64_dll_entry:
-    push 1
-    pop eax
-    ret 12
 
 ; Stage 602: dBASE source methods / JitVmt C ABI
 __dbase_cls_tobject___ini__:
@@ -45,7 +27,7 @@ __dbase_cls_tobject_free:
     call __dbase_ffi_jit_object_free
     add esp, 4
 __dbase_cls_tobject_free_else_1:
-    jmp __dbase_cls_tobject_free_source_end
+    ; O1: entfallene Instruktion
 __dbase_cls_tobject_free_source_end:
     mov esp, ebp
     pop ebp
@@ -67,7 +49,7 @@ __dbase_cls_tobject_freeinstance:
     call __dbase_ffi_jit_object_instance_free
     add esp, 4
 __dbase_cls_tobject_freeinstance_else_1:
-    jmp __dbase_cls_tobject_freeinstance_source_end
+    ; O1: entfallene Instruktion
 __dbase_cls_tobject_freeinstance_source_end:
     mov esp, ebp
     pop ebp
@@ -79,7 +61,7 @@ __dbase_cls_tobject_classtype:
     push eax
     call __dbase_ffi_jit_object_class_type
     add esp, 4
-    jmp __dbase_cls_tobject_classtype_source_end
+    ; O1: entfallene Instruktion
 __dbase_cls_tobject_classtype_source_end:
     mov esp, ebp
     pop ebp
@@ -94,7 +76,7 @@ __dbase_cls_tobject_classparent:
     push eax
     call __dbase_ffi_jit_class_parent
     add esp, 4
-    jmp __dbase_cls_tobject_classparent_source_end
+    ; O1: entfallene Instruktion
 __dbase_cls_tobject_classparent_source_end:
     mov esp, ebp
     pop ebp
@@ -109,7 +91,7 @@ __dbase_cls_tobject_classnameaddress:
     push eax
     call __dbase_ffi_jit_class_name
     add esp, 4
-    jmp __dbase_cls_tobject_classnameaddress_source_end
+    ; O1: entfallene Instruktion
 __dbase_cls_tobject_classnameaddress_source_end:
     mov esp, ebp
     pop ebp
@@ -121,7 +103,7 @@ __dbase_cls_tobject_classname:
     push eax
     call __dbase_cls_tobject_classnameaddress
     add esp, 4
-    jmp __dbase_cls_tobject_classname_source_end
+    ; O1: entfallene Instruktion
 __dbase_cls_tobject_classname_source_end:
     mov esp, ebp
     pop ebp
@@ -136,7 +118,7 @@ __dbase_cls_tobject_instancesize:
     push eax
     call __dbase_ffi_jit_class_instance_size
     add esp, 4
-    jmp __dbase_cls_tobject_instancesize_source_end
+    ; O1: entfallene Instruktion
 __dbase_cls_tobject_instancesize_source_end:
     mov esp, ebp
     pop ebp
@@ -156,7 +138,7 @@ __dbase_cls_tobject_inheritsfrom:
     cmp eax, edx
     setne al
     movzx eax, al
-    jmp __dbase_cls_tobject_inheritsfrom_source_end
+    ; O1: entfallene Instruktion
 __dbase_cls_tobject_inheritsfrom_source_end:
     mov esp, ebp
     pop ebp
@@ -167,21 +149,11 @@ __dbase_cls_tobject_create:
     call __dbase_obj_jit_object_instance_new
     add esp, 4
     ret
-global __dbase_cls_tobject_vmt
-__dbase_cls_tobject_vmt:
-    mov eax, __dbase_vmt_tobject
-    ret
 
 section .data
-
 ; Stage 600: JitVmt headers: parent, name, instance_size, init, finalize, destroy
-global __dbase_vmt_tobject
-__dbase_vmt_tobject:
-    dd 0
-    dd __dbase_vmt_tobject_name
-    dd 4
-    dd __dbase_cls_tobject___ini__
-    dd 0
+; Stage 670: shared VMT method tables
+__dbase_class_object:
     dd __dbase_cls_tobject___del__
     dd __dbase_cls_tobject_free
     dd __dbase_cls_tobject_freeinstance
@@ -191,7 +163,88 @@ __dbase_vmt_tobject:
     dd __dbase_cls_tobject_classname
     dd __dbase_cls_tobject_instancesize
     dd __dbase_cls_tobject_inheritsfrom
+global __dbase_vmt_tobject
+__dbase_vmt_tobject:
+    dd 0
+    dd __dbase_vmt_tobject_name
+    dd 0x80000004
+    dd __dbase_cls_tobject___ini__
+    dd 0
+    dd __dbase_class_object
 __dbase_vmt_tobject_name:
     db 84, 79, 98, 106, 101, 99, 116, 0
 
+__dbase_text_0:
+    db 100, 66, 97, 115, 101, 32, 81, 116, 53, 32, 67, 111, 110, 115, 111, 108, 101, 32, 47, 32, 68, 69, 66, 85
+    db 71, 0
+__dbase_text_1:
+    db 85, 110, 98, 101, 104, 97, 110, 100, 101, 108, 116, 101, 32, 69, 120, 99, 101, 112, 116, 105, 111, 110, 58, 32
+__dbase_text_2:
+    db 58, 32
+__dbase_text_3:
+    db 13, 10
+__dbase_output_format_screen:
+    dd 1
+__dbase_output_debug_override:
+    dd -1
+__dbase_workstation_lazy_console_marker:
+    db 68, 54, 52, 68, 66, 65, 83, 69, 95, 76, 65, 90, 89, 95, 67, 79, 78, 83, 79, 76, 69, 95, 86, 49, 0
+
 section .bss
+
+__dbase_ffi_return:
+    resq 1
+__dbase_temp_number:
+    resd 1
+__dbase_temp_number_hi:
+    resd 1
+__dbase_int_cw:
+    resw 1
+__dbase_int_cw_trunc:
+    resw 1
+__dbase_call_number:
+    resq 1
+__dbase_format_buffer:
+    resd 1
+__dbase_exit_code:
+    resd 1
+__dbase_output_debug_visible:
+    resd 1
+__dbase_console_number_len:
+    resd 1
+__dbase_exception_id:
+    resd 1
+__dbase_exception_code:
+    resd 1
+__dbase_exception_message_type:
+    resd 1
+__dbase_exception_message_num:
+    resq 1
+__dbase_exception_message_ptr:
+    resd 1
+__dbase_exception_message_len:
+    resd 1
+__dbase_exception_class_type:
+    resd 1
+__dbase_exception_class_num:
+    resq 1
+__dbase_exception_class_ptr:
+    resd 1
+__dbase_exception_class_len:
+    resd 1
+__dbase_exception_object_type:
+    resd 1
+__dbase_exception_object_num:
+    resq 1
+__dbase_exception_object_ptr:
+    resd 1
+__dbase_exception_object_len:
+    resd 1
+__dbase_exception_cstr_type:
+    resd 1
+__dbase_exception_cstr_num:
+    resq 1
+__dbase_exception_cstr_ptr:
+    resd 1
+__dbase_exception_cstr_len:
+    resd 1

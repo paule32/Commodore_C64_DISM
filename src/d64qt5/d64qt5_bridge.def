@@ -82,3 +82,18 @@ EXPORTS
     DBaseQtFillBackground @1016
     DBaseQtHelpShowMo @1017
     DBaseQtHelpShowTopicId @1018
+    DBaseQtRuntimeWrite @1019
+    DBaseQtBindOutputState @1020
+    DBaseQtRuntimeWriteText @1021
+    ; Stage 675: former libd64_console.dll ABI (no ordinal conflicts).
+    d64_console_init @1022
+    d64_console_restore @1023
+    d64_console_write_text @1024
+    d64_console_write_int @1025
+    d64_console_write_double @1026
+    d64_console_write_char @1027
+    d64_console_newline @1028
+    d64_console_clear @1029
+    d64_console_read_line @1030
+    d64_console_read_int @1031
+    d64_console_read_string @1032

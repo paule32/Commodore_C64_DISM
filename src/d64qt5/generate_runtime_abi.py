@@ -44,23 +44,11 @@ def read_exports():
 
 def main() -> int:
     rows = read_exports()
-    # Stage 295: DBaseQtProlog* are optional name-resolved extension exports.
-    # They intentionally do not participate in the stable dBase/WFM ordinal
-    # ABI hash, so old generated applications remain compatible.
-    # Stage 459: these optional APIs are linked by name, not core ordinal.
-    # Keep the original 64-entry ABI digest unchanged when extensions grow.
-    optional_by_name = {
-        "DBaseQtFormApplyExternalUi", "DBaseUtf8Substring",
-        "DBaseUtf8SubstringUpper", "DBaseUtf8SubstringLower",
-        "DBaseUtf8Upper", "DBaseUtf8Lower",
-        "DBaseQtRuntimeStartup", "DBaseQtRuntimeShutdown",
-        "DBaseQtWfmModalParameter", "DBaseQtFormRun",
-        "DBaseQtWfmSessionInvoke",
-    }
-    core_rows = [
-        (ordinal, name) for ordinal, name in rows
-        if not name.startswith("DBaseQtProlog") and name not in optional_by_name
-    ]
+    # Stage 673: the historical ABI handshake covers exactly @1..@64.
+    # High numbered exports are deliberately resolved by name.  In
+    # particular, appending DBaseQtRuntimeWrite @1019 must not invalidate
+    # earlier runtimes' ordinal-map hash.
+    core_rows = [(ordinal, name) for ordinal, name in rows if ordinal <= 64]
     canonical = "".join(f"{ordinal}:{name}\n" for ordinal, name in core_rows).encode("ascii")
     digest = hashlib.sha256(canonical).digest()
     byte_rows = []

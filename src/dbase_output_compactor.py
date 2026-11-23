@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Stage 672: factor repeated, static dBASE runtime output dispatches (O1 only).
+"""Stage 673: call a shared Qt5 runtime DLL dispatch for static O1 output.
 
 The pass accepts only the exact compiler-generated selector and *identical*
 static literal/length pairs in the GUI and console branches.  It deliberately
 leaves dynamic output intact: its arguments must be loaded after
 DBaseQtSetDebugVisible, which can synchronously run GUI code.
 
-Every original source line remains in place.  The shared helper is appended
-in a fresh .text section after the original source, preserving diagnostic
-line numbers and all existing data, import and VMT declarations.
+Every original source line remains in place.  The dispatch is exported by libd64_qt5.dll.  No local routine is emitted.
+All original source line numbers, data, VMT and selector labels are preserved.
 """
 from __future__ import annotations
 
@@ -125,70 +124,6 @@ def _match_block(lines: list[str], i: int, bits: int):
     return end, literal, length, (ready, console, show, visible, done)
 
 
-def _shared_routine(bits: int) -> str:
-    routine = [
-        '; Stage 672 / O1: gemeinsame Laufzeit-Ausgabe fuer statische Texte',
-        'section .text',
-        '__dbase_o1_output_write:',
-    ]
-    if bits == 64:
-        routine += [
-            '    sub rsp, 56',  # 32 bytes shadow space + 16 bytes arguments, stack aligned
-            '    mov qword ptr [rsp+40], rcx',
-            '    mov dword ptr [rsp+48], edx',
-        ]
-    routine += [
-        '    cmp dword ptr [__dbase_output_debug_override], -1',
-        '    jne __dbase_o1_output_override_ready',
-        '    cmp dword ptr [__dbase_output_format_screen], 0',
-        '    je __dbase_o1_output_console',
-        '    jmp __dbase_o1_output_debug',
-        '__dbase_o1_output_override_ready:',
-        '    cmp dword ptr [__dbase_output_debug_override], 0',
-        '    je __dbase_o1_output_console',
-        '__dbase_o1_output_debug:',
-        '    cmp dword ptr [__dbase_output_debug_visible], 0',
-        '    jne __dbase_o1_output_visible',
-        '    mov dword ptr [__dbase_output_debug_visible], 1',
-    ]
-    if bits == 32:
-        routine += [
-            '    push 1',
-            '    call DBaseQtSetDebugVisible',
-            '    add esp, 4',
-            '__dbase_o1_output_visible:',
-            '    push dword ptr [esp+8]',  # original length (esp+8)
-            '    push dword ptr [esp+8]',  # original pointer (after first push)
-            '    call DBaseQtAppendDebug',
-            '    add esp, 8',
-            '    ret',
-            '__dbase_o1_output_console:',
-            '    push dword ptr [esp+8]',
-            '    push dword ptr [esp+8]',
-            '    call DBaseConsoleWrite',
-            '    add esp, 8',
-            '    ret',
-        ]
-    else:
-        routine += [
-            '    mov ecx, 1',
-            '    call DBaseQtSetDebugVisible',
-            '__dbase_o1_output_visible:',
-            '    mov rcx, qword ptr [rsp+40]',
-            '    mov edx, dword ptr [rsp+48]',
-            '    call DBaseQtAppendDebug',
-            '    add rsp, 56',
-            '    ret',
-            '__dbase_o1_output_console:',
-            '    mov rcx, qword ptr [rsp+40]',
-            '    mov edx, dword ptr [rsp+48]',
-            '    call DBaseConsoleWrite',
-            '    add rsp, 56',
-            '    ret',
-        ]
-    return '\n'.join(routine) + '\n'
-
-
 def _instruction_count(lines: list[str]) -> int:
     return sum(bool(s.strip()) and not s.strip().startswith(';') and
                not s.strip().endswith(':') and not s.strip().lower().startswith('section ')
@@ -202,7 +137,7 @@ def compact_dbase_static_outputs(assembly: str, *, min_blocks: int = 3) -> Outpu
     debug writers) are left untouched.  No transformation occurs if a selector
     label is referenced from outside its original block.
     """
-    if re.search(r'^\s*__dbase_o1_output_write\s*:', assembly, re.M | re.I):
+    if re.search(r'^\s*import\s+DBaseQtRuntimeWrite\s*,', assembly, re.M | re.I):
         return OutputCompaction(assembly)
     arch = re.search(r'^\s*bits\s+(32|64)\b', assembly, re.M | re.I)
     if arch is None:
@@ -239,10 +174,30 @@ def compact_dbase_static_outputs(assembly: str, *, min_blocks: int = 3) -> Outpu
     rewritten = 0
     for start, end, literal, length in blocks:
         original += _instruction_count(lines[start:end])
-        wrapper = ([f'    push {length}', f'    push {literal}',
-                    '    call __dbase_o1_output_write', '    add esp, 8'] if bits == 32 else
-                   [f'    mov rcx, {literal}', f'    mov edx, {length}',
-                    '    sub rsp, 40', '    call __dbase_o1_output_write', '    add rsp, 40'])
+        if bits == 32:
+            wrapper = [
+                '    push __dbase_output_debug_visible',
+                '    push dword ptr [__dbase_output_format_screen]',
+                '    push dword ptr [__dbase_output_debug_override]',
+                f'    push {length}',
+                f'    push {literal}',
+                '    call DBaseQtRuntimeWrite',
+                '    add esp, 20',
+            ]
+        else:
+            # Windows x64: RCX/RDX/R8/R9, fifth arg at rsp+32.
+            # 40 bytes supplies shadow space + stack alignment.
+            wrapper = [
+                f'    mov rcx, {literal}',
+                f'    mov edx, {length}',
+                '    mov r8d, dword ptr [__dbase_output_debug_override]',
+                '    mov r9d, dword ptr [__dbase_output_format_screen]',
+                '    sub rsp, 40',
+                '    mov rax, __dbase_output_debug_visible',
+                '    mov qword ptr [rsp+32], rax',
+                '    call DBaseQtRuntimeWrite',
+                '    add rsp, 40',
+            ]
         rewritten += len(wrapper)
         for j, text in enumerate(wrapper):
             ending = '\r\n' if lines[start+j].endswith('\r\n') else ('\n' if lines[start+j].endswith('\n') else '')
@@ -253,14 +208,15 @@ def compact_dbase_static_outputs(assembly: str, *, min_blocks: int = 3) -> Outpu
             ending = '\r\n' if lines[pos].endswith('\r\n') else ('\n' if lines[pos].endswith('\n') else '')
             lines[pos] = '    ; O1: zentraler Ausgabeaufruf' + ending
 
-    helper = _shared_routine(bits)
-    helper_instructions = _instruction_count(helper.splitlines())
-    saved = original - rewritten - helper_instructions
-    # A size optimization cannot spend more instructions than it removes.
+    saved = original - rewritten
     if saved <= 0:
         return OutputCompaction(assembly)
+    # Preserve all original source line numbers by appending the import at
+    # EOF. The internal assembler accepts import directives after .bss.
     newline = '\r\n' if '\r\n' in assembly else '\n'
     if not assembly.endswith(('\n', '\r')):
         lines.append(newline)
-    result = ''.join(lines) + helper.replace('\n', newline)
+    result = (''.join(lines) +
+              '; Stage 673 / O1: Ausgabe-Verteilung in libd64_qt5.dll' + newline +
+              'import DBaseQtRuntimeWrite, "libd64_qt5.dll", "DBaseQtRuntimeWrite"' + newline)
     return OutputCompaction(result, saved, len(blocks))

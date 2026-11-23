@@ -11807,7 +11807,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             self.emitter.emit("    ret")
 
         # Stage 551: only ABI adapters; all state and Windows console API
-        # code lives in libd64_console.dll, not in every Pascal image.
+        # code lives in libd64_qt5.dll, not in every Pascal image.
         def adapter(name, imported, *, argument=False, x87=False):
             self.emitter.emit()
             self.emitter.emit(f"{self.symbol_prefix}_{name}:")
@@ -12030,7 +12030,7 @@ class _PE32CodeGenerator(_CodeGenerator):
                 if line not in emitted:
                     self.emitter.emit(line)
                     emitted.add(line)
-        # Stage 551: one console service DLL across PE32/PE32+ and all Units.
+        # Stage 675: shared console service inside the Qt5 runtime for PE32/PE32+ and Units.
         console_symbols = {
             "print_string": ("_d64_console_write_text", "d64_console_write_text"),
             "print_int": ("_d64_console_write_int", "d64_console_write_int"),
@@ -12051,7 +12051,7 @@ class _PE32CodeGenerator(_CodeGenerator):
         needed_console.add(("_d64_console_read_string", "d64_console_read_string"))
         needed_console.add(("_d64_console_read_int", "d64_console_read_int"))
         for symbol, export in sorted(needed_console):
-            line = f'import {symbol}, "libd64_console.dll", "{export}"'
+            line = f'import {symbol}, "libd64_qt5.dll", "{export}"'
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)
@@ -13651,7 +13651,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)
-        # Stage 551: one console service DLL across PE32/PE32+ and all Units.
+        # Stage 675: shared console service inside the Qt5 runtime for PE32/PE32+ and Units.
         console_symbols = {
             "print_string": ("_d64_console_write_text", "d64_console_write_text"),
             "print_int": ("_d64_console_write_int", "d64_console_write_int"),
@@ -13672,7 +13672,7 @@ class _PE64CodeGenerator(_PE32CodeGenerator):
         needed_console.add(("_d64_console_read_string", "d64_console_read_string"))
         needed_console.add(("_d64_console_read_int", "d64_console_read_int"))
         for symbol, export in sorted(needed_console):
-            line = f'import {symbol}, "libd64_console.dll", "{export}"'
+            line = f'import {symbol}, "libd64_qt5.dll", "{export}"'
             if line not in emitted:
                 self.emitter.emit(line)
                 emitted.add(line)

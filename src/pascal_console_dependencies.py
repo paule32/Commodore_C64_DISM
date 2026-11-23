@@ -1,4 +1,4 @@
-"""Stage 552: verify/deploy the console DLL used by generated Pascal PE images.
+"""Stage 675: verify/deploy Qt5 DLL console exports for generated Pascal PE images.
 
 PE import tables are read directly, without pefile and without executing DLLs.
 The original import manifest covers compressed executables whose on-disk PE
@@ -11,7 +11,8 @@ import struct
 from pathlib import Path
 from typing import Iterable
 
-CONSOLE_DLL = 'libd64_console.dll'
+CONSOLE_DLL = 'libd64_qt5.dll'
+LEGACY_CONSOLE_DLL = 'libd64_console.dll'
 MACHINE_I386 = 0x14c
 MACHINE_AMD64 = 0x8664
 
@@ -152,9 +153,43 @@ def manifest_dlls_and_console_symbols(manifest: object) -> tuple[set[str], set[s
         if not dll:
             continue
         dlls.add(dll)
-        if dll == CONSOLE_DLL:
+        if dll == CONSOLE_DLL and member.startswith('d64_console_'):
             console_symbols.add(member)
     return dlls, console_symbols
+
+
+
+def obsolete_console_dependencies(output_path: str | Path, manifest: object) -> set[str]:
+    """Find stale Pascal objects/adjacent DLLs which still import the removed DLL.
+
+    Never claim that the old runtime is unnecessary when its name remains in
+    either a packed link manifest or the PE import directory of a dependent DLL.
+    """
+    output = Path(output_path)
+    direct, _symbols = manifest_dlls_and_console_symbols(manifest)
+    obsolete: set[str] = {LEGACY_CONSOLE_DLL} if LEGACY_CONSOLE_DLL in direct else set()
+    try:
+        _machine, imports, _exports = inspect_pe(output)
+        if LEGACY_CONSOLE_DLL in imports:
+            obsolete.add(LEGACY_CONSOLE_DLL)
+    except (OSError, PEInspectionError):
+        pass  # Packer images may have only the compact loader import table.
+    for dll in direct:
+        if dll in {LEGACY_CONSOLE_DLL, CONSOLE_DLL, 'kernel32.dll', 'user32.dll'}:
+            continue
+        candidate = output.parent / dll
+        if not candidate.is_file() and output.parent.is_dir():
+            candidate = next((f for f in output.parent.iterdir()
+                              if f.is_file() and f.name.casefold() == dll), candidate)
+        if not candidate.is_file():
+            continue
+        try:
+            _machine, imports, _exports = inspect_pe(candidate)
+        except (OSError, PEInspectionError):
+            continue
+        if LEGACY_CONSOLE_DLL in imports:
+            obsolete.add(dll)
+    return obsolete
 
 
 def required_console_exports(
@@ -170,7 +205,7 @@ def required_console_exports(
     output_path = Path(output_path)
     dlls, symbols = manifest_dlls_and_console_symbols(manifest)
     if source_includes_console and not symbols:
-        # A legacy build without the link manifest still requires the DLL.
+        # A legacy build without the link manifest still requires the Qt5 DLL.
         symbols.add('d64_console_init')
     seen: set[str] = set()
     for dll in dlls:
@@ -187,7 +222,8 @@ def required_console_exports(
                 _machine, dll_imports, _exports = inspect_pe(dependency)
             except (OSError, PEInspectionError):
                 continue
-            symbols.update(dll_imports.get(CONSOLE_DLL, ()))
+            symbols.update(s for s in dll_imports.get(CONSOLE_DLL, ())
+                           if s.startswith('d64_console_'))
     return symbols
 
 
@@ -217,7 +253,7 @@ def console_library_candidates(
     current_dir: str | Path | None = None,
     search_directories: Iterable[str | Path] = (),
 ) -> tuple[Path, ...]:
-    """Ordered, de-duplicated paths for the target's native console DLL.
+    """Ordered, de-duplicated paths for the target's Qt5 DLL with integrated Pascal console ABI.
 
     A Pascal source's ``pe32``/``pe64`` sibling is not necessarily the
     configured EXE output directory.  The latter is still checked first.
@@ -226,7 +262,6 @@ def console_library_candidates(
     target = str(target).casefold()
     if target not in {"pe32", "pe64"}:
         return ()
-    arch = "win32" if target == "pe32" else "win64"
     output_dir = Path(output_path).expanduser().resolve().parent
     folders: list[Path] = [output_dir]
 
@@ -236,7 +271,8 @@ def console_library_candidates(
             source_dir / target,
             source_dir,
             source_dir / "runtime" / "pascal" / target,
-            source_dir / "runtime" / "compiler" / arch,
+            source_dir / "d64qt5" / "release",
+            source_dir / "d64qt5" / "debug",
         ))
 
     for item in (project_dir, current_dir):
@@ -246,7 +282,8 @@ def console_library_candidates(
         folders.extend((
             folder / target,
             folder / "runtime" / "pascal" / target,
-            folder / "runtime" / "compiler" / arch,
+            folder / "d64qt5" / "release",
+            folder / "d64qt5" / "debug",
             folder,
         ))
 
@@ -254,11 +291,12 @@ def console_library_candidates(
         if item is None:
             continue
         folder = Path(item).expanduser().resolve()
-        folders.extend((folder, folder / target, folder / "runtime" / "compiler" / arch))
+        folders.extend((folder, folder / target, folder / "d64qt5" / "release",
+                        folder / "d64qt5" / "debug"))
 
     if program_root is not None:
-        folders.append(Path(program_root).expanduser().resolve()
-                       / "runtime" / "compiler" / arch)
+        folders.extend((Path(program_root).expanduser().resolve() / "d64qt5" / "release",
+                        Path(program_root).expanduser().resolve() / "d64qt5" / "debug"))
 
     result: list[Path] = []
     seen: set[str] = set()
@@ -295,7 +333,7 @@ def diagnose_package(directory: str | Path) -> list[str]:
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(
-        description='Prüft Pascal-EXE/DLL-Ausgaben auf fehlende Konsolenruntime-Imports.'
+        description='Prüft Pascal-EXE/DLL-Ausgaben auf fehlende Qt5-Konsolenexports.'
     )
     parser.add_argument('output_directory', type=Path,
                         help='Projekt-Ausgabeordner mit EXE/DLL und *.imports.json')
@@ -307,4 +345,4 @@ if __name__ == '__main__':
         for error in errors:
             print('FEHLER:', error)
         raise SystemExit(1)
-    print('Keine fehlende oder inkompatible Konsolenruntime nachweisbar.')
+    print('Keine fehlende oder inkompatible Qt5-Konsolenruntime nachweisbar.')

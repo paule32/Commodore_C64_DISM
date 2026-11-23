@@ -9124,6 +9124,47 @@ extern "C" D64QT5_API void DBaseQtAppendDebug(const char *text, int length)
         append_wfm_output(QString::fromLocal8Bit(text, length), false);
 }
 
+// Stage 673: The O1 output selector lives in the Qt5 DLL instead of every EXE.
+// The actual lazy Win32 console is owned by libd64_runtime.dll, NOT the Qt
+// console pane.  Resolve that existing export by name; no new link dependency.
+extern "C" D64QT5_API void DBaseQtRuntimeWrite(
+    const char *text, int length, int debugOverride, int formatScreen,
+    int *debugVisible)
+{
+    const bool console = debugOverride == -1 ? formatScreen == 0
+                                              : debugOverride == 0;
+    if (console) {
+#ifdef _WIN32
+        typedef void (__cdecl *ConsoleWriter)(const char *, int);
+        static const ConsoleWriter writer = []() -> ConsoleWriter {
+            HMODULE module = ::GetModuleHandleA("libd64_runtime.dll");
+            if (!module)
+                module = ::LoadLibraryA("libd64_runtime.dll");
+            if (!module)
+                return nullptr;
+            return reinterpret_cast<ConsoleWriter>(
+                ::GetProcAddress(module, "DBaseConsoleWrite"));
+        }();
+        if (writer) {
+            // Call even with length 0: this lazily creates the Win32 console.
+            writer(text, length);
+            return;
+        }
+#endif
+        // Fallback if the dedicated native console DLL is not installed.
+        DBaseQtAppendConsole(text, length);
+        return;
+    }
+    if (!debugVisible || !*debugVisible) {
+        // Preserve the generated Stage-672 order: update state first, then
+        // show the debug window, then append the text.
+        if (debugVisible)
+            *debugVisible = 1;
+        DBaseQtSetDebugVisible(1);
+    }
+    DBaseQtAppendDebug(text, length);
+}
+
 extern "C" D64QT5_API int DBaseQtSetColorNormal(const char *name, int length)
 {
     if (!g_console || !name || length <= 0)
@@ -9143,6 +9184,30 @@ extern "C" D64QT5_API int DBaseQtSetColorNormal(const char *name, int length)
     if (g_app)
         g_app->processEvents();
     return 1;
+}
+
+// Stage 674: O2 bind-once output state and one-argument static strings.
+// The EXE retains ownership. The module entry initializes and clears this
+// binding; importing another COFF object does not introduce a second owner.
+static const DBaseQtOutputBindings *g_dbase_o2_output_binding = nullptr;
+
+extern "C" D64QT5_API void DBaseQtBindOutputState(
+    const DBaseQtOutputBindings *binding)
+{
+    g_dbase_o2_output_binding = binding;
+}
+
+extern "C" D64QT5_API void DBaseQtRuntimeWriteText(
+    const DBaseQtStaticText *staticText)
+{
+    if (!staticText || !staticText->text || staticText->length > 0x7fffffffU)
+        return;
+    const DBaseQtOutputBindings *const state = g_dbase_o2_output_binding;
+    const int debugOverride = state && state->debugOverride ? *state->debugOverride : -1;
+    const int formatScreen = state && state->formatScreen ? *state->formatScreen : 0;
+    int *const debugVisible = state ? state->debugVisible : nullptr;
+    DBaseQtRuntimeWrite(staticText->text, static_cast<int>(staticText->length),
+                        debugOverride, formatScreen, debugVisible);
 }
 
 extern "C" D64QT5_API int DBaseQtSetOutputColor(const char *spec, int length)
@@ -11579,6 +11644,7 @@ extern "C" D64QT5_API void DBaseQtShutdown(void)
 // DBaseQtShutdown may call ExitProcess(0) in direct mode and never return.
 extern "C" D64QT5_API void DBaseQtRuntimeShutdown(void **formatBuffer)
 {
+    g_dbase_o2_output_binding = nullptr;
     if (formatBuffer && *formatBuffer) {
         void *buffer = *formatBuffer;
         *formatBuffer = nullptr;

@@ -115,6 +115,49 @@ D64QT5_API int DBaseQtHelpShowTopicId(unsigned int helpNumber);
 D64QT5_API void DBaseQtSetDebugVisible(int visible);
 D64QT5_API void DBaseQtAppendConsole(const char *text, int length);
 D64QT5_API void DBaseQtAppendDebug(const char *text, int length);
+/* Stage 673: one shared O1 runtime text output dispatcher.
+ * debugOverride: -1=SET FORMAT, 0=Console, other=Debug.
+ * formatScreen: 0=Console, nonzero=Debug.
+ * debugVisible points at the caller's BSS state: set to 1 BEFORE showing.
+ * PE32: cdecl; PE32+: Microsoft x64 ABI. */
+D64QT5_API void DBaseQtRuntimeWrite(const char *text, int length,
+                                   int debugOverride, int formatScreen,
+                                   int *debugVisible);
+
+/* Stage 674: caller-owned output-state pointers remain live until unbound.
+ * ABI: PE32 cdecl and PE32+ Windows-x64. All fields point into EXE memory.
+ * On shutdown pass nullptr; bindings are not copied or owned by the DLL. */
+typedef struct DBaseQtOutputBindings {
+    const int *debugOverride;
+    const int *formatScreen;
+    int *debugVisible;
+} DBaseQtOutputBindings;
+/* Word-length and string pointer are stored in read-only EXE descriptors.
+ * PE32: 8 bytes; PE32+: 16 bytes with natural pointer alignment. */
+typedef struct DBaseQtStaticText {
+    unsigned int length;
+    const char *text;
+} DBaseQtStaticText;
+D64QT5_API void DBaseQtBindOutputState(const DBaseQtOutputBindings *binding);
+D64QT5_API void DBaseQtRuntimeWriteText(const DBaseQtStaticText *text);
+
+// Stage 675: previously exported from libd64_console.dll.
+// Preserve cdecl on Win32 and the original symbol names for Pascal modules.
+#ifdef _WIN32
+D64QT5_API int __cdecl d64_console_init(void);
+D64QT5_API void __cdecl d64_console_restore(void);
+D64QT5_API void __cdecl d64_console_write_text(const char *text);
+D64QT5_API void __cdecl d64_console_write_int(int value);
+D64QT5_API void __cdecl d64_console_write_double(double value);
+D64QT5_API void __cdecl d64_console_write_char(int value);
+D64QT5_API void __cdecl d64_console_newline(void);
+D64QT5_API void __cdecl d64_console_clear(void);
+D64QT5_API unsigned __cdecl d64_console_read_line(char *text, unsigned capacity);
+D64QT5_API int __cdecl d64_console_read_int(void);
+D64QT5_API char *__cdecl d64_console_read_string(void);
+#endif
+
+
 D64QT5_API int  DBaseQtSetColorNormal(const char *name, int length);
 D64QT5_API int  DBaseQtSetOutputColor(const char *spec, int length);
 D64QT5_API int  DBaseQtFillBackground(int bg, int fg, int code);

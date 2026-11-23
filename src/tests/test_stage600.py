@@ -31,7 +31,8 @@ class Stage600NativeObjects(unittest.TestCase):
     def test_pe32_native_vmt_layout_and_parent(self):
         asm = self.assembly('pe32')
         self.assertIn('global __dbase_vmt_tobject', asm)
-        self.assertRegex(asm, r'__dbase_vmt_tobject:\n\s+dd 0\n\s+dd __dbase_vmt_tobject_name\n\s+dd 4')
+        self.assertRegex(asm, r'__dbase_vmt_tobject:\n\s+dd 0\n\s+dd __dbase_vmt_tobject_name\n\s+dd 0x80000004')
+        self.assertIn('dd __dbase_class_object', asm)
         self.assertIn('dd __dbase_cls_tobject___ini__', asm)
         self.assertIn('dd __dbase_cls_tobject___del__', asm)
         self.assertIn('dd __dbase_cls_tobject_inheritsfrom', asm)
@@ -39,7 +40,8 @@ class Stage600NativeObjects(unittest.TestCase):
 
     def test_pe64_native_vmt_layout_and_parent(self):
         asm = self.assembly('pe64')
-        self.assertRegex(asm, r'__dbase_vmt_tobject:\n\s+dq 0\n\s+dq __dbase_vmt_tobject_name\n\s+dq 8')
+        self.assertRegex(asm, r'__dbase_vmt_tobject:\n\s+dq 0\n\s+dq __dbase_vmt_tobject_name\n\s+dq 0x80000008')
+        self.assertIn('dq __dbase_class_object', asm)
         self.assertIn('dq __dbase_cls_tobject_inheritsfrom', asm)
 
     def test_correct_module_imports(self):
