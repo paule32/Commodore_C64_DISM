@@ -47,10 +47,10 @@ class Stage600NativeObjects(unittest.TestCase):
     def test_correct_module_imports(self):
         asm = self.assembly()
         for name in ('jit_object_instance_new', 'jit_get_virtual_object'):
-            self.assertIn(f'import __dbase_obj_{name}, "libd64_runtime.dll", "{name}"', asm)
+            self.assertIn(f'import __dbase_obj_{name}, "libd64_qt5.dll", "{name}"', asm)
         for name in ('jit_object_free', 'jit_object_class_type', 'jit_inherits_from_object'):
-            self.assertIn(f'import __dbase_ffi_{name}, "libd64_runtime.dll", "{name}"', asm)
-            self.assertNotIn(f'import __dbase_obj_{name}, "libd64_runtime.dll", "{name}"', asm)
+            self.assertIn(f'import __dbase_ffi_{name}, "libd64_qt5.dll", "{name}"', asm)
+            self.assertNotIn(f'import __dbase_obj_{name}, "libd64_qt5.dll", "{name}"', asm)
 
     def test_pe32_native_cdecl_self_and_stack_balance(self):
         asm = self.assembly('pe32')
@@ -182,7 +182,7 @@ obj.Free()
     def test_external_ffi_backward_compatible(self):
         for t in ('pe32', 'pe64'):
             asm = self.assembly(t)
-            self.assertIn('import __dbase_ffi_jit_object_instance_new, "libd64_runtime.dll", "jit_object_instance_new"', asm)
+            self.assertIn('import __dbase_ffi_jit_object_instance_new, "libd64_qt5.dll", "jit_object_instance_new"', asm)
 
 
 if __name__ == '__main__':

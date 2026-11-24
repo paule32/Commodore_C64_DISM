@@ -8,8 +8,8 @@ section .text
 ; Stage 602: dBASE source methods / JitVmt C ABI
 __dbase_cls_tobject___ini__:
     ret
-__dbase_cls_tobject___del__:
-    ret
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
 __dbase_cls_tobject_free:
     push ebp
     mov ebp, esp
@@ -150,19 +150,26 @@ __dbase_cls_tobject_create:
     add esp, 4
     ret
 
+
+; Stage 679: O3 runtime ABI import guard
+__dbase_o3_abi_guard:
+    call __dbase_o3_default_vmt_abi
+    ret
+
 section .data
 ; Stage 600: JitVmt headers: parent, name, instance_size, init, finalize, destroy
+; Stage 679: TObject builtin virtual methods; DLL fallback safe
 ; Stage 670: shared VMT method tables
-__dbase_class_object:
-    dd __dbase_cls_tobject___del__
-    dd __dbase_cls_tobject_free
-    dd __dbase_cls_tobject_freeinstance
-    dd __dbase_cls_tobject_classtype
-    dd __dbase_cls_tobject_classparent
-    dd __dbase_cls_tobject_classnameaddress
-    dd __dbase_cls_tobject_classname
-    dd __dbase_cls_tobject_instancesize
-    dd __dbase_cls_tobject_inheritsfrom
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
 global __dbase_vmt_tobject
 __dbase_vmt_tobject:
     dd 0
@@ -170,7 +177,7 @@ __dbase_vmt_tobject:
     dd 0x80000004
     dd __dbase_cls_tobject___ini__
     dd 0
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_tobject_name:
     db 84, 79, 98, 106, 101, 99, 116, 0
 
@@ -211,40 +218,4 @@ __dbase_exit_code:
 __dbase_output_debug_visible:
     resd 1
 __dbase_console_number_len:
-    resd 1
-__dbase_exception_id:
-    resd 1
-__dbase_exception_code:
-    resd 1
-__dbase_exception_message_type:
-    resd 1
-__dbase_exception_message_num:
-    resq 1
-__dbase_exception_message_ptr:
-    resd 1
-__dbase_exception_message_len:
-    resd 1
-__dbase_exception_class_type:
-    resd 1
-__dbase_exception_class_num:
-    resq 1
-__dbase_exception_class_ptr:
-    resd 1
-__dbase_exception_class_len:
-    resd 1
-__dbase_exception_object_type:
-    resd 1
-__dbase_exception_object_num:
-    resq 1
-__dbase_exception_object_ptr:
-    resd 1
-__dbase_exception_object_len:
-    resd 1
-__dbase_exception_cstr_type:
-    resd 1
-__dbase_exception_cstr_num:
-    resq 1
-__dbase_exception_cstr_ptr:
-    resd 1
-__dbase_exception_cstr_len:
     resd 1

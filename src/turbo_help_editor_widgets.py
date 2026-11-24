@@ -7,8 +7,24 @@ TurboHelpEditor save/switch/F2 operations continue to work on the same object.
 from __future__ import annotations
 
 from PyQt5.QtCore import QRect, QSize, Qt
-from PyQt5.QtGui import QColor, QPainter
+from PyQt5.QtGui import QColor, QPainter, QTextCharFormat, QSyntaxHighlighter
 from PyQt5.QtWidgets import QPlainTextEdit, QStyle, QWidget
+
+
+class TurboHelpDirectiveHighlighter(QSyntaxHighlighter):
+    """Color the five THLP directives, without changing ordinary text."""
+
+    def __init__(self, document):
+        super().__init__(document)
+        from turbo_help_syntax import HELP_DIRECTIVE_PATTERN
+        self._directive_pattern = HELP_DIRECTIVE_PATTERN
+        self._directive_format = QTextCharFormat()
+        self._directive_format.setForeground(QColor('#ff981f'))
+
+    def highlightBlock(self, text):
+        for match in self._directive_pattern.finditer(text):
+            self.setFormat(match.start(), match.end() - match.start(),
+                           self._directive_format)
 
 
 class TurboHelpLineNumberArea(QWidget):
@@ -140,6 +156,7 @@ class TurboHelpSourceEditor(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('turbo_help_source_editor')
+        self.directive_highlighter = TurboHelpDirectiveHighlighter(self.document())
         self.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.line_number_area = TurboHelpLineNumberArea(self)
         self.minimap = TurboHelpMiniMap(self)

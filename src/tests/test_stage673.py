@@ -42,7 +42,7 @@ def test_new_export_does_not_change_original_runtime_abi_hash():
     assert ('DBaseQtRuntimeWrite','1019') in entries
     assert all(sum(int(x==ordinal) for _,x in entries)==1 for _,ordinal in entries)
     assert 'DBaseQtRuntimeWrite(const char *text, int length' in header
-    assert 'GetProcAddress(module, "DBaseConsoleWrite")' in src
+    assert 'DBaseConsoleWrite(text, length);' in src
     core=sorted((int(o),n) for n,o in entries if 1 <= int(o) <= 64)
     digest=hashlib.sha256(''.join(f'{o}:{n}\n' for o,n in core).encode()).digest()
     orig=__import__('zipfile').ZipFile('/mnt/data/d64_dism_stage672.zip').read('d64qt5/d64_runtime_abi.inc').decode()
@@ -70,14 +70,7 @@ using HMODULE=void*;
 static int num_console=0, num_qtconsole=0, num_debug=0, num_visible=0;
 static int show_order=0, debug_order=0, state_at_show=0;
 static int *state_ptr=nullptr;
-extern "C" void fakeWriter(const char*,int) { ++num_console; }
-static HMODULE GetModuleHandleA(const char *name) {
-  return strcmp(name,"c64_dbase_runtime.dll")==0 ? (HMODULE)1 : nullptr;
-}
-static HMODULE LoadLibraryA(const char *) { return nullptr; }
-static void *GetProcAddress(HMODULE,const char *name) {
-  return strcmp(name,"DBaseConsoleWrite")==0 ? reinterpret_cast<void*>(&fakeWriter) : nullptr;
-}
+extern "C" void DBaseConsoleWrite(const char*,int) { ++num_console; }
 extern "C" void DBaseQtSetDebugVisible(int on) {
   ++num_visible; show_order=1;
   if(on && state_ptr) state_at_show=*state_ptr;
@@ -85,6 +78,7 @@ extern "C" void DBaseQtSetDebugVisible(int on) {
 extern "C" void DBaseQtAppendDebug(const char*,int) { ++num_debug; debug_order=show_order==1 ? 2 : -1; }
 extern "C" void DBaseQtAppendConsole(const char*,int) { ++num_qtconsole; }
 '''
+    harness += '\nextern "C" void DBaseConsoleWrite(const char*,int);\n'
     harness += function
     harness += r'''
 extern "C" void init_state(int *ptr) { state_ptr=ptr; }

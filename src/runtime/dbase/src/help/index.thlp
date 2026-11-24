@@ -1,0 +1,9 @@
+%topic "index"
+<b>Turbo Vision - dBASE Hilfe</b>
+
+Willkommen zur Turbo Vision-Hilfe.
+
+%link "navigation"
+%ref "navigation" #verweise
+
+%include "navigation.thlp"

@@ -122,7 +122,7 @@ class Stage611NullCodegen(unittest.TestCase):
                     path.write_bytes(dll.executable)
                     actual_machine,imports,exports=inspect_pe(path)
                 self.assertEqual(actual_machine,machine)
-                self.assertIn('libd64_runtime.dll',{s.casefold() for s in imports})
+                self.assertIn('libd64_qt5.dll',{s.casefold() for s in imports})
                 self.assertEqual(len(exports),12)
                 self.assertIn('__dbase_cls_tobject_free',exports)
 

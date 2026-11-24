@@ -45,39 +45,3 @@ __dbase_output_debug_visible:
     resd 1
 __dbase_console_number_len:
     resd 1
-__dbase_exception_id:
-    resd 1
-__dbase_exception_code:
-    resd 1
-__dbase_exception_message_type:
-    resd 1
-__dbase_exception_message_num:
-    resq 1
-__dbase_exception_message_ptr:
-    resd 1
-__dbase_exception_message_len:
-    resd 1
-__dbase_exception_class_type:
-    resd 1
-__dbase_exception_class_num:
-    resq 1
-__dbase_exception_class_ptr:
-    resd 1
-__dbase_exception_class_len:
-    resd 1
-__dbase_exception_object_type:
-    resd 1
-__dbase_exception_object_num:
-    resq 1
-__dbase_exception_object_ptr:
-    resd 1
-__dbase_exception_object_len:
-    resd 1
-__dbase_exception_cstr_type:
-    resd 1
-__dbase_exception_cstr_num:
-    resq 1
-__dbase_exception_cstr_ptr:
-    resd 1
-__dbase_exception_cstr_len:
-    resd 1

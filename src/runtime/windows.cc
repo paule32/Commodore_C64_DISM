@@ -6,49 +6,64 @@
 # include "stddef.h"
 # include "windows.h"
 
+// Stage 678: when embedded in the Qt DLL, initialize WinAPI pointers
+// from the OS import table rather than overwriting WinAPI entrypoints.
+#ifdef D64_QT5_EMBEDDED
+#define D64_PFN(symbol) &symbol
+#else
+#define D64_PFN(symbol) nullptr
+#endif
+
 // ---------------------------------------------------------------------------
 // Windows error handling ...
 // ---------------------------------------------------------------------------
-PFN_GetLastError    p_GetLastError    = nullptr;
-PFN_SetLastError    p_SetLastError    = nullptr;
+PFN_GetLastError    p_GetLastError    = D64_PFN(GetLastError);
+PFN_SetLastError    p_SetLastError    = D64_PFN(SetLastError);
 
-PFN_GetProcAddress  p_GetProcAddress  = nullptr;
-PFN_GetStdHandle    p_GetStdHandle    = nullptr;
-PFN_ExitProcess     p_ExitProcess     = nullptr;
+PFN_GetProcAddress  p_GetProcAddress  = D64_PFN(GetProcAddress);
+PFN_GetStdHandle    p_GetStdHandle    = D64_PFN(GetStdHandle);
+PFN_ExitProcess     p_ExitProcess     = D64_PFN(ExitProcess);
 
 // ---------------------------------------------------------------------------
 // Windows command line interface (console) ...
 // ---------------------------------------------------------------------------
-PFN_GetCommandLineA p_GetCommandLineA = nullptr;
-PFN_MessageBoxA     p_MessageBoxA     = nullptr;
+PFN_GetCommandLineA p_GetCommandLineA = D64_PFN(GetCommandLineA);
+PFN_MessageBoxA     p_MessageBoxA     = D64_PFN(MessageBoxA);
 
 // ---------------------------------------------------------------------------
 // locales language code identifiers ...
 // ---------------------------------------------------------------------------
-PFN_GetUserDefaultLCID   p_GetUserDefaultLCID   = nullptr;
-PFN_GetSystemDefaultLCID p_GetSystemDefaultLCID = nullptr;
+PFN_GetUserDefaultLCID   p_GetUserDefaultLCID   = D64_PFN(GetUserDefaultLCID);
+PFN_GetSystemDefaultLCID p_GetSystemDefaultLCID = D64_PFN(GetSystemDefaultLCID);
 
-PFN_ReadFile        p_ReadFile        = nullptr;
-PFN_WriteFile       p_WriteFile       = nullptr;
+PFN_ReadFile        p_ReadFile        = D64_PFN(ReadFile);
+PFN_WriteFile       p_WriteFile       = D64_PFN(WriteFile);
 // ---------------------------------------------------------------------------
 // disk drive proto types ...
 // ---------------------------------------------------------------------------
-PFN_GetDriveTypeA         p_GetDriveTypeA         = nullptr;
+PFN_GetDriveTypeA         p_GetDriveTypeA         = D64_PFN(GetDriveTypeA);
 
-PFN_GetDiskFreeSpaceExA   p_GetDiskFreeSpaceExA   = nullptr;
-PFN_GetDiskFreeSpaceA     p_GetDiskFreeSpaceA     = nullptr;
+PFN_GetDiskFreeSpaceExA   p_GetDiskFreeSpaceExA   = D64_PFN(GetDiskFreeSpaceExA);
+PFN_GetDiskFreeSpaceA     p_GetDiskFreeSpaceA     = D64_PFN(GetDiskFreeSpaceA);
 
-PFN_GetVolumeInformationA p_GetVolumeInformationA = nullptr;
+PFN_GetVolumeInformationA p_GetVolumeInformationA = D64_PFN(GetVolumeInformationA);
 
 // ---------------------------------------------------------------------------
 // windows network stuff ...
 // ---------------------------------------------------------------------------
-PFN_WNetGetConnectionA    p_WNetGetConnectionA    = nullptr;
+PFN_WNetGetConnectionA    p_WNetGetConnectionA    = D64_PFN(WNetGetConnectionA);
+
+#ifdef D64_QT5_EMBEDDED
+// This pointer is defined in loader.cc for the standalone DLL, but loader.cc
+// is intentionally excluded from the Qt5-embedded runtime.
+PFN_LoadLibraryA p_LoadLibraryA = D64_PFN(LoadLibraryA);
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#ifndef D64_QT5_EMBEDDED
 DLL_API HMODULE JIT_STDCALL LoadLibraryA(LPCSTR  lpLibFileName) {
     return p_LoadLibraryA(lpLibFileName);
 }
@@ -61,10 +76,12 @@ DLL_API int JIT_STDCALL MessageBoxA(
     return p_MessageBoxA(hwnd, text, caption, type);
 }
 
+#endif // !D64_QT5_EMBEDDED
 DLL_API VOID
 _jit_ExitProcess(DWORD uExitCode) {
     p_ExitProcess(uExitCode);
 }
+#ifndef D64_QT5_EMBEDDED
 DLL_API VOID
 ExitProcess(DWORD uExitCode) {
     p_ExitProcess(uExitCode);
@@ -86,6 +103,7 @@ DLL_API BOOL JIT_STDCALL ReadFile (HANDLE h, const void *b, DWORD l, DWORD *w, v
     return p_ReadFile (h, b, l, w, r);
 }
 
+#endif // !D64_QT5_EMBEDDED
 static unsigned int _jit_strlen_local(const char *s)
 {
     unsigned int n = 0;
@@ -270,6 +288,7 @@ extern "C" void _jit_print_text(const char *s)
     d64_workstation_debug_mirror(s, length);
 }
 
+#ifndef D64_QT5_EMBEDDED
 DLL_API LPSTR   JIT_STDCALL GetCommandLineA(VOID) {
     return p_GetCommandLineA();
 }
@@ -352,6 +371,8 @@ DLL_API DWORD JIT_STDCALL WNetGetConnectionA(
         lpnLength
     );
 }
+
+#endif // !D64_QT5_EMBEDDED
 
 #ifdef __cplusplus
 };

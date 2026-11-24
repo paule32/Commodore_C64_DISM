@@ -45,12 +45,34 @@ def install_help_catalog(executable: str | Path, catalog: str | Path) -> Path:
     return destination
 
 
-def compile_help_sources(sources, executable: str | Path, *, require_executable=False):
-    """Compile project THLP sources using the selected EXE profile name.
+def _write_hlp_atomic(path: Path, content: bytes) -> None:
+    """Never expose a partially written GNU gettext catalog to F1 consumers."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent,
+                                         prefix=path.name + '.', suffix='.tmp',
+                                         delete=False) as output:
+            temp = Path(output.name)
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temp, path)
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
 
-    THLP filenames are never used for output names. The editable intermediate
-    <Project>.po lives next to the first THLP, while <Project>.hlp is placed
-    beside the configured executable, even before the EXE has been linked.
+
+def compile_help_sources(sources, executable: str | Path, *, require_executable=False,
+                         root=None, include_paths=(), metadata=None,
+                         po_path=None, hlp_path=None):
+    """Compile THLP sources as a PO and a compiled GNU gettext *.hlp.
+
+    Existing projects still default to <EXE stem>.po beside the source and
+    <EXE stem>.hlp beside the executable. Stage 688 settings can replace both
+    outputs (by default <main THLP stem>.po/.hlp). The latter is additionally
+    deployed as <EXE stem>.hlp when necessary for the existing F1 runtime ABI.
+    At no point do we save an additional *.mo file.
     """
     from turbo_help_compiler import HelpCompiler, read_po, write_po, write_mo
     files = list(dict.fromkeys(Path(item).expanduser().resolve(strict=True)
@@ -64,32 +86,30 @@ def compile_help_sources(sources, executable: str | Path, *, require_executable=
         raise ValueError(f'Turbo Help benötigt einen konfigurierten EXE-Projektnamen: {target}')
     if require_executable and not target.is_file():
         raise FileNotFoundError(f'EXE wurde noch nicht erzeugt: {target}')
-    topics = HelpCompiler.compile_files(files)
-    po_path = files[0].parent / f'{target.stem}.po'
-    po_text = write_po(topics)
-    # Only replace the PO when all sources compiled successfully.
-    po_path.write_text(po_text, encoding='utf-8', newline='\n')
-    data = write_mo(read_po(po_text))
+    topics = HelpCompiler.compile_files(files, root=root, include_paths=include_paths)
+    po_path = Path(po_path).expanduser().resolve() if po_path else files[0].parent / f'{target.stem}.po'
     destination = target.with_suffix('.hlp')
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temp = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=destination.parent,
-                                         prefix=destination.name + '.', suffix='.tmp',
-                                         delete=False) as output:
-            temp = Path(output.name)
-            output.write(data)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temp, destination)
-    finally:
-        if temp is not None:
-            temp.unlink(missing_ok=True)
+    hlp_path = Path(hlp_path).expanduser().resolve() if hlp_path else destination
+    if po_path.suffix.casefold() != '.po' or hlp_path.suffix.casefold() != '.hlp':
+        raise ValueError('Hilfekatalog-Dateiendungen müssen .po und .hlp sein')
+    if po_path == hlp_path or po_path == destination:
+        raise ValueError('PO und HLP benötigen getrennte Dateien')
+    po_text = write_po(topics, metadata=metadata)
+    # Validate the PO and build GNU-MO *bytes*, but only write .hlp files.
+    data = write_mo(read_po(po_text))
+    po_path.parent.mkdir(parents=True, exist_ok=True)
+    po_path.write_text(po_text, encoding='utf-8', newline='\n')
+    _write_hlp_atomic(hlp_path, data)
+    if hlp_path != destination:
+        _write_hlp_atomic(destination, data)
     return dict(topics), po_path, destination
 
 
-def compile_project_help(sources, executable: str | Path) -> Path:
+def compile_project_help(sources, executable: str | Path, *, root=None, include_paths=(),
+                         metadata=None, po_path=None, hlp_path=None) -> Path:
     """Link-time rebuild: install <EXE stem>.hlp next to an existing EXE."""
     _topics, _po_path, destination = compile_help_sources(
-        sources, executable, require_executable=True)
+        sources, executable, require_executable=True,
+        root=root, include_paths=include_paths,
+        metadata=metadata, po_path=po_path, hlp_path=hlp_path)
     return destination

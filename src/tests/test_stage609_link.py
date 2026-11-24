@@ -42,7 +42,7 @@ class Stage609Links(unittest.TestCase):
             path.write_bytes(dll.executable)
             actual_machine,imports,exports=inspect_pe(path)
         self.assertEqual(actual_machine,machine)
-        self.assertIn('libd64_runtime.dll',{name.casefold() for name in imports})
+        self.assertIn('libd64_qt5.dll',{name.casefold() for name in imports})
         for symbol in ('__dbase_cls_tobject_create', '__dbase_cls_tobject_free',
                        '__dbase_cls_tobject_vmt','__dbase_cls_tobject_classname'):
             self.assertIn(symbol,exports)

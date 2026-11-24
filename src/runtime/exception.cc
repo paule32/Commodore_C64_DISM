@@ -72,6 +72,7 @@ extern "C" VOID _jit_exception_tls_cleanup(void)
     }
 }
 
+#ifndef D64_QT5_EMBEDDED
 namespace std {
 runtime_error::runtime_error() {}
 runtime_error::runtime_error(const std::string &message) {
@@ -90,6 +91,7 @@ JitRuntimeError::JitRuntimeError(
     {}
 
 }   // naemspace: std
+#endif // !D64_QT5_EMBEDDED
 
 DLL_API VOID
 _jit_exception_push(JitExceptionFrame *frame)
@@ -114,8 +116,13 @@ _jit_raise(JitExceptionCode code, const char *message)
 {
     JitExceptionFrame *frame = d64_current_exception();
     if (!frame) {
+#ifdef D64_QT5_EMBEDDED
+        _jit_print_text("Unhandled Runtime Exception\n");
+        if (message) { _jit_print_text(message); _jit_print_newline(); }
+#else
         std::cout << "Unhandled Runtime Exception" << std::endl;
         if (message) std::cout << message << std::endl;
+#endif
         ExitProcess(1);
     }
 

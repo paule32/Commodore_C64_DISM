@@ -17,9 +17,9 @@ uses System.Types, System.Objects;
 
 {$ifdef __D64_TARGET_PE32__}
 function IntToStr(AValue: Integer): String; cdecl;
-    external 'libd64_runtime.dll' name 'jit_pas_inttostr';
+    external 'libd64_qt5.dll' name 'jit_pas_inttostr';
 function StrToInt(S: String): Integer; cdecl;
-    external 'libd64_runtime.dll' name 'jit_pas_strtoint';
+    external 'libd64_qt5.dll' name 'jit_pas_strtoint';
 {$else}
 function IntToStr(AValue: Integer): String;
 function StrToInt(S: String): Integer;

@@ -9125,8 +9125,8 @@ extern "C" D64QT5_API void DBaseQtAppendDebug(const char *text, int length)
 }
 
 // Stage 673: The O1 output selector lives in the Qt5 DLL instead of every EXE.
-// The actual lazy Win32 console is owned by libd64_runtime.dll, NOT the Qt
-// console pane.  Resolve that existing export by name; no new link dependency.
+// Stage 678: all native console symbols are linked into this Qt5 DLL.
+// The console semantics remain identical to Stage 676.
 extern "C" D64QT5_API void DBaseQtRuntimeWrite(
     const char *text, int length, int debugOverride, int formatScreen,
     int *debugVisible)
@@ -9135,21 +9135,10 @@ extern "C" D64QT5_API void DBaseQtRuntimeWrite(
                                               : debugOverride == 0;
     if (console) {
 #ifdef _WIN32
-        typedef void (__cdecl *ConsoleWriter)(const char *, int);
-        static const ConsoleWriter writer = []() -> ConsoleWriter {
-            HMODULE module = ::GetModuleHandleA("libd64_runtime.dll");
-            if (!module)
-                module = ::LoadLibraryA("libd64_runtime.dll");
-            if (!module)
-                return nullptr;
-            return reinterpret_cast<ConsoleWriter>(
-                ::GetProcAddress(module, "DBaseConsoleWrite"));
-        }();
-        if (writer) {
-            // Call even with length 0: this lazily creates the Win32 console.
-            writer(text, length);
-            return;
-        }
+        // Stage 678: the native runtime is statically linked into this DLL.
+        // No LoadLibraryA, GetProcAddress or second runtime DLL is needed.
+        DBaseConsoleWrite(text, length);
+        return;
 #endif
         // Fallback if the dedicated native console DLL is not installed.
         DBaseQtAppendConsole(text, length);

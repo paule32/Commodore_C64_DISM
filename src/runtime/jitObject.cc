@@ -127,6 +127,69 @@ jit_set_error(
         g_error_hook(g_last_error, g_last_error_message);
 }
 
+// Stage 679: built-in TObject methods live once in the native Qt5 runtime.
+// Compact VMTs with a null method-table pointer use these implementations.
+// This does not change the public JitVmt layout or the legacy VMT ABI.
+static void JIT_CDECL d64_tobject_destroy_default(void *) { }
+static void JIT_CDECL d64_tobject_free_default(void *self)
+{ jit_object_free(self); }
+static void JIT_CDECL d64_tobject_free_instance_default(void *self)
+{ jit_object_instance_free(self); }
+static JitVmt *JIT_CDECL d64_tobject_class_type_default(void *self)
+{ return jit_object_class_type(self); }
+static JitVmt *JIT_CDECL d64_tobject_class_parent_default(void *self)
+{ return jit_class_parent(jit_object_class_type(self)); }
+static const char *JIT_CDECL d64_tobject_class_name_default(void *self)
+{ return jit_class_name(jit_object_class_type(self)); }
+static uint32_t JIT_CDECL d64_tobject_instance_size_default(void *self)
+{ return jit_class_instance_size(jit_object_class_type(self)); }
+static int JIT_CDECL d64_tobject_inherits_from_default(void *self, JitVmt *parent)
+{ return jit_inherits_from_object(self, parent); }
+
+// Nine entries: destructor at index 0, eight TObject virtual methods 1..8.
+static void * const g_d64_default_tobject_methods[] = {
+    reinterpret_cast<void *>(&d64_tobject_destroy_default),
+    reinterpret_cast<void *>(&d64_tobject_free_default),
+    reinterpret_cast<void *>(&d64_tobject_free_instance_default),
+    reinterpret_cast<void *>(&d64_tobject_class_type_default),
+    reinterpret_cast<void *>(&d64_tobject_class_parent_default),
+    reinterpret_cast<void *>(&d64_tobject_class_name_default),  // ClassNameAddress
+    reinterpret_cast<void *>(&d64_tobject_class_name_default),  // ClassName
+    reinterpret_cast<void *>(&d64_tobject_instance_size_default),
+    reinterpret_cast<void *>(&d64_tobject_inherits_from_default)
+};
+static_assert(sizeof(g_d64_default_tobject_methods) / sizeof(void *) ==
+              JIT_VMT_BASE_METHOD_COUNT + 1,
+              "TObject runtime method table must have nine pointers");
+
+// Imported by O3-generated code as a link-time loader compatibility guard.
+// Stage-678 DLLs do not export it and must not run O3 null-table VMTs.
+uint32_t JIT_CDECL jit_default_tobject_vmt_abi(void) { return 1u; }
+
+// Stage 670: preserve the existing JitVmt struct and accept both the
+// legacy inline vtable and the shared compact representation.  The compiler
+// emits a relocation to the shared method array in the destroy header slot.
+static uint32_t jit_instance_bytes(const JitVmt *vmt)
+{
+    return vmt->instance_size & JIT_VMT_INSTANCE_SIZE_MASK;
+}
+
+static void **jit_compact_method_table(const JitVmt *vmt)
+{
+    if (!vmt || !(vmt->instance_size & JIT_VMT_SHARED_METHOD_FLAG))
+        return nullptr;
+    // Win32 and Win64 use the same size and representation for code/data
+    // pointers.  Reinterpretation is supported by the project's MinGW/PE ABI.
+    static_assert(sizeof(void **) == sizeof(JitDestroyProc),
+                  "JitVmt compact method pointer has unexpected size");
+    // O3: null compact-table pointer is an explicit default-table sentinel.
+    // Non-null compact pointers (including inherited overrides) and all
+    // unflagged Stage-600 legacy tables continue to use their original ABI.
+    if (!vmt->destroy)
+        return const_cast<void **>(g_d64_default_tobject_methods);
+    return reinterpret_cast<void **>(vmt->destroy);
+}
+
 static int
 jit_valid_vmt(JitVmt *vmt)
 {
@@ -139,7 +202,7 @@ jit_valid_vmt(JitVmt *vmt)
         return 0;
     }
 
-    if (vmt->instance_size < sizeof(JitObjectHeader))
+    if (jit_instance_bytes(vmt) < sizeof(JitObjectHeader))
     {
         jit_set_error(
             JIT_OBJECT_ERROR_INVALID_VMT,
@@ -188,7 +251,7 @@ jit_object_instance_new(JitVmt *vmt)
 
     object_header = (JitObjectHeader *)_jit_calloc(
         1,
-        (size_t)vmt->instance_size
+        (size_t)jit_instance_bytes(vmt)
     );
 
     if (!object_header)
@@ -280,8 +343,18 @@ jit_object_free(void *instance)
      * destroy executes the virtual destructor chain, but does not free
      * the memory. Memory is released exactly once below.
      */
-    if (vmt->destroy)
-        vmt->destroy(instance);
+    JitDestroyProc destroy = vmt->destroy;
+    if (vmt->instance_size & JIT_VMT_SHARED_METHOD_FLAG) {
+        void **table = jit_compact_method_table(vmt);
+        if (!table) {
+            jit_set_error(JIT_OBJECT_ERROR_INVALID_VMT,
+                          "Shared VMT method table is null");
+            return;
+        }
+        destroy = reinterpret_cast<JitDestroyProc>(table[0]);
+    }
+    if (destroy)
+        destroy(instance);
 
     jit_object_instance_free(instance);
 }
@@ -349,7 +422,7 @@ jit_class_instance_size(JitVmt *vmt)
     if (!jit_valid_vmt(vmt))
         return 0;
 
-    return vmt->instance_size;
+    return jit_instance_bytes(vmt);
 }
 
 int JIT_CDECL
@@ -409,8 +482,23 @@ jit_get_virtual_vmt(
     if (!jit_valid_vmt(vmt))
         return nullptr;
 
-    slot_table = (void **)(((unsigned char *)vmt) + sizeof(JitVmt));
-    method = slot_table[slot_index];
+    if (vmt->instance_size & JIT_VMT_SHARED_METHOD_FLAG) {
+        if (slot_index >= JIT_VMT_BASE_METHOD_COUNT) {
+            jit_set_error(JIT_OBJECT_ERROR_INVALID_VIRTUAL_SLOT,
+                          "Virtual slot is outside compact VMT method table");
+            return nullptr;
+        }
+        slot_table = jit_compact_method_table(vmt);
+        if (!slot_table) {
+            jit_set_error(JIT_OBJECT_ERROR_INVALID_VMT,
+                          "Shared VMT method table is null");
+            return nullptr;
+        }
+        method = slot_table[slot_index + 1]; // index 0 is the destructor
+    } else {
+        slot_table = (void **)(((unsigned char *)vmt) + sizeof(JitVmt));
+        method = slot_table[slot_index];
+    }
 
     if (!method)
     {

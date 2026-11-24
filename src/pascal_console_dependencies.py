@@ -13,6 +13,7 @@ from typing import Iterable
 
 CONSOLE_DLL = 'libd64_qt5.dll'
 LEGACY_CONSOLE_DLL = 'libd64_console.dll'
+LEGACY_NATIVE_DLL = 'libd64_runtime.dll'
 MACHINE_I386 = 0x14c
 MACHINE_AMD64 = 0x8664
 
@@ -167,15 +168,18 @@ def obsolete_console_dependencies(output_path: str | Path, manifest: object) -> 
     """
     output = Path(output_path)
     direct, _symbols = manifest_dlls_and_console_symbols(manifest)
-    obsolete: set[str] = {LEGACY_CONSOLE_DLL} if LEGACY_CONSOLE_DLL in direct else set()
+    obsolete: set[str] = {dll for dll in (LEGACY_CONSOLE_DLL, LEGACY_NATIVE_DLL)
+                          if dll in direct}
     try:
         _machine, imports, _exports = inspect_pe(output)
-        if LEGACY_CONSOLE_DLL in imports:
-            obsolete.add(LEGACY_CONSOLE_DLL)
+        for old in (LEGACY_CONSOLE_DLL, LEGACY_NATIVE_DLL):
+            if old in imports:
+                obsolete.add(old)
     except (OSError, PEInspectionError):
         pass  # Packer images may have only the compact loader import table.
     for dll in direct:
-        if dll in {LEGACY_CONSOLE_DLL, CONSOLE_DLL, 'kernel32.dll', 'user32.dll'}:
+        if dll in {LEGACY_CONSOLE_DLL, LEGACY_NATIVE_DLL, CONSOLE_DLL,
+                   'kernel32.dll', 'user32.dll'}:
             continue
         candidate = output.parent / dll
         if not candidate.is_file() and output.parent.is_dir():
@@ -187,7 +191,7 @@ def obsolete_console_dependencies(output_path: str | Path, manifest: object) -> 
             _machine, imports, _exports = inspect_pe(candidate)
         except (OSError, PEInspectionError):
             continue
-        if LEGACY_CONSOLE_DLL in imports:
+        if LEGACY_CONSOLE_DLL in imports or LEGACY_NATIVE_DLL in imports:
             obsolete.add(dll)
     return obsolete
 

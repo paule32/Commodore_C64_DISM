@@ -25,10 +25,10 @@ def test_level_normalization_and_project_ui():
     assert '"O2  -  Static String Optimierung"' in gui
     assert 'self.dbase_size_o0_radio.setChecked(True)' in gui
     assert 'self.dbase_size_o2_radio.setChecked(selected == "O2")' in gui
-    assert 'return ("O2" if self.dbase_size_o2_radio.isChecked() else' in gui
+    assert '"O2" if self.dbase_size_o2_radio.isChecked() else' in gui
     assert '"OptimizationLevel": normalize_dbase_optimization_level' in gui
     assert 'parser.get(_dbase_optimization_section, "OptimizationLevel", fallback="O0")' in gui
-    assert 'if _dbase_level in {"O1", "O2"}' in gui
+    assert 'if _dbase_level in {"O1", "O2", "O3"}' in gui
 
 
 @pytest.mark.parametrize('target', ['pe32', 'pe64'])

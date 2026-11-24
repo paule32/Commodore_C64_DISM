@@ -12,6 +12,9 @@ from inspect import Parameter, signature
 # Methoden, die ein Dock oeffnen, jedoch nicht "show_*_dock" heissen.
 # Der vorhandene Vorspann fuer Projekt-Einstellungen und WFM bleibt erhalten.
 DOCK_OPENING_TITLES = {
+    # QAction HelpContents/F1 and contextual help both enter this method.
+    # The viewer hides the prelude immediately before dialog.exec_().
+    "show_chm_viewer": "Hilfe",
     "localize_dialog": "Localize PO/MO",
     "resource_dialog": "Ressourcen-Builder",
     "show_e_baukasten": "E-Baukasten",

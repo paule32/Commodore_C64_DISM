@@ -141,6 +141,11 @@ typedef struct DBaseQtStaticText {
 D64QT5_API void DBaseQtBindOutputState(const DBaseQtOutputBindings *binding);
 D64QT5_API void DBaseQtRuntimeWriteText(const DBaseQtStaticText *text);
 
+// Stage 678: allocator and dBASE console moved from libd64_runtime.dll.
+D64QT5_API void* __cdecl _jit_malloc(unsigned size);
+D64QT5_API void __cdecl _jit_free(void* pointer);
+// Stage 678: imported by dBASE applications from libd64_qt5.dll directly.
+D64QT5_API void __cdecl DBaseConsoleWrite(const char *text, int length);
 // Stage 675: previously exported from libd64_console.dll.
 // Preserve cdecl on Win32 and the original symbol names for Pascal modules.
 #ifdef _WIN32

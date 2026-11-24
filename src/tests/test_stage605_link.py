@@ -95,7 +95,7 @@ class Stage605CoffLinks(unittest.TestCase):
                     path.write_bytes(dll.executable)
                     actual_machine, imports, exports = inspect_pe(path)
                 self.assertEqual(actual_machine, machine)
-                self.assertIn('libd64_runtime.dll', {key.lower() for key in imports})
+                self.assertIn('libd64_qt5.dll', {key.lower() for key in imports})
                 self.assertIn('__dbase_cls_tobject_create', exports)
                 self.assertIn('__dbase_cls_tobject_vmt', exports)
                 self.assertIn('__dbase_cls_tobject_classname', exports)

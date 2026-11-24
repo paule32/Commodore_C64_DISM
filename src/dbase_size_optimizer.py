@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Stage 674: O0/O1/O2 size optimizer for compiler-generated dBASE Intel ASM.
+"""Stage 679: O0/O1/O2/O3 size optimizer for compiler-generated dBASE Intel ASM.
 
 O0 is a strict identity transform.  O1 only rewrites provably equivalent
 control-flow patterns inside the .text section.  Every source line is retained:
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import re
 
 _O1 = 'O1'
-_LEVELS = frozenset(('O0', 'O1', 'O2'))
+_LEVELS = frozenset(('O0', 'O1', 'O2', 'O3'))
 _LABEL = re.compile(r'^\s*([A-Za-z_.$?@][\w.$?@]*):\s*(?:;.*)?$', re.I)
 _JMP = re.compile(r'^([ \t]*)jmp[ \t]+([A-Za-z_.$?@][\w.$?@]*)\s*(?:;.*)?$', re.I)
 _JCC = re.compile(r'^([ \t]*)(j[a-z]+)[ \t]+([A-Za-z_.$?@][\w.$?@]*)\s*(?:;.*)?$', re.I)
@@ -48,7 +48,7 @@ def optimize_dbase_size_assembly(assembly: str, *, level: str = 'O0') -> DBaseSi
     machine instructions, not guessed byte sizes (branch encodings vary).
     """
     level = normalize_dbase_optimization_level(level)
-    if level not in (_O1, 'O2'):
+    if level not in (_O1, 'O2', 'O3'):
         return DBaseSizeOptimizationResult(assembly, level)
     lines = assembly.splitlines(keepends=True)
     text_section = False
@@ -104,16 +104,28 @@ def optimize_dbase_size_assembly(assembly: str, *, level: str = 'O0') -> DBaseSi
 
         i += 1
 
+    # Stage 682: remove unreachable exception fallback BEFORE O2 constructs
+    # static output descriptors. This also avoids unused read-only literals.
+    before_outputs = ''.join(lines)
+    if level == 'O3':
+        from dbase_exception_optimizer import compact_unreferenced_exception_state
+        before_outputs, exception_removed = compact_unreferenced_exception_state(before_outputs)
+        changed += exception_removed
     # Stage 672: static runtime text output calls share one dispatch body.
     # Called only in O1, after the original control-flow peepholes.
     from dbase_output_compactor import compact_dbase_static_outputs
-    compacted = compact_dbase_static_outputs(''.join(lines), min_blocks=1 if level == 'O2' else 3)
-    if level == 'O2':
+    compacted = compact_dbase_static_outputs(before_outputs, min_blocks=1 if level in ('O2', 'O3') else 3)
+    if level in ('O2', 'O3'):
         from dbase_static_output_optimizer import compact_dbase_static_string_calls
         extra = compact_dbase_static_string_calls(compacted.assembly)
+        optimized = extra.assembly
+        removed = 0
+        if level == 'O3':
+            from dbase_vmt_optimizer import compact_dbase_tobject_method_tables
+            optimized, removed = compact_dbase_tobject_method_tables(optimized)
         return DBaseSizeOptimizationResult(
-            extra.assembly, level,
-            changed + compacted.instructions_saved + extra.instructions_saved)
+            optimized, level,
+            changed + compacted.instructions_saved + extra.instructions_saved + removed)
     return DBaseSizeOptimizationResult(
         compacted.assembly, level, changed + compacted.instructions_saved)
 

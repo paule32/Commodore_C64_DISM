@@ -63,7 +63,7 @@ class HelpCompiler:
                                 topic_numbers=self.topic_numbers)
 
     @classmethod
-    def compile_files(cls, sources):
+    def compile_files(cls, sources, *, root=None, include_paths=()):
         """Compile all registered .thlp project files into a shared topic catalog.
 
         Each source is parsed once; %include may pull additional topics.
@@ -74,8 +74,13 @@ class HelpCompiler:
         if not files:
             raise HelpCompileError('Keine Hilfedateien zum Kompilieren')
         instance = cls(files[0])
-        instance.root = Path(os.path.commonpath([str(p.parent) for p in files]))
+        instance.root = (Path(root).resolve() if root is not None else
+                         Path(os.path.commonpath([str(p.parent) for p in files])))
+        instance._project_files = tuple(files)
+        instance._include_roots = tuple(dict.fromkeys(
+            [instance.root, *(Path(p).resolve() for p in include_paths)]))
         for path in files:
+            instance.active = None  # Each top-level source starts independently.
             instance._visit(path)
         if 'index' not in instance.topics:
             raise HelpCompileError('Das Standardthema %topic "index" fehlt.')
@@ -85,7 +90,10 @@ class HelpCompiler:
 
     def _visit(self, path: Path) -> None:
         path = path.resolve(strict=True)
-        if not path.is_relative_to(self.root):
+        registered = set(getattr(self, '_project_files', ()))
+        allowed_roots = getattr(self, '_include_roots', (self.root,))
+        if (path not in registered and
+                not any(path.is_relative_to(root) for root in allowed_roots)):
             raise HelpCompileError(f'Include außerhalb des Hilfe-Verzeichnisses: {path}')
         if path in self.stack:
             raise HelpCompileError('Zyklisches %include: ' + ' -> '.join(map(str, self.stack + [path])))
@@ -107,8 +115,20 @@ class HelpCompiler:
                     if not name or Path(name).is_absolute():
                         raise HelpCompileError(f'{location}: ungültiger Include-Pfad')
                     try:
-                        self._visit(path.parent / name)
-                    except OSError as exc:
+                        if hasattr(self, '_project_files'):
+                            from turbo_help_project_tree import resolve_include
+                            include_path = resolve_include(
+                                name, path, self._project_files, self._include_roots)
+                        else:
+                            include_path = path.parent / name
+                        # An include may define other topics; do not let its
+                        # last topic steal subsequent lines of this source.
+                        previous_topic = self.active
+                        try:
+                            self._visit(include_path)
+                        finally:
+                            self.active = previous_topic
+                    except (OSError, ValueError) as exc:
                         raise HelpCompileError(f'{location}: %include {name}: {exc}') from exc
                     continue
                 topic = _TOPIC.fullmatch(line)
@@ -157,8 +177,17 @@ def po_quote(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def write_po(topics: dict[str, str]) -> str:
-    header = (
+def write_po(topics: dict[str, str], metadata=None) -> str:
+    # Stage 688: optional project-specific Localize-compatible PO header.
+    # Preserve the historic minimal header when called without metadata.
+    if metadata is not None:
+        from turbo_help_po_metadata import HEADER_FIELDS, normalize_po_settings
+        values = normalize_po_settings({'headers': metadata})['headers']
+        header = ('msgid ""\nmsgstr ""\n' + ''.join(
+            po_quote(f'{key}: {values.get(key, "")}\n') + '\n'
+            for key in HEADER_FIELDS) + '\n')
+    else:
+        header = (
         'msgid ""\nmsgstr ""\n'
         '"Content-Type: text/plain; charset=UTF-8\\n"\n'
         '"Content-Transfer-Encoding: 8bit\\n"\n'
@@ -290,7 +319,8 @@ def read_po(source: str) -> dict[str, str]:
 
 def write_mo(messages: dict[str, str]) -> bytes:
     """GNU gettext .mo revision 0, little-endian, UTF-8, no external msgfmt."""
-    header = 'Content-Type: text/plain; charset=UTF-8\nMIME-Version: 1.0\n'
+    header = messages.get('') or 'Content-Type: text/plain; charset=UTF-8\nMIME-Version: 1.0\n'
+    # Unlike Stage 687, keep the parsed PO metadata in the MO header.
     entries = sorted({**messages, '': header}.items(), key=lambda kv: kv[0].encode('utf-8'))
     ids = [key.encode('utf-8') for key, _ in entries]
     strs = [value.encode('utf-8') for _, value in entries]
@@ -326,10 +356,10 @@ def main(argv: list[str] | None = None) -> int:
         directory.mkdir(parents=True, exist_ok=True)
         basename = args.source.stem
         po = directory / f'{basename}.po'
-        mo = directory / f'{basename}.hlp'
+        hlp = directory / f'{basename}.hlp'
         po.write_text(write_po(topics), encoding='utf-8', newline='\n')
-        mo.write_bytes(write_mo(read_po(po.read_text(encoding='utf-8'))))
-        print(f'Help Compiler: {len(topics)} Themen; PO: {po}; MO: {mo}')
+        hlp.write_bytes(write_mo(read_po(po.read_text(encoding='utf-8'))))
+        print(f'Help Compiler: {len(topics)} Themen; PO: {po}; HLP: {hlp}')
         return 0
     except (HelpCompileError, OSError) as exc:
         print(f'Help Compiler Fehler: {exc}', file=sys.stderr)

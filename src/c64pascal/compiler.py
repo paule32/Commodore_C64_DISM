@@ -6397,7 +6397,7 @@ PE64_STRING_TYPE = _PascalType("string", 8, False, "string")
 # Stage 181: Runtime-Funktionen aus System.Objects werden als echte PE-Imports
 # an d64qt5.dll gebunden. Der erste Name ist der Pascal/DLL-Exportname;
 # der lokale COFF32-cdecl-Symbolname wird weiterhin als _jit_* erzeugt.
-PASCAL_MINIRUNTIME_DLL = "libd64_runtime.dll"
+PASCAL_MINIRUNTIME_DLL = "libd64_qt5.dll"
 PASCAL_MINIRUNTIME_IMPORTS: Dict[str, str] = {
     "jit_object_instance_new"   : "jit_object_instance_new",
     "jit_object_instance_free"  : "jit_object_instance_free",
@@ -9779,7 +9779,7 @@ class _PE32CodeGenerator(_CodeGenerator):
             return
         p = self.symbol_prefix
         self.emitter.emit()
-        self.emitter.emit("; Stage 583: PE32 stack cookie services in libd64_runtime.dll")
+        self.emitter.emit("; Stage 583: PE32 stack cookie services in libd64_qt5.dll")
         # Keep the per-module guard secret.  Only the platform-specific CSPRNG,
         # atomic initialization and fail-fast path live in the runtime DLL.
         # Local trampolines retain the established generator calling convention.
@@ -9797,8 +9797,8 @@ class _PE32CodeGenerator(_CodeGenerator):
         # Stage 583: These imports are added only for explicitly protected PE32
         # modules.  PE64 still uses the existing architecture-specific helpers.
         for symbol, dll, exported in (
-            ("__d64_pas_cookie_initialize32", "libd64_runtime.dll", "jit_pas_cookie_initialize32"),
-            ("__d64_pas_cookie_failure32", "libd64_runtime.dll", "jit_pas_cookie_failure32"),
+            ("__d64_pas_cookie_initialize32", "libd64_qt5.dll", "jit_pas_cookie_initialize32"),
+            ("__d64_pas_cookie_failure32", "libd64_qt5.dll", "jit_pas_cookie_failure32"),
         ):
             self.emitter.emit(f'import {symbol}, "{dll}", "{exported}"')
 

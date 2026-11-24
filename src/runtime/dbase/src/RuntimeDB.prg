@@ -7,10 +7,10 @@
 #define RUNTIMEDB_PRG
 
 #ifndef RUNTIME_DLL
-#define RUNTIME_DLL "libd64_runtime.dll"
+#define RUNTIME_DLL "libd64_qt5.dll"
 #else
 #undef  RUNTIME_DLL
-#define RUNTIME_DLL "libd64_runtime.dll"
+#define RUNTIME_DLL "libd64_qt5.dll"
 #endif
 
 extern PVOID jit_object_instance_new (PVOID); cdecl; RUNTIME_DLL; from "jit_object_instance_new"

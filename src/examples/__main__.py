@@ -9,10 +9,11 @@ from __future__ import annotations
 import ctypes
 import sys
 import time
+from pathlib import Path
 try:
-    from PyQt5.QtCore import QCoreApplication, Qt
-    from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPixmap
-    from PyQt5.QtWidgets import QApplication, QSplashScreen
+    from PyQt5.QtCore import QCoreApplication, Qt, QSize
+    from PyQt5.QtGui import QColor, QFont, QMovie, QPainter, QPen, QPixmap
+    from PyQt5.QtWidgets import QApplication, QLabel, QSplashScreen
 except ImportError as exc:
     print(
         "PyQt5 ist nicht installiert.\n"
@@ -110,6 +111,22 @@ def _make_c64_splash(font_family: str) -> QPixmap:
     return pixmap
 
 
+def _startup_loader_gif() -> Path | None:
+    """Find data/loader.gif without importing the main IDE before its splash."""
+    paths = []
+    if getattr(sys, 'frozen', False):
+        paths.append(Path(sys.executable).resolve().parent / 'data' / 'loader.gif')
+    bundle = getattr(sys, '_MEIPASS', None)
+    if bundle:
+        paths.append(Path(bundle) / 'data' / 'loader.gif')
+    # This launcher resides in examples/, while data/ is next to d64_dism.py.
+    paths.append(Path(__file__).resolve().parent.parent / 'data' / 'loader.gif')
+    for path in paths:
+        if path.is_file():
+            return path
+    return None
+
+
 def _focus_main_window(window) -> None:
     """Qt-Fokus plus Windows-SetForegroundWindow nach dem ersten show()."""
     try:
@@ -145,32 +162,81 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("d64_dism Launcher")
 
-    font_family = _load_splash_font()
-    splash = QSplashScreen(
-        _make_c64_splash(font_family),
-        Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint,
-    )
-    splash.setObjectName("c64_startup_splash")
-    splash.show()
-    splash.raise_()
-    time.sleep(1.5)
-    app.processEvents()
+    # Stage 692: The initial imports can block the main Qt event loop for
+    # seconds. A separate Qt process owns the animated splash, so its QMovie
+    # continues to advance even while d64_dism is being imported.
+    splash_bridge = None
+    independent_splash = False
+    loader_path = _startup_loader_gif()
+    if loader_path is not None:
+        try:
+            import splash_animation_bridge as splash_bridge
+            independent_splash = splash_bridge.start_startup_splash(loader_path)
+        except (ImportError, OSError, RuntimeError):
+            independent_splash = False
+
+    splash = None
+    loader_movie = None
+    loader_label = None
+    if not independent_splash:
+        font_family = _load_splash_font()
+        splash = QSplashScreen(
+            _make_c64_splash(font_family),
+            Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint,
+        )
+        splash.setObjectName("c64_startup_splash")
+        # Fallback for frozen applications, missing external Python or a
+        # missing/invalid GIF: keep the original in-process loading splash.
+        if loader_path is not None:
+            movie = QMovie(str(loader_path))
+            movie.setScaledSize(QSize(32, 32))
+            if movie.isValid():
+                loader_movie = movie
+                loader_label = QLabel(splash)
+                loader_label.setObjectName('c64_startup_loader')
+                loader_label.setFixedSize(34, 34)
+                loader_label.move(splash.width() - 54, 20)
+                loader_label.setMovie(movie)
+                loader_label.show()
+            else:
+                movie.deleteLater()
+        splash.show()
+        if loader_movie is not None:
+            loader_movie.start()
+        splash.raise_()
+        # Do not use time.sleep(): that prevented even the first GIF frame.
+        # A nested Qt loop lets the fallback splash paint before the import.
+        from PyQt5.QtCore import QEventLoop, QTimer
+        first_paint = QEventLoop()
+        QTimer.singleShot(150, first_paint.quit)
+        first_paint.exec_()
 
     # d64_dism wird erst jetzt importiert. Sein ExplorerWindow wird beim
     # Konstruieren noch nicht gezeigt; der C64-Splash bleibt deshalb sichtbar.
     try:
         import d64_dism
     except BaseException:
-        splash.close()
+        if loader_movie is not None:
+            loader_movie.stop()
+        if splash is not None:
+            splash.close()
+        if splash_bridge is not None:
+            splash_bridge.close_splash_bridge()
         raise
 
     def main_window_shown(window) -> None:
         # run_gui() hat zu diesem Zeitpunkt bereits winId() erzeugt und show()
         # ausgeführt. Erst jetzt verschwindet der Splash und der Fokus wechselt.
         try:
-            splash.finish(window)
+            if independent_splash and splash_bridge is not None:
+                splash_bridge.finish_startup_splash()
+            elif splash is not None:
+                splash.finish(window)
         finally:
-            splash.close()
+            if loader_movie is not None:
+                loader_movie.stop()
+            if splash is not None:
+                splash.close()
         app.processEvents()
         _focus_main_window(window)
 
@@ -181,8 +247,12 @@ def main() -> int:
             window_shown_callback=main_window_shown,
         )
     finally:
-        if splash.isVisible():
+        if loader_movie is not None:
+            loader_movie.stop()
+        if splash is not None and splash.isVisible():
             splash.close()
+        if splash_bridge is not None:
+            splash_bridge.close_splash_bridge()
     return int(result)
 
 

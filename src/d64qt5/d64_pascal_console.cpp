@@ -158,12 +158,8 @@ D64QT5_API int __cdecl d64_console_read_int() {
 // Allocate through the existing libd64_runtime allocator; callers must free
 // with _jit_free (and can transfer ownership to a Pascal String variable).
 D64QT5_API char* __cdecl d64_console_read_string() {
-    using Alloc = void* (__cdecl*)(unsigned);
-    HMODULE runtime = GetModuleHandleA("libd64_runtime.dll");
-    if (!runtime) return nullptr;
-    auto alloc = reinterpret_cast<Alloc>(GetProcAddress(runtime, "_jit_malloc"));
-    if (!alloc) return nullptr;
-    char* value = static_cast<char*>(alloc(1024));
+    // Stage 678: allocator lives inside this Qt DLL. Pascal may use _jit_free.
+    char* value = static_cast<char*>(_jit_malloc(1024));
     if (!value) return nullptr;
     read_line(value, 1024);
     return value;

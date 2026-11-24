@@ -594,61 +594,61 @@ __dbase_exception_cleanup_done:
 ; Stage 602: dBASE source methods / JitVmt C ABI
 __dbase_cls_tobject___ini__:
     ret
-__dbase_cls_tobject___del__:
-    ret
-__dbase_cls_tobject_free:
-    push dword ptr [esp+4]
-    call __dbase_obj_jit_object_free
-    add esp, 4
-    ret
-__dbase_cls_tobject_freeinstance:
-    push dword ptr [esp+4]
-    call __dbase_obj_jit_object_instance_free
-    add esp, 4
-    ret
-__dbase_cls_tobject_classtype:
-    push dword ptr [esp+4]
-    call __dbase_obj_jit_object_class_type
-    add esp, 4
-    ret
-__dbase_cls_tobject_classparent:
-    push dword ptr [esp+4]
-    call __dbase_obj_jit_object_class_type
-    add esp, 4
-    push eax
-    call __dbase_obj_jit_class_parent
-    add esp, 4
-    ret
-__dbase_cls_tobject_classnameaddress:
-    push dword ptr [esp+4]
-    call __dbase_obj_jit_object_class_type
-    add esp, 4
-    push eax
-    call __dbase_obj_jit_class_name
-    add esp, 4
-    ret
-__dbase_cls_tobject_classname:
-    push dword ptr [esp+4]
-    call __dbase_obj_jit_object_class_type
-    add esp, 4
-    push eax
-    call __dbase_obj_jit_class_name
-    add esp, 4
-    ret
-__dbase_cls_tobject_instancesize:
-    push dword ptr [esp+4]
-    call __dbase_obj_jit_object_class_type
-    add esp, 4
-    push eax
-    call __dbase_obj_jit_class_instance_size
-    add esp, 4
-    ret
-__dbase_cls_tobject_inheritsfrom:
-    push dword ptr [esp+8]
-    push dword ptr [esp+8]
-    call __dbase_obj_jit_inherits_from_object
-    add esp, 8
-    ret
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
 __dbase_cls_exception_fields_init:
     push ebp
     mov ebp, esp
@@ -890,23 +890,30 @@ __dbase_cls_tobject_create:
     add esp, 4
     ret
 
+
+; Stage 679: O3 runtime ABI import guard
+__dbase_o3_abi_guard:
+    call __dbase_o3_default_vmt_abi
+    ret
+
 section .data
 ; Stage 600: JitVmt headers: parent, name, instance_size, init, finalize, destroy
 __dbase_cls_exception_default_message:
     db 69, 114, 114, 111, 114, 46, 0
 __dbase_cls_empty:
     db 0
+; Stage 679: TObject builtin virtual methods; DLL fallback safe
 ; Stage 670: shared VMT method tables
-__dbase_class_object:
-    dd __dbase_cls_tobject___del__
-    dd __dbase_cls_tobject_free
-    dd __dbase_cls_tobject_freeinstance
-    dd __dbase_cls_tobject_classtype
-    dd __dbase_cls_tobject_classparent
-    dd __dbase_cls_tobject_classnameaddress
-    dd __dbase_cls_tobject_classname
-    dd __dbase_cls_tobject_instancesize
-    dd __dbase_cls_tobject_inheritsfrom
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
 global __dbase_vmt_tobject
 __dbase_vmt_tobject:
     dd 0
@@ -914,7 +921,7 @@ __dbase_vmt_tobject:
     dd 0x80000004
     dd __dbase_cls_tobject___ini__
     dd 0
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_tobject_name:
     db 84, 79, 98, 106, 101, 99, 116, 0
 global __dbase_vmt_exception
@@ -924,7 +931,7 @@ __dbase_vmt_exception:
     dd 0x80000014
     dd __dbase_cls_exception_fields_init
     dd __dbase_cls_exception_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_exception_name:
     db 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
 global __dbase_vmt_dbexception
@@ -934,7 +941,7 @@ __dbase_vmt_dbexception:
     dd 0x80000014
     dd __dbase_cls_dbexception_fields_init
     dd __dbase_cls_dbexception_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_dbexception_name:
     db 68, 98, 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
 global __dbase_vmt_win32exception
@@ -944,7 +951,7 @@ __dbase_vmt_win32exception:
     dd 0x80000014
     dd __dbase_cls_win32exception_fields_init
     dd __dbase_cls_win32exception_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_win32exception_name:
     db 87, 105, 110, 51, 50, 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
 global __dbase_vmt_win32fileexception
@@ -954,7 +961,7 @@ __dbase_vmt_win32fileexception:
     dd 0x80000014
     dd __dbase_cls_win32fileexception_fields_init
     dd __dbase_cls_win32fileexception_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_win32fileexception_name:
     db 87, 105, 110, 51, 50, 70, 105, 108, 101, 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
 

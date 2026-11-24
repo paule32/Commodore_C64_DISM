@@ -49,6 +49,7 @@ from collections  import defaultdict, deque
 from contextlib   import redirect_stderr, redirect_stdout
 
 from text_manager import translate_qt
+from project_settings_tooltips import install_project_settings_tooltip_limiter
 from asm_stack_frame_tooltips import (
     stack_frame_pair_tooltip, stack_frame_allocation_tooltip,
     stack_frame_memory_tooltip, esp_stack_slot_tooltip, StackFrameTooltip
@@ -467,6 +468,7 @@ try:
         QPalette,
         QPen,
         QPixmap,
+        QMovie,
         QPolygonF,
         QRegion,
         QSyntaxHighlighter,
@@ -36927,9 +36929,9 @@ PE32_DEFAULT_IMPORTS: Dict[str, Tuple[str, str]] = {
     # Lokale COFF-cdecl-Symbole tragen einen fuehrenden Unterstrich; der
     # Resolver entfernt ihn fuer die Tabellenabfrage. Die aktuell etablierte
     # DLL-Exportschreibweise (_jit_*) bleibt unveraendert.
-    "jit_raise"                  : ("libd64_runtime.dll", "_jit_raise"),
-    "jit_exception_push"         : ("libd64_runtime.dll", "_jit_exception_push"),
-    "jit_exception_pop"          : ("libd64_runtime.dll", "_jit_exception_pop"),
+    "jit_raise"                  : ("libd64_qt5.dll", "_jit_raise"),
+    "jit_exception_push"         : ("libd64_qt5.dll", "_jit_exception_push"),
+    "jit_exception_pop"          : ("libd64_qt5.dll", "_jit_exception_pop"),
 }
 
 
@@ -38777,7 +38779,7 @@ def _coff_symbol_name_bytes(name: str, string_table: bytearray) -> bytes:
     return struct.pack("<II", 0, offset)
 
 
-def _coff32_metadata_bytes(obj: PE32ObjectProgram) -> bytes:
+def _coff32_metadata_bytes(obj: PE32ObjectProgram, *, compress_metadata: bool = False) -> bytes:
     document = {
         "format": "d64-coff32-link-v1",
         "entry": obj.entry_symbol,
@@ -38790,7 +38792,11 @@ def _coff32_metadata_bytes(obj: PE32ObjectProgram) -> bytes:
     }
     if not document["imports"] and not document["exports"] and not document["dll_name"]:
         return b""
-    return (json.dumps(document, ensure_ascii=True, sort_keys=True) + "\n").encode("ascii")
+    from d64_coff_metadata import encode_coff_link_metadata
+    return encode_coff_link_metadata(
+        (json.dumps(document, ensure_ascii=True, sort_keys=True) + "\n").encode("ascii"),
+        compress=compress_metadata,
+    )
 
 # -----------------------------------------------------------------------
 # Schreibt ein Microsoft-COFF32-Objekt ohne externen Assembler.
@@ -38799,14 +38805,14 @@ def _coff32_metadata_bytes(obj: PE32ObjectProgram) -> bytes:
 # gespeichert. Dadurch bleiben DLL-Import-/Exportinformationen auch nach
 # dem Ablegen in einer ``.o``-Datei oder einem ``.a``-Archiv erhalten.
 # -----------------------------------------------------------------------
-def write_coff32_object(obj: PE32ObjectProgram) -> bytes:
+def write_coff32_object(obj: PE32ObjectProgram, *, compress_metadata: bool = False) -> bytes:
     all_names = list(obj.symbols.keys())
     for name in obj.externals:
         if name not in all_names:
             all_names.append(name)
     symbol_index = {name: index for index, name in enumerate(all_names)}
 
-    metadata = _coff32_metadata_bytes(obj)
+    metadata = _coff32_metadata_bytes(obj, compress_metadata=compress_metadata)
     text_relocations = [
         item for item in obj.relocations
         if getattr(item, "section", ".text") == ".text"
@@ -38933,12 +38939,14 @@ def assemble_pe32_coff_object(
     filename: str = "<PE32-Assembler>",
     include_dirs=(),
     progress_callback=None,
+    compress_metadata: bool = False,
 ) -> bytes:
     return write_coff32_object(
         assemble_pe32_object_source(
             source, filename=filename, include_dirs=include_dirs,
             progress_callback=progress_callback,
-        )
+        ),
+        compress_metadata=compress_metadata,
     )
 
 
@@ -39170,6 +39178,12 @@ def parse_coff32_object(data: bytes) -> Coff32ParsedObject:
     imports: Dict[str, Tuple[str, str]] = {}
     exports: Dict[str, str] = {}
     dll_name: Optional[str] = None
+    if metadata_payload.startswith(b"D64JZ"):
+        from d64_coff_metadata import decode_coff_link_metadata
+        try:
+            metadata_payload = decode_coff_link_metadata(metadata_payload)
+        except ValueError as exc:
+            raise PE32AssemblerError(str(exc)) from exc
     if metadata_payload.strip().startswith(b"{"):
         try:
             document = json.loads(metadata_payload.decode("ascii"))
@@ -40532,17 +40546,21 @@ def assemble_pe64_object_source(source: str, *, filename: str="<PE64-Assembler>"
     return PE64ObjectProgram(bytes(out),dict(labels),externals,tuple(relocs),entry,dict(imports),dict(exports),dll_name)
 
 
-def _coff64_metadata_bytes(obj: PE64ObjectProgram) -> bytes:
+def _coff64_metadata_bytes(obj: PE64ObjectProgram, *, compress_metadata: bool = False) -> bytes:
     document={"format":"d64-coff64-link-v1","entry":obj.entry_symbol,"imports":{s:{"dll":v[0],"member":v[1]} for s,v in sorted(obj.imports.items())},"exports":dict(obj.exports),"dll_name":obj.dll_name}
     if not document["imports"] and not document["exports"] and not document["dll_name"]: return b""
-    return (json.dumps(document,ensure_ascii=True,sort_keys=True)+"\n").encode("ascii")
+    from d64_coff_metadata import encode_coff_link_metadata
+    return encode_coff_link_metadata(
+        (json.dumps(document,ensure_ascii=True,sort_keys=True)+"\n").encode("ascii"),
+        compress=compress_metadata,
+    )
 
 
-def write_coff64_object(obj: PE64ObjectProgram) -> bytes:
+def write_coff64_object(obj: PE64ObjectProgram, *, compress_metadata: bool = False) -> bytes:
     names=list(obj.symbols.keys())
     for name in obj.externals:
         if name not in names: names.append(name)
-    index={name:i for i,name in enumerate(names)}; metadata=_coff64_metadata_bytes(obj); sections=2 if metadata else 1
+    index={name:i for i,name in enumerate(names)}; metadata=_coff64_metadata_bytes(obj, compress_metadata=compress_metadata); sections=2 if metadata else 1
     header_size=20+sections*40; text_ptr=header_size; meta_ptr=text_ptr+len(obj.code) if metadata else 0; reloc_ptr=text_ptr+len(obj.code)+len(metadata); sym_ptr=reloc_ptr+len(obj.relocations)*10
     header=struct.pack("<HHIIIHH",IMAGE_FILE_MACHINE_AMD64,sections,0,sym_ptr,len(names),0,0)
     sh=bytearray(40); sh[:8]=b".text\0\0\0"; struct.pack_into("<I",sh,0x10,len(obj.code)); struct.pack_into("<I",sh,0x14,text_ptr); struct.pack_into("<I",sh,0x18,reloc_ptr if obj.relocations else 0); struct.pack_into("<H",sh,0x20,len(obj.relocations)); struct.pack_into("<I",sh,0x24,0xE0500020)
@@ -40560,11 +40578,11 @@ def write_coff64_object(obj: PE64ObjectProgram) -> bytes:
     return header+bytes(headers)+obj.code+metadata+bytes(rb)+bytes(syms)+st
 
 
-def assemble_pe64_coff_object(source: str, *, filename: str="<PE64-Assembler>", include_dirs=(), progress_callback=None) -> bytes:
+def assemble_pe64_coff_object(source: str, *, filename: str="<PE64-Assembler>", include_dirs=(), progress_callback=None, compress_metadata: bool = False) -> bytes:
     return write_coff64_object(assemble_pe64_object_source(
         source, filename=filename, include_dirs=include_dirs,
         progress_callback=progress_callback,
-    ))
+    ), compress_metadata=compress_metadata)
 
 
 def parse_coff64_object(data: bytes) -> Coff64ParsedObject:
@@ -40600,6 +40618,10 @@ def parse_coff64_object(data: bytes) -> Coff64ParsedObject:
         if si>=len(names): raise PE64AssemblerError("COFF64-Relocation verweist auf ungültiges Symbol.")
         rels.append(PE64Relocation(va,names[si],rt))
     imports={}; exports={}; dll_name=None
+    if meta.startswith(b"D64JZ"):
+        from d64_coff_metadata import decode_coff_link_metadata
+        try: meta = decode_coff_link_metadata(meta)
+        except ValueError as exc: raise PE64AssemblerError(str(exc)) from exc
     if meta.strip():
         try: doc=json.loads(meta.decode("ascii"))
         except Exception as exc: raise PE64AssemblerError("COFF64-.drectve enthält ungültige Metadaten.") from exc
@@ -41103,13 +41125,13 @@ def _assemble_pe64_preprocessed(source: str, progress_callback=None, total_lines
     )
 
 
-def write_coff64_object(obj: PE64ObjectProgram) -> bytes:
+def write_coff64_object(obj: PE64ObjectProgram, *, compress_metadata: bool = False) -> bytes:
     names = list(obj.symbols.keys())
     for name in obj.externals:
         if name not in names:
             names.append(name)
     index = {name: i for i, name in enumerate(names)}
-    metadata = _coff64_metadata_bytes(obj)
+    metadata = _coff64_metadata_bytes(obj, compress_metadata=compress_metadata)
     text_relocs = [r for r in obj.relocations if r.section == ".text"]
     data_relocs = [r for r in obj.relocations if r.section == ".data"]
 
@@ -41270,6 +41292,12 @@ def parse_coff64_object(data: bytes) -> Coff64ParsedObject:
     imports = {}
     exports = {}
     dll_name = None
+    if meta.startswith(b"D64JZ"):
+        from d64_coff_metadata import decode_coff_link_metadata
+        try:
+            meta = decode_coff_link_metadata(meta)
+        except ValueError as exc:
+            raise PE64AssemblerError(str(exc)) from exc
     if meta.strip():
         try:
             doc = json.loads(meta.decode("ascii"))
@@ -50750,10 +50778,25 @@ PROJECT_NODE_PROLOG_KNOWLEDGE_ROOT = "prolog_knowledge_root"
 # Stage 652: Turbo-Vision Help sources live in their own project node.
 PROJECT_TURBO_HELP_ENTRY_KEY = "__project_turbo_help_sources__"
 PROJECT_TURBO_HELP_SECTION = "Category.TurboHelp"
+PROJECT_TURBO_PO_SETTINGS_KEY = "__turbo_help_po_settings__"
+PROJECT_TURBO_PO_SETTINGS_SECTION = "Settings.TurboHelp.PO"
 PROJECT_HELP_SETTINGS_KEY = "__project_help_settings__"
 PROJECT_HELP_SETTINGS_SECTION = "Settings.Windows.Hilfe"
 PROJECT_NODE_TURBO_HELP_ROOT = "turbo_help_root"
 PROJECT_NODE_TURBO_HELP_FILE = "turbo_help_file"
+PROJECT_NODE_TURBO_HELP_FOLDER = "turbo_help_folder"
+PROJECT_TURBO_HELP_PATH_KEYS = {
+    "pe32": "__turbo_help_paths_pe32__",
+    "pe64": "__turbo_help_paths_pe64__",
+}
+PROJECT_TURBO_HELP_RELATIVE_KEYS = {
+    "pe32": "__turbo_help_relative_pe32__",
+    "pe64": "__turbo_help_relative_pe64__",
+}
+PROJECT_TURBO_HELP_PATH_SECTIONS = {
+    "pe32": "Settings.Windows.PE32.Compiler.dBASE.TurboHelp.Input",
+    "pe64": "Settings.Windows.PE64.Compiler.dBASE.TurboHelp.Input",
+}
 PROJECT_NODE_PROLOG_KNOWLEDGE_FILE = "prolog_knowledge_file"
 PROJECT_NODE_ARCHIVE = "archive"
 PROJECT_NODE_ARCHIVE_OBJECT = "archive_object"
@@ -51266,6 +51309,7 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "prolog_with_descriptors_key": PROJECT_WINDOWS_PE32_PROLOG_WITH_DESCRIPTORS_KEY,
         "dbase_external_ui_key": "__windows_pe32_dbase_external_ui__",
         "dbase_compress_json_key": "__windows_pe32_dbase_compress_json__",
+        "dbase_compress_meta_key": "__windows_pe32_dbase_compress_meta__",
         "dbase_store_binary_key": "__windows_pe32_dbase_store_binary__",
         "dbase_static_numeric_slots_key": "__windows_pe32_dbase_static_numeric_slots__",
         "dbase_dynamic_typed_variables_key": "__windows_pe32_dbase_dynamic_typed_variables__",
@@ -51327,6 +51371,7 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "prolog_with_descriptors_key": PROJECT_WINDOWS_PE64_PROLOG_WITH_DESCRIPTORS_KEY,
         "dbase_external_ui_key": "__windows_pe64_dbase_external_ui__",
         "dbase_compress_json_key": "__windows_pe64_dbase_compress_json__",
+        "dbase_compress_meta_key": "__windows_pe64_dbase_compress_meta__",
         "dbase_store_binary_key": "__windows_pe64_dbase_store_binary__",
         "dbase_static_numeric_slots_key": "__windows_pe64_dbase_static_numeric_slots__",
         "dbase_dynamic_typed_variables_key": "__windows_pe64_dbase_dynamic_typed_variables__",
@@ -51759,6 +51804,10 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
     entries[PROJECT_C_ARCHIVES_KEY] = []
     entries[PROJECT_PROLOG_KNOWLEDGE_KEY] = []
     entries[PROJECT_TURBO_HELP_ENTRY_KEY] = []
+    entries[PROJECT_TURBO_PO_SETTINGS_KEY] = []
+    for _target in ("pe32", "pe64"):
+        entries[PROJECT_TURBO_HELP_PATH_KEYS[_target]] = []
+        entries[PROJECT_TURBO_HELP_RELATIVE_KEYS[_target]] = [{"value": "true"}]
     entries[PROJECT_HELP_SETTINGS_KEY] = []
     entries[PROJECT_C64_RESOURCE_ENTRY_KEY] = []
     entries[PROJECT_C64_SPRITES_ENTRY_KEY] = []
@@ -51835,6 +51884,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["prolog_with_descriptors_key"]] = [{"value": "false"}]
         entries[_settings["dbase_external_ui_key"]] = [{"value": "false"}]
         entries[_settings["dbase_compress_json_key"]] = [{"value": "false"}]
+        entries[_settings["dbase_compress_meta_key"]] = [{"value": "false"}]
         entries[_settings["dbase_store_binary_key"]] = [{"value": "false"}]
         entries[_settings["dbase_static_numeric_slots_key"]] = [{"value": "false"}]
         entries[_settings["dbase_dynamic_typed_variables_key"]] = [{"value": "false"}]
@@ -52170,15 +52220,41 @@ def format_project_ini(
             "Values": json.dumps(_help_rows[0], ensure_ascii=False),
         }
 
-    # Stage 652: persist the Turbo Help project leaves, not unsaved tabs.
-    parser[PROJECT_TURBO_HELP_SECTION] = {"Title": "Turbo Help"}
+    # Stage 688: separate per-project gettext header and output paths.
+    from turbo_help_po_metadata import normalize_po_settings
+    _po_rows = entries.get(PROJECT_TURBO_PO_SETTINGS_KEY, ())
+    if _po_rows:
+        _po_settings = normalize_po_settings(_po_rows[0])
+        for _field in ('input_file', 'output_file'):
+            if _po_settings[_field]:
+                _po_settings[_field] = _project_storage_path(
+                    _po_settings[_field], project_path)
+        parser[PROJECT_TURBO_PO_SETTINGS_SECTION] = {
+            'Title': 'Turbo Hilfe PO/HLP',
+            'Values': json.dumps(_po_settings, ensure_ascii=False),
+        }
+
+    # Stage 685: nested Turbo Help folders, leaves and exactly one main flag.
+    parser[PROJECT_TURBO_HELP_SECTION] = {"Title": "Turbo Hilfe"}
     for _n, _item in enumerate(entries.get(PROJECT_TURBO_HELP_ENTRY_KEY, ()), 1):
         _path = str(_item.get("path", "")).strip()
-        if _path and Path(_path).suffix.casefold() == ".thlp":
+        _kind = str(_item.get("kind", "file"))
+        if _path and (_kind == "folder" or Path(_path).suffix.casefold() == ".thlp"):
             parser[PROJECT_TURBO_HELP_SECTION][f"Item{_n:04d}"] = json.dumps({
+                "kind": _kind,
                 "title": str(_item.get("title", "") or Path(_path).name),
                 "path": _project_storage_path(_path, project_path),
+                "parent": str(_item.get("parent", "")),
+                "main": bool(_item.get("main", False)) if _kind == "file" else False,
             }, ensure_ascii=False, separators=(",", ":"))
+    for _target, _section in PROJECT_TURBO_HELP_PATH_SECTIONS.items():
+        _relative = _project_bool_entry(entries, PROJECT_TURBO_HELP_RELATIVE_KEYS[_target], True)
+        parser[_section] = {"Title": "Turbo Hilfe", "RelativePaths": "true" if _relative else "false"}
+        for _n, _row in enumerate(entries.get(PROJECT_TURBO_HELP_PATH_KEYS[_target], ()), 1):
+            _path = str(_row.get("path", "")).strip()
+            if _path:
+                parser[_section][f"Path{_n:04d}"] = _project_storage_path_mode(
+                    _path, project_path, relative=_relative)
 
     for key, title, _extensions in PROJECT_CATEGORIES:
         section = f"Category.{key}"
@@ -52471,6 +52547,7 @@ def format_project_ini(
             "Title": f"Windows {_settings['title']} Compiler dBASE Optimierung",
             "ExternalUIComponents": "true" if _project_bool_entry(entries, _settings["dbase_external_ui_key"], False) else "false",
             "CompressJson": "true" if _project_bool_entry(entries, _settings["dbase_compress_json_key"], False) else "false",
+            "CompressMetaInformations": "true" if _project_bool_entry(entries, _settings["dbase_compress_meta_key"], False) else "false",
             "StoreBinaryData": "true" if _project_bool_entry(entries, _settings["dbase_store_binary_key"], False) else "false",
             "StaticNumericInternalSlots": "true" if _project_bool_entry(entries, _settings["dbase_static_numeric_slots_key"], False) else "false",
             "DynamicTypedVariables": "true" if _project_bool_entry(entries, _settings["dbase_dynamic_typed_variables_key"], False) else "false",
@@ -53429,6 +53506,7 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
             if parser.has_section(_dbase_optimization_section) else "O0")} ]
         for _key, _field in (("dbase_external_ui_key", "ExternalUIComponents"),
                              ("dbase_compress_json_key", "CompressJson"),
+                             ("dbase_compress_meta_key", "CompressMetaInformations"),
                              ("dbase_store_binary_key", "StoreBinaryData"),
                              ("dbase_static_numeric_slots_key", "StaticNumericInternalSlots"),
                              ("dbase_dynamic_typed_variables_key", "DynamicTypedVariables"),
@@ -54013,7 +54091,23 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
         except (TypeError, ValueError):
             pass
 
-    # Stage 652: load Turbo Help source leaves from the .pro file.
+    # Stage 688: absent section means initial Localize PO/MO defaults.
+    if parser.has_section(PROJECT_TURBO_PO_SETTINGS_SECTION):
+        try:
+            _po_settings = json.loads(parser.get(
+                PROJECT_TURBO_PO_SETTINGS_SECTION, 'Values', fallback='{}'))
+            if isinstance(_po_settings, dict):
+                from turbo_help_po_metadata import normalize_po_settings
+                _po_settings = normalize_po_settings(_po_settings)
+                for _field in ('input_file', 'output_file'):
+                    if _po_settings[_field]:
+                        _po_settings[_field] = _project_loaded_path(
+                            _po_settings[_field], Path(project_path))
+                entries[PROJECT_TURBO_PO_SETTINGS_KEY] = [_po_settings]
+        except (ValueError, TypeError):
+            pass
+
+    # Stage 685: legacy flat entries remain readable.
     if parser.has_section(PROJECT_TURBO_HELP_SECTION):
         for _key, _text in sorted(parser.items(PROJECT_TURBO_HELP_SECTION)):
             if not _key.casefold().startswith("item"):
@@ -54022,13 +54116,29 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
                 _payload = json.loads(_text)
             except (ValueError, TypeError):
                 continue
-            _path = str(_payload.get("path", "")).strip() if isinstance(_payload, dict) else ""
-            if _path and Path(_path).suffix.casefold() == ".thlp":
+            if not isinstance(_payload, dict):
+                continue
+            _path = str(_payload.get("path", "")).strip()
+            _kind = str(_payload.get("kind", "file"))
+            if _path and (_kind == "folder" or Path(_path).suffix.casefold() == ".thlp"):
                 _loaded = _project_loaded_path(_path, Path(project_path))
                 entries[PROJECT_TURBO_HELP_ENTRY_KEY].append({
                     "path": _loaded,
                     "title": str(_payload.get("title", "") or Path(_loaded).name),
+                    "kind": _kind,
+                    "parent": str(_payload.get("parent", "")),
+                    "main": bool(_payload.get("main", False)),
                 })
+    for _target, _section in PROJECT_TURBO_HELP_PATH_SECTIONS.items():
+        if not parser.has_section(_section):
+            continue
+        _relative = _parse_project_bool(parser.get(_section, "RelativePaths", fallback="true"), True)
+        entries[PROJECT_TURBO_HELP_RELATIVE_KEYS[_target]] = [{"value": "true" if _relative else "false"}]
+        entries[PROJECT_TURBO_HELP_PATH_KEYS[_target]] = [
+            {"path": _project_loaded_path(str(value), Path(project_path))}
+            for name, value in sorted(parser.items(_section))
+            if name.casefold().startswith("path") and str(value).strip()
+        ]
     return entries
 
 
@@ -107551,11 +107661,26 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._relative = {"input": True, "output": True}
             self._output = ""
             self._cache = ""
-            self.input_page = QWidget(parent)
+            if language == "dbase":
+                self.input_page = QScrollArea(parent)
+                self.input_page.setWidgetResizable(True)
+                self.input_page.setFrameShape(QFrame.NoFrame)
+                self.input_content = QWidget(self.input_page)
+            else:
+                self.input_page = QWidget(parent)
             self.output_page = QWidget(parent)
             self.input_page.setObjectName(f"compiler_{target}_{language}_input")
             self.output_page.setObjectName(f"compiler_{target}_{language}_output")
-            inputs = QVBoxLayout(self.input_page)
+            inputs_root = QVBoxLayout(
+                self.input_content if language == "dbase" else self.input_page)
+            if language == "dbase":
+                self.development_group = QGroupBox("Entwicklung:", self.input_page)
+                self.development_group.setObjectName(
+                    f"compiler_{target}_dbase_development_paths_group")
+                inputs_root.addWidget(self.development_group, 1)
+                inputs = QVBoxLayout(self.development_group)
+            else:
+                inputs = inputs_root
             self.input_relative = QCheckBox("relative Pfade", self.input_page)
             self.input_relative.setChecked(True)
             inputs.addWidget(self.input_relative)
@@ -107580,6 +107705,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             column.addStretch()
             row.addLayout(column)
             inputs.addLayout(row, 1)
+            if language == "dbase":
+                from turbo_help_path_widgets import TurboHelpPathGroup
+                self.turbo_help_group = TurboHelpPathGroup(owner, target, self.input_content)
+                inputs_root.addWidget(self.turbo_help_group, 1)
+                self.input_page.setWidget(self.input_content)
             outputs = QVBoxLayout(self.output_page)
             self.output_relative = QCheckBox("relative Pfade", self.output_page)
             self.output_relative.setChecked(True)
@@ -108045,7 +108175,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.console_runtime_pack_checkbox.setToolTip(
                 "D64Z/MSZIP gilt für benannte dBASE-Klassenbibliotheken "
                 "(z. B. RuntimeDB.dll). Die zusammengeführte native "
-                "libd64_runtime.dll wird separat durch die MinGW-Toolchain "
+                "libd64_qt5.dll wird separat durch die MinGW-Toolchain "
                 "erstellt und hier nur bereitgestellt.")
             self.console_runtime_pack_checkbox.setChecked(bool(
                 getattr(self.owner, "project_windows_console_dll_pack", {}).get(self.target, False)
@@ -108588,6 +108718,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "O1  -  Länge Optimierung - JNE JE", self.dbase_size_group)
             self.dbase_size_o2_radio = QRadioButton(
                 "O2  -  Static String Optimierung", self.dbase_size_group)
+            self.dbase_size_o3_radio = QRadioButton(
+                "O3  -  Reduce redundant method tables", self.dbase_size_group)
+            self.dbase_size_o3_radio.setObjectName(
+                f"project_windows_{target_tag}_dbase_size_o3")
+            self.dbase_size_o3_radio.setToolTip(
+                "Enthält O1 und O2. Verwendet bei unverändertem TObject eine "
+                "gemeinsame Methodentabelle aus libd64_qt5.dll; individuelle "
+                "Methodenüberschreibungen bleiben erhalten. Qt5-DLL neu bauen.")
             self.dbase_size_o2_radio.setObjectName(
                 f"project_windows_{target_tag}_dbase_size_o2")
             self.dbase_size_o2_radio.setToolTip(
@@ -108604,7 +108742,30 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             size_group_layout.addWidget(self.dbase_size_o0_radio)
             size_group_layout.addWidget(self.dbase_size_o1_radio)
             size_group_layout.addWidget(self.dbase_size_o2_radio)
+            size_group_layout.addWidget(self.dbase_size_o3_radio)
             dbase_opt_layout.addWidget(self.dbase_size_group)
+            # Stage 683: dBASE COFF linker metadata compression (not UI JSON).
+            self.dbase_meta_group = QGroupBox(
+                "Object Metadata", self.dbase_optimization_page
+            )
+            self.dbase_meta_group.setObjectName(
+                f"project_windows_{target_tag}_dbase_meta_group"
+            )
+            meta_group_layout = QVBoxLayout(self.dbase_meta_group)
+            self.dbase_compress_meta_checkbox = QCheckBox(
+                "Compress Meta Informations", self.dbase_meta_group
+            )
+            self.dbase_compress_meta_checkbox.setObjectName(
+                f"project_windows_{target_tag}_dbase_compress_meta"
+            )
+            self.dbase_compress_meta_checkbox.setToolTip(
+                "Komprimiert JSON-Linker-Metadaten in COFF-.o/.obj-Dateien mit "
+                "zlib. Der interne Linker entpackt sie automatisch; alte "
+                "Objektdateien bleiben lesbar. Beim Umschalten neu assemblieren."
+            )
+            self.dbase_compress_meta_checkbox.setChecked(False)
+            meta_group_layout.addWidget(self.dbase_compress_meta_checkbox)
+            dbase_opt_layout.addWidget(self.dbase_meta_group)
             self.dbase_visual_group = QGroupBox(
                 "Visuelle Elemente", self.dbase_optimization_page
             )
@@ -108808,7 +108969,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.pe_packing_checkbox.setChecked(PE_PACKING_DEFAULT)
             self.pe_packing_checkbox.setToolTip(
                 "Komprimiert den Programmcode in einen D64Z/MSZIP-Block. "
-                "Die native libd64_runtime.dll wird nicht mit dieser "
+                "Die native libd64_qt5.dll wird nicht mit dieser "
                 "Projektoption gepackt. Benannte dBASE-Klassenbibliotheken "
                 "(z. B. RuntimeDB.dll) erhalten einen eigenen DLL-Entpacker. "
                 "Für EXE und DLL gelten getrennte Startpfade."
@@ -109341,11 +109502,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.pascal_unit_output_edit.editingFinished.connect(self._pascal_unit_output_edited)
             self.input_relative_checkbox.toggled.connect(self._input_relative_toggled)
             self.output_relative_checkbox.toggled.connect(self._output_relative_toggled)
-            for _radio in (self.dbase_size_o0_radio, self.dbase_size_o1_radio, self.dbase_size_o2_radio):
+            for _radio in (self.dbase_size_o0_radio, self.dbase_size_o1_radio, self.dbase_size_o2_radio, self.dbase_size_o3_radio):
                 _radio.toggled.connect(self._dbase_size_level_changed)
             self.dbase_external_ui_checkbox.toggled.connect(self._dbase_visual_changed)
             self.dbase_store_binary_checkbox.toggled.connect(self._dbase_visual_changed)
             self.dbase_compress_json_checkbox.toggled.connect(self._dbase_visual_changed)
+            self.dbase_compress_meta_checkbox.toggled.connect(self._dbase_compress_meta_changed)
             self.dbase_static_numeric_slots_checkbox.toggled.connect(self._dbase_slots_changed)
             self.dbase_dynamic_typed_variables_checkbox.toggled.connect(self._dbase_slots_changed)
             for _checkbox in (
@@ -110209,6 +110371,23 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 mark_modified=True,
             )
 
+        def dbase_compress_meta_enabled(self) -> bool:
+            return bool(self.dbase_compress_meta_checkbox.isChecked())
+
+        def set_dbase_compress_meta_enabled(self, enabled: bool) -> None:
+            self._syncing = True
+            try:
+                self.dbase_compress_meta_checkbox.setChecked(bool(enabled))
+            finally:
+                self._syncing = False
+
+        def _dbase_compress_meta_changed(self, _checked: bool) -> None:
+            if self._syncing:
+                return
+            callback = getattr(self.owner, "set_project_windows_dbase_compress_meta", None)
+            if callable(callback):
+                callback(self.target, self.dbase_compress_meta_enabled(), mark_modified=True)
+
         def dbase_visual_settings(self) -> dict:
             return {
                 "external_ui_components": bool(self.dbase_external_ui_checkbox.isChecked()),
@@ -110268,7 +110447,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                          options["dynamic_typed_variables"], mark_modified=True)
 
         def dbase_size_level(self) -> str:
-            return ("O2" if self.dbase_size_o2_radio.isChecked() else
+            return ("O3" if self.dbase_size_o3_radio.isChecked() else
+                    "O2" if self.dbase_size_o2_radio.isChecked() else
                     "O1" if self.dbase_size_o1_radio.isChecked() else "O0")
 
         def set_dbase_size_level(self, level: str) -> None:
@@ -110276,6 +110456,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._syncing = True
             try:
                 selected = normalize_dbase_optimization_level(level)
+                self.dbase_size_o3_radio.setChecked(selected == "O3")
                 self.dbase_size_o2_radio.setChecked(selected == "O2")
                 self.dbase_size_o1_radio.setChecked(selected == "O1")
                 self.dbase_size_o0_radio.setChecked(selected == "O0")
@@ -112172,6 +112353,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
         def set_pe_compact_enabled(self, target: str, enabled: bool) -> None:
             self.page_for_target(target).set_pe_compact_enabled(enabled)
 
+        def dbase_compress_meta_enabled(self, target: str = "pe32") -> bool:
+            return self.page_for_target(target).dbase_compress_meta_enabled()
+
+        def set_dbase_compress_meta_enabled(self, target: str, enabled: bool) -> None:
+            self.page_for_target(target).set_dbase_compress_meta_enabled(enabled)
+
         def dbase_visual_settings(self, target: str = "pe32") -> dict:
             return self.page_for_target(target).dbase_visual_settings()
 
@@ -113635,6 +113822,35 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             heading.setObjectName("d64OperationPreludeTitle")
             heading.setProperty("d64LocalizationKey", "operation.prelude.title")
             heading.setFont(QFont(heading.font().family(), 11, QFont.Bold))
+            # Stage 691: animated pre-loader on the top-right of all operation
+            # splashes. Resolve next to d64_dism.py / the frozen EXE; older
+            # installations without data/loader.gif still show normal progress.
+            self._loader_movie = None
+            self._loader_gif_path = None
+            self._loader_overlay_active = False
+            self._loader_label = QLabel(self)
+            self._loader_label.setObjectName("d64OperationPreludeLoader")
+            self._loader_label.setFixedSize(30, 30)
+            self._loader_label.setAlignment(Qt.AlignCenter)
+            self._loader_label.hide()
+            try:
+                gif_path = d64_resolve_runtime_resource("data/loader.gif")
+                if gif_path.is_file():
+                    movie = QMovie(str(gif_path), QByteArray(), self)
+                    movie.setScaledSize(QSize(28, 28))
+                    if movie.isValid():
+                        self._loader_gif_path = gif_path
+                        self._loader_movie = movie
+                        self._loader_label.setMovie(movie)
+                        self._loader_label.show()
+                    else:
+                        movie.deleteLater()
+            except (OSError, RuntimeError, ValueError):
+                pass
+            title_row = QHBoxLayout()
+            title_row.setContentsMargins(0, 0, 0, 0)
+            title_row.addWidget(heading, 1)
+            title_row.addWidget(self._loader_label, 0, Qt.AlignRight | Qt.AlignTop)
             message_label = QLabel(message, self)
             message_label.setObjectName("d64OperationPreludeMessage")
             message_label.setProperty("d64LocalizationKey", "operation.prelude.message")
@@ -113644,7 +113860,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             progress.setRange(0, 0)  # rechenintensiver Schritt, keine Prozentangabe
             progress.setTextVisible(False)
             progress.setFixedHeight(8)
-            layout.addWidget(heading)
+            layout.addLayout(title_row)
             layout.addWidget(message_label)
             layout.addStretch(1)
             layout.addWidget(progress)
@@ -113684,11 +113900,40 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
         def showEvent(self, event) -> None:
             super().showEvent(event)
+            if self._loader_movie is not None:
+                self._loader_movie.start()
             if self.parentWidget() is not None:
                 p = self.parentWidget()
                 center = p.mapToGlobal(p.rect().center())
                 self.move(center.x() - self.width() // 2,
                           center.y() - self.height() // 2)
+            # Stage 692: the dock-opening operation executes on the GUI thread.
+            # A QMovie on that same thread freezes while loading a dock.  Its
+            # small, transparent overlay is instead animated by a separate
+            # Qt process, positioned exactly over the existing loader label.
+            # The original QMovie remains as fallback (e.g. frozen EXE).
+            if self._loader_gif_path is not None:
+                try:
+                    from splash_animation_bridge import show_preloader_overlay
+                    corner = self._loader_label.mapToGlobal(QPoint(0, 0))
+                    self._loader_overlay_active = show_preloader_overlay(
+                        self._loader_gif_path, corner.x(), corner.y(),
+                        self._loader_label.width(), self._loader_label.height(),
+                    )
+                except (ImportError, OSError, RuntimeError):
+                    self._loader_overlay_active = False
+
+        def hideEvent(self, event) -> None:
+            if self._loader_overlay_active:
+                try:
+                    from splash_animation_bridge import hide_preloader_overlay
+                    hide_preloader_overlay()
+                except (ImportError, OSError, RuntimeError):
+                    pass
+                self._loader_overlay_active = False
+            if self._loader_movie is not None:
+                self._loader_movie.stop()
+            super().hideEvent(event)
 
     # ------------------------------------------------------------------
     # Stage 388: Dock-Host fuer C64-Editoren und den Resource Alias Builder.
@@ -113913,6 +114158,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.settings_panel = None
             self.project_settings_dock = None
             self.project_settings_panel = None
+            self.project_turbo_help_search_paths = {"pe32": [], "pe64": []}
+            self.project_turbo_help_relative = {"pe32": True, "pe64": True}
             self.project_windows_search_paths: Dict[str, List[str]] = {
                 "pe32": [],
                 "pe64": [],
@@ -113978,6 +114225,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.project_windows_compact_enabled: Dict[str, bool] = {
                 "pe32": False, "pe64": False,
             }
+            self.project_windows_dbase_compress_meta: Dict[str, bool] = {"pe32": False, "pe64": False}
             self.project_windows_dbase_visual: Dict[str, dict] = {
                 "pe32": {"external_ui_components": False, "compress_json": False, "store_binary_data": False},
                 "pe64": {"external_ui_components": False, "compress_json": False, "store_binary_data": False},
@@ -114149,6 +114397,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self._project_editor_compiler_targets = {}
             from turbo_help_settings import default_help_settings
             self.project_help_settings = default_help_settings()
+            from turbo_help_po_metadata import default_po_settings
+            self.project_turbo_po_settings = default_po_settings(self.settings)
             self.project_debug_options = stage530_default_debug_options()
             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
@@ -121319,7 +121569,7 @@ border-radius: 7px;}}"""
                 statement_text,
                 add_newline,
             ):
-                """Stage 449: formatting is shared in libd64_runtime.dll.
+                """Stage 449: formatting is shared in libd64_qt5.dll.
 
                 A packed WFM ValueSlot (type, number, pointer, byte length)
                 is passed without copying or changing the source slot.  The
@@ -123277,9 +123527,9 @@ border-radius: 7px;}}"""
             # may be built without the ordinary PRG import header.
             from d64dbase.char_case_runtime import CASE_EXPORTS
             needed_case_imports = [
-                f'import {name}, "libd64_runtime.dll", "{name}"'
+                f'import {name}, "libd64_qt5.dll", "{name}"'
                 for name in CASE_EXPORTS if f'call {name}' in assembly
-                and f'import {name}, "libd64_runtime.dll", "{name}"' not in assembly
+                and f'import {name}, "libd64_qt5.dll", "{name}"' not in assembly
             ]
             if needed_case_imports:
                 asm_lines = assembly.splitlines(keepends=True)
@@ -123704,6 +123954,8 @@ border-radius: 7px;}}"""
                     except WindowsAsmMacroError:
                         pass  # actual assembler reports the include error with its source location
             required_extensions = _d64_qt5_required_name_exports(assembly_text)
+            from d64dbase.native_runtime_deploy import REQUIRED_EXPORTS
+            required_extensions.update(REQUIRED_EXPORTS)
 
             def _compatible(candidate: Path) -> bool:
                 try:
@@ -125488,159 +125740,586 @@ border-radius: 7px;}}"""
                     return candidate
             return None
 
-        def _add_project_turbo_help_file(self, path, *, title="", mark_modified=True):
+        def _turbo_help_tree_items(self, parent=None):
+            root = parent or getattr(self, "project_turbo_help_root", None)
+            if root is None:
+                return
+            for index in range(root.childCount()):
+                child = root.child(index)
+                yield child
+                yield from self._turbo_help_tree_items(child)
+
+        def _turbo_help_file_items(self):
+            return (item for item in self._turbo_help_tree_items()
+                    if self._project_item_kind(item) == PROJECT_NODE_TURBO_HELP_FILE
+                    and item.data(0, Qt.UserRole + 302))
+
+        def _turbo_help_folder_key(self, parent):
+            if parent is None or parent is getattr(self, "project_turbo_help_root", None):
+                return ""
+            return str(parent.data(0, Qt.UserRole + 315) or "")
+
+        def _turbo_help_target(self):
+            active = self.current_document()
+            target = str(getattr(active, "build_target", "") or "").lower()
+            if getattr(active, "is_dbase_document", False) and target in ("pe32", "pe64"):
+                return target
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and panel.isVisible():
+                try:
+                    return ("pe64" if panel.windows_arch_tabs.currentIndex() == 1 else "pe32")
+                except (RuntimeError, AttributeError):
+                    pass
+            return "pe32"
+
+        def _turbo_help_search_directories(self, target=None):
+            target = self._project_windows_target_key(target or self._turbo_help_target())
+            return tuple(Path(path).expanduser().resolve() for path in
+                         self.project_turbo_help_search_paths.get(target, ()) if path)
+
+        def _turbo_help_root_directory(self, *, required=False, target=None):
+            paths = self._turbo_help_search_directories(target)
+            if paths:
+                return paths[0]
+            if required:
+                raise ValueError(
+                    "Bitte unter Projekt-Einstellungen → Compiler → dBASE → "
+                    "Eingabe-Verzeichnis → Turbo Hilfe mindestens einen Suchpfad eintragen.")
+            return None
+
+        def _turbo_help_warning(self, message):
+            dlg = QMessageBox(self)
+            dlg.setWindowTitle("Turbo Hilfe")
+            dlg.setIcon(QMessageBox.Warning)
+            dlg.setText(str(message))
+            dlg.setStandardButtons(QMessageBox.Ok)
+            if bool(getattr(self, "dark_mode_enabled", False)):
+                dlg.setStyleSheet(
+                    "QMessageBox {background:#23272e;color:#f0f0f0;} "
+                    "QLabel {color:#f0f0f0;} "
+                    "QPushButton {background:#303b48;color:#fff;"
+                    "border:1px solid #687685;padding:5px 12px;}")
+            dlg.exec_()
+
+        def _turbo_help_mark_main(self, selected):
+            if self._project_item_kind(selected) != PROJECT_NODE_TURBO_HELP_FILE:
+                return
+            previous = self._project_checkbox_guard
+            self._project_checkbox_guard = True
+            try:
+                for item in self._turbo_help_file_items():
+                    item.setCheckState(0, Qt.Checked if item is selected else Qt.Unchecked)
+            finally:
+                self._project_checkbox_guard = previous
+            self._turbo_help_sync_editor()
+            self.set_project_modified(True)
+
+        def _turbo_help_add_folder_item(self, directory, *, parent=None, title="", mark_modified=True):
             root = getattr(self, "project_turbo_help_root", None)
+            parent = parent or root
+            if root is None:
+                return None
+            directory = Path(directory).expanduser().resolve()
+            key = "/".join(filter(None, (self._turbo_help_folder_key(parent),
+                                          str(title or directory.name))))
+            item = QTreeWidgetItem(parent, [str(title or directory.name)])
+            item.setData(0, Qt.UserRole + 303, PROJECT_NODE_TURBO_HELP_FOLDER)
+            item.setData(0, Qt.UserRole + 302, str(directory))
+            item.setData(0, Qt.UserRole + 315, key)
+            item.setIcon(0, self.style().standardIcon(QStyle.SP_DirClosedIcon))
+            item.setToolTip(0, str(directory))
+            parent.setExpanded(True)
+            if mark_modified:
+                self.set_project_modified(True)
+            return item
+
+        def _add_project_turbo_help_file(self, path, *, title="", parent=None,
+                                         main=False, mark_modified=True):
+            root = getattr(self, "project_turbo_help_root", None)
+            parent = parent or root
             if root is None:
                 return None
             path = Path(path).expanduser().resolve()
             if path.suffix.casefold() != ".thlp":
                 return None
-            for i in range(root.childCount()):
-                child = root.child(i)
-                if str(child.data(0, Qt.UserRole + 302) or "").casefold() == str(path).casefold():
-                    return child
-            child = QTreeWidgetItem(root, [str(title or path.name)])
-            child.setData(0, Qt.UserRole + 302, str(path))
-            child.setData(0, Qt.UserRole + 303, PROJECT_NODE_TURBO_HELP_FILE)
-            child.setToolTip(0, str(path))
-            child.setIcon(0, self.icon_provider.icon(QFileInfo(str(path))))
-            root.setExpanded(True)
+            getattr(self, "_turbo_help_removed_sources", set()).discard(str(path).casefold())
+            for item in self._turbo_help_file_items():
+                if str(item.data(0, Qt.UserRole + 302) or "").casefold() == str(path).casefold():
+                    return item
+            item = QTreeWidgetItem(parent, [str(title or path.name)])
+            item.setData(0, Qt.UserRole + 302, str(path))
+            item.setData(0, Qt.UserRole + 303, PROJECT_NODE_TURBO_HELP_FILE)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            old_guard = self._project_checkbox_guard
+            self._project_checkbox_guard = True
+            try:
+                item.setCheckState(0, Qt.Unchecked)
+            finally:
+                self._project_checkbox_guard = old_guard
+            item.setIcon(0, self.icon_provider.icon(QFileInfo(str(path))))
+            item.setToolTip(0, str(path))
+            parent.setExpanded(True)
+            if main:
+                self._turbo_help_mark_main(item)
             if mark_modified:
                 self.set_project_modified(True)
+            self._turbo_help_sync_editor()
+            return item
+
+        def _turbo_help_restore_tree(self, entries):
+            root = getattr(self, "project_turbo_help_root", None)
+            folder_map = {"": root}
+            remaining = list(entries)
+            main_item = None
+            # Preserve sibling order as stored in the .pro file. Parents may
+            # precede children in any order, so defer rows with missing parents.
+            while remaining:
+                progress = False
+                for row in remaining[:]:
+                    parent_key = str(row.get("parent", ""))
+                    if parent_key not in folder_map:
+                        continue
+                    remaining.remove(row)
+                    progress = True
+                    path = str(row.get("path", ""))
+                    if not path:
+                        continue
+                    parent = folder_map[parent_key]
+                    if str(row.get("kind", "file")) == "folder":
+                        item = self._turbo_help_add_folder_item(
+                            path, parent=parent, title=row.get("title", ""),
+                            mark_modified=False)
+                        folder_map[self._turbo_help_folder_key(item)] = item
+                    else:
+                        leaf = self._add_project_turbo_help_file(
+                            path, parent=parent, title=row.get("title", ""),
+                            mark_modified=False)
+                        if row.get("main") and main_item is None:
+                            main_item = leaf
+                if not progress:
+                    break  # corrupt or missing parent references, no infinite loop
+            if main_item:
+                old_guard = self._project_checkbox_guard
+                self._project_checkbox_guard = True
+                try:
+                    main_item.setCheckState(0, Qt.Checked)
+                finally:
+                    self._project_checkbox_guard = old_guard
+            root.setExpanded(True)
+
+        def _turbo_help_collect_entries(self):
+            result = []
+            for item in self._turbo_help_tree_items():
+                kind = self._project_item_kind(item)
+                if kind not in (PROJECT_NODE_TURBO_HELP_FILE, PROJECT_NODE_TURBO_HELP_FOLDER):
+                    continue
+                path = str(item.data(0, Qt.UserRole + 302) or "")
+                if path:
+                    result.append({
+                        "path": path, "title": item.text(0),
+                        "parent": self._turbo_help_folder_key(item.parent()),
+                        "kind": "folder" if kind == PROJECT_NODE_TURBO_HELP_FOLDER else "file",
+                        "main": kind == PROJECT_NODE_TURBO_HELP_FILE and item.checkState(0) == Qt.Checked,
+                    })
+            return result
+
+        def _turbo_help_sources_for_compile(self, target=None):
+            from turbo_help_project_tree import ordered_main_sources
+            rows = self._turbo_help_collect_entries()
+            paths = ordered_main_sources(rows)
+            root = self._turbo_help_root_directory(required=True, target=target)
+            directories = self._turbo_help_search_directories(target)
+            return paths, root, directories
+
+        def _turbo_help_main_path(self):
+            for item in self._turbo_help_file_items():
+                if item.checkState(0) == Qt.Checked:
+                    return Path(str(item.data(0, Qt.UserRole + 302))).resolve()
+            return None
+
+        def _turbo_help_project_directory(self):
+            project = getattr(self, 'current_project_path', None)
+            if project:
+                return Path(project).resolve().parent
+            root = self._turbo_help_root_directory()
+            return root if root is not None else Path(self.current_directory).resolve()
+
+        def _on_turbo_help_po_settings_changed(self, settings):
+            from turbo_help_po_metadata import normalize_po_settings
+            updated = normalize_po_settings(settings)
+            if updated != getattr(self, 'project_turbo_po_settings', None):
+                self.project_turbo_po_settings = updated
+                self.set_project_modified(True)
+
+        def _turbo_help_po_compiler_settings(self):
+            from turbo_help_po_metadata import resolve_catalog_paths, normalize_po_settings
+            main = self._turbo_help_main_path()
+            if main is None:
+                raise ValueError('Kein Turbo-Hilfe-Haupt-Eintrag ausgewählt.')
+            state = normalize_po_settings(getattr(self, 'project_turbo_po_settings', None))
+            po, hlp = resolve_catalog_paths(
+                state, main_file=main, project_dir=self._turbo_help_project_directory())
+            return {'po_path': po, 'hlp_path': hlp, 'metadata': state['headers']}
+
+        def _project_turbo_help_settings_open(self):
+            opened = self.show_turbo_help_compiler_dock()
+            editor = (opened if callable(getattr(opened, 'show_settings', None))
+                      else self._turbo_help_active_editor())
+            if editor is None:
+                self.show_error('Turbo Hilfe', 'Der Hilfecompiler-Editor ist nicht verfügbar.')
+                return
+            editor.show_settings(
+                getattr(self, 'project_turbo_po_settings', None),
+                main_file=self._turbo_help_main_path(),
+                project_dir=self._turbo_help_project_directory(),
+                on_changed=self._on_turbo_help_po_settings_changed)
+
+        def _turbo_help_sync_editor(self):
             editor = self._turbo_help_active_editor()
-            if editor is not None:
-                editor.project_sources = [
-                    Path(root.child(i).data(0, Qt.UserRole + 302))
-                    for i in range(root.childCount())
-                    if root.child(i).data(0, Qt.UserRole + 302)
-                ]
-            return child
+            if editor is None:
+                return
+            editor.project_sources = [Path(item.data(0, Qt.UserRole + 302))
+                                      for item in self._turbo_help_file_items()]
+            editor.use_project_list = bool(getattr(self, "current_project_path", None))
+            editor.resolve_project_help_inputs = self._turbo_help_sources_for_compile
+            editor.resolve_project_po_settings = self._turbo_help_po_compiler_settings
+            page = getattr(editor, 'po_settings_page', None)
+            if page is not None:
+                page.refresh_suggested_paths(
+                    main_file=self._turbo_help_main_path(),
+                    project_dir=self._turbo_help_project_directory())
 
         def _turbo_help_document_saved(self, filename: str, edit=None) -> None:
-            # Convert a temporary tree leaf into a real persisted THLP leaf.
             path = Path(filename).resolve()
             pending = getattr(self, "_turbo_help_pending_leaves", {})
             leaf = pending.pop(edit, None)
-            if leaf is not None and leaf.parent() is getattr(self, "project_turbo_help_root", None):
+            if leaf is not None and leaf.parent() is not None:
                 leaf.setText(0, path.name)
                 leaf.setData(0, Qt.UserRole + 302, str(path))
-                leaf.setToolTip(0, str(path))
                 leaf.setIcon(0, self.icon_provider.icon(QFileInfo(str(path))))
+                leaf.setToolTip(0, str(path))
                 self.set_project_modified(True)
-                editor = self._turbo_help_active_editor()
-                if editor is not None:
-                    root = self.project_turbo_help_root
-                    editor.project_sources = [
-                        Path(root.child(i).data(0, Qt.UserRole + 302))
-                        for i in range(root.childCount())
-                        if root.child(i).data(0, Qt.UserRole + 302)
-                    ]
-                return
-            self._add_project_turbo_help_file(path)
+            else:
+                # Already registered paths must not be moved to the root.
+                existing = next((node for node in self._turbo_help_file_items()
+                                 if str(node.data(0, Qt.UserRole + 302) or "").casefold()
+                                 == str(path).casefold()), None)
+                if (existing is None and str(path).casefold() not in
+                        getattr(self, "_turbo_help_removed_sources", set())):
+                    self._add_project_turbo_help_file(path)
+            self._turbo_help_sync_editor()
 
-        def _project_turbo_help_add(self):
-            directory = (Path(self.current_project_path).parent
-                         if getattr(self, "current_project_path", None) else self.current_directory)
+        def _project_turbo_help_add(self, parent=None):
+            """Register existing .thlp files under the selected folder.
+
+            A selected leaf is treated as a sibling destination, because
+            THLP leaves cannot contain folders or other leaves. Existing
+            source files are never moved or overwritten by this import.
+            """
+            root = self.project_turbo_help_root
+            if self._project_item_kind(parent) == PROJECT_NODE_TURBO_HELP_FILE:
+                parent = parent.parent()
+            if self._project_item_kind(parent) not in (
+                    PROJECT_NODE_TURBO_HELP_ROOT, PROJECT_NODE_TURBO_HELP_FOLDER):
+                parent = root
+            if root is None:
+                return
+            directory = (Path(parent.data(0, Qt.UserRole + 302))
+                         if parent is not root else self._turbo_help_root_directory())
+            if directory is None:
+                directory = (Path(self.current_project_path).parent
+                             if self.current_project_path else self.current_directory)
             filenames, _ = QFileDialog.getOpenFileNames(
-                self, "Turbo Help: Dateien hinzufügen", str(directory),
-                "Turbo Help Quellen (*.thlp)")
+                self, "Turbo Hilfe: vorhandene Dateien hinzufügen", str(directory),
+                "Turbo Hilfe Quellen (*.thlp)")
             for filename in filenames:
-                if Path(filename).is_file():
-                    self._add_project_turbo_help_file(Path(filename))
-                    editor = self._turbo_help_active_editor()
-                    if editor is not None:
-                        editor.load_document(Path(filename))
+                path = Path(filename)
+                if path.is_file() and path.suffix.casefold() == '.thlp':
+                    self._add_project_turbo_help_file(path, parent=parent)
+            self._turbo_help_sync_editor()
 
-        def _project_turbo_help_new(self):
-            self.show_turbo_help_compiler_dock()
-            editor = self._turbo_help_active_editor()
-            if editor is None:
-                self.show_error("Turbo Help", "Der Hilfecompiler-Editor konnte nicht geöffnet werden.")
-                return
-            edit = editor.new_document()
-            root = getattr(self, "project_turbo_help_root", None)
-            if root is not None and edit is not None:
-                item = QTreeWidgetItem(root, ["Unbenannt.thlp"])
-                item.setData(0, Qt.UserRole + 303, PROJECT_NODE_TURBO_HELP_FILE)
-                item.setToolTip(0, "Ungespeicherte Hilfequelle – im Editor speichern")
-                self._turbo_help_pending_leaves[edit] = item
-                root.setExpanded(True)
-                self.project_tree.setCurrentItem(item)
+        def _project_turbo_help_new(self, parent=None):
+            from turbo_help_project_tree import checked_child, normalize_help_name
+            root = self.project_turbo_help_root
+            parent = parent if self._project_item_kind(parent) in (
+                PROJECT_NODE_TURBO_HELP_ROOT, PROJECT_NODE_TURBO_HELP_FOLDER) else root
+            try:
+                directory = self._turbo_help_root_directory(required=True)
+                location = directory if parent is root else Path(parent.data(0, Qt.UserRole + 302))
+                name, ok = QInputDialog.getText(self, "Inhalt hinzufügen", "Dateiname (*.thlp):", text="Neu.thlp")
+                if not ok:
+                    return
+                name = normalize_help_name(name)
+                path = checked_child(directory, location, name)
+                if parent is root:
+                    location.mkdir(parents=True, exist_ok=True)
+                if not location.is_dir():
+                    raise FileNotFoundError(f"Verzeichnis nicht vorhanden: {location}")
+                if path.exists():
+                    raise FileExistsError(f"Datei existiert bereits: {path}")
+                with path.open('x', encoding='utf-8') as output:
+                    initial = 'index' if not any(self._turbo_help_file_items()) else path.stem
+                    output.write(f'%topic "{initial}"\n\n')
+            except (OSError, ValueError) as exc:
+                self._turbo_help_warning(f"Die Hilfedatei konnte nicht gespeichert werden:\n{exc}")
+                return  # Do not add a phantom tree leaf.
+            item = self._add_project_turbo_help_file(path, parent=parent)
+            self.project_tree.setCurrentItem(item)
+            self._project_turbo_help_open(item)
 
         def _project_turbo_help_open(self, item):
-            if not item.data(0, Qt.UserRole + 302):
+            """Open a help leaf using the live editor, never a Qt bool result.
+
+            Some action/slot wrappers return a boolean instead of the widget.
+            The dock may still own the real TurboHelpEditor (Stage 658).
+            """
+            raw_path = item.data(0, Qt.UserRole + 302)
+            if not raw_path:
+                # Keep the pre-685 behavior for a not-yet-saved editor tab.
                 for edit, pending in getattr(self, "_turbo_help_pending_leaves", {}).items():
-                    if pending is item:
-                        opened = self.show_turbo_help_compiler_dock()
-                        editor = (opened if callable(getattr(opened, "load_document", None))
-                                  else self._turbo_help_active_editor())
-                        if editor is None:
-                            self.show_error("Turbo Help", "Der Hilfecompiler-Editor ist nicht verfügbar.")
-                            return
-                        editor.tabs.setCurrentWidget(edit)
-                        current = getattr(editor.tabs, "currentWidget", None)
-                        if not callable(current) or current() is edit:
-                            edit.setFocus(Qt.OtherFocusReason)
+                    if pending is not item:
+                        continue
+                    opened = self.show_turbo_help_compiler_dock()
+                    editor = (opened if callable(getattr(opened, "load_document", None))
+                              else self._turbo_help_active_editor())
+                    if editor is None:
+                        self.show_error("Turbo Hilfe", "Der Hilfecompiler-Editor ist nicht verfügbar.")
                         return
+                    editor.tabs.setCurrentWidget(edit)
+                    current = getattr(editor.tabs, "currentWidget", None)
+                    if not callable(current) or current() is edit:
+                        edit.setFocus(Qt.OtherFocusReason)
+                    return
                 return
-            path = Path(str(item.data(0, Qt.UserRole + 302) or ""))
+
+            path = Path(str(raw_path))
             if not path.is_file():
-                self.show_error("Turbo Help", f"Hilfedatei fehlt: {path}")
+                callback = getattr(self, "_turbo_help_warning", None)
+                if callable(callback):
+                    callback(f"Hilfedatei fehlt: {path}")
+                else:
+                    self.show_error("Turbo Hilfe", f"Hilfedatei fehlt: {path}")
                 return
+
             opened = self.show_turbo_help_compiler_dock()
             editor = (opened if callable(getattr(opened, "load_document", None))
                       else self._turbo_help_active_editor())
             if editor is None:
-                self.show_error("Turbo Help", "Der Hilfecompiler-Editor ist nicht verfügbar.")
+                self.show_error("Turbo Hilfe", "Der Hilfecompiler-Editor ist nicht verfügbar.")
                 return
-            # load_document selects the one requested source and focuses it;
-            # saving the previous modified tab may be canceled by the user.
+            # load_document activates the requested source and preserves the
+            # existing tab/save-before-switch logic.
             editor.load_document(path)
+
+        def _turbo_help_add_folder(self, parent):
+            from turbo_help_project_tree import checked_child, normalize_help_name
+            if self._project_item_kind(parent) not in (
+                    PROJECT_NODE_TURBO_HELP_ROOT, PROJECT_NODE_TURBO_HELP_FOLDER):
+                parent = parent.parent()
+            try:
+                root_dir = self._turbo_help_root_directory(required=True)
+                location = root_dir if parent is self.project_turbo_help_root else Path(parent.data(0, Qt.UserRole + 302))
+                name, ok = QInputDialog.getText(self, "Ordner hinzufügen", "Ordnername:", text="Neuer Ordner")
+                if not ok:
+                    return
+                name = normalize_help_name(name, folder=True)
+                path = checked_child(root_dir, location, name)
+                path.mkdir(parents=True, exist_ok=False)
+            except (OSError, ValueError) as exc:
+                self._turbo_help_warning(f"Ordner konnte nicht angelegt werden:\n{exc}")
+                return
+            item = self._turbo_help_add_folder_item(path, parent=parent)
+            self.project_tree.setCurrentItem(item)
+
+        def _turbo_help_confirm_rename_replace(self, destination, *, folder=False):
+            """Ask before replacing an existing .thlp file or help directory.
+
+            HelpRole keeps QMessageBox open while the user consults the CHM.
+            QInputDialog.getText has already ended when this prompt is shown,
+            so Cancel dismisses both dialogs without changing the tree.
+            """
+            kind = "Verzeichnis" if folder else "Datei"
+            dialog = self._create_message_box(
+                QMessageBox.Warning, "Turbo Hilfe – Name bereits vorhanden",
+                f'Das {kind} "{destination.name}" ist bereits vorhanden:\n'
+                f'{destination}\n\n'
+                f'Soll das vorhandene {kind} überschrieben werden?',
+                buttons=QMessageBox.Ok | QMessageBox.Cancel | QMessageBox.Help,
+                default_button=QMessageBox.Cancel,
+            )
+            help_button = dialog.button(QMessageBox.Help)
+            if help_button is not None:
+                help_button.clicked.connect(
+                    lambda _checked=False: self.show_chm_viewer(
+                        context_language="turbo_help",
+                        context_word="Ordner umbenennen" if folder else "Datei umbenennen",
+                    )
+                )
+            return dialog.exec_() == QMessageBox.Ok
+
+        def _turbo_help_rename(self, item):
+            from turbo_help_project_tree import normalize_help_name, rename_help_path
+            folder = self._project_item_kind(item) == PROJECT_NODE_TURBO_HELP_FOLDER
+            src = Path(str(item.data(0, Qt.UserRole + 302)))
+            name, ok = QInputDialog.getText(self,
+                "Ordner umbenennen" if folder else "Datei umbenennen",
+                "Neuer Name:", text=src.name)
+            if not ok:
+                return
+            try:
+                name = normalize_help_name(name, folder=folder)
+                self._turbo_help_root_directory(required=True)
+                # Imported files may reside outside the first help directory.
+                dst = src.with_name(name)
+                if dst == src:
+                    return
+                collision = dst.exists() or dst.is_symlink()
+                if collision and str(src).casefold() != str(dst).casefold():
+                    if not self._turbo_help_confirm_rename_replace(dst, folder=folder):
+                        return
+                editor = self._turbo_help_active_editor()
+                superseded = []
+                # An overwritten destination can itself be registered in the
+                # project tree. Remove stale target nodes only after a
+                # successful filesystem operation, never on Cancel/failure.
+                src_nodes = [item, *self._turbo_help_tree_items(item)] if folder else [item]
+                if collision:
+                    for node in self._turbo_help_tree_items():
+                        if node in src_nodes:
+                            continue
+                        value = node.data(0, Qt.UserRole + 302)
+                        if not value:
+                            continue
+                        path = Path(str(value))
+                        if path == dst or (folder and path.is_relative_to(dst)):
+                            superseded.append(node)
+                replaced_main = any(
+                    self._project_item_kind(node) == PROJECT_NODE_TURBO_HELP_FILE
+                    and node.checkState(0) == Qt.Checked
+                    for node in superseded
+                )
+                if editor is not None:
+                    for i in range(editor.tabs.count()):
+                        edit = editor.tabs.widget(i)
+                        edit_path = editor._path_for(edit)
+                        if edit_path is None:
+                            continue
+                        affected = edit_path == src or (folder and edit_path.is_relative_to(src))
+                        overwritten = (collision and
+                                       (edit_path == dst or
+                                        (folder and edit_path.is_relative_to(dst))))
+                        if overwritten and edit.document().isModified():
+                            self._turbo_help_warning(
+                                f'Die Zieldatei besitzt ungespeicherte Änderungen: {edit_path}\n'
+                                'Bitte den Tab zuerst speichern oder schließen.')
+                            return
+                        if affected and edit.document().isModified() and not editor._save_edit(edit):
+                            return
+                rename_help_path(src, dst, overwrite=collision)
+            except (OSError, ValueError) as exc:
+                self._turbo_help_warning(f"Umbenennen fehlgeschlagen:\n{exc}")
+                return
+
+            # Remove overwritten leaves/folders without deleting their files
+            # again. Removing outer parents first avoids duplicate detachments.
+            for node in superseded:
+                parent = node.parent()
+                if parent is not None:
+                    try:
+                        parent.takeChild(parent.indexOfChild(node))
+                    except ValueError:
+                        pass
+            nodes = list(self._turbo_help_tree_items(item)) if folder else []
+            item.setText(0, dst.name)
+            item.setData(0, Qt.UserRole + 302, str(dst))
+            item.setToolTip(0, str(dst))
+            if folder:
+                old_key = str(item.data(0, Qt.UserRole + 315) or "")
+                new_key = '/'.join(filter(None, (
+                    self._turbo_help_folder_key(item.parent()), dst.name)))
+                item.setData(0, Qt.UserRole + 315, new_key)
+                for child in nodes:
+                    old_path = Path(str(child.data(0, Qt.UserRole + 302)))
+                    if old_path.is_relative_to(src):
+                        changed_path = dst / old_path.relative_to(src)
+                        child.setData(0, Qt.UserRole + 302, str(changed_path))
+                        child.setToolTip(0, str(changed_path))
+                    key = str(child.data(0, Qt.UserRole + 315) or "")
+                    if key and key.startswith(old_key + '/'):
+                        child.setData(0, Qt.UserRole + 315, new_key + key[len(old_key):])
+            if editor is not None:
+                for i in range(editor.tabs.count() - 1, -1, -1):
+                    edit = editor.tabs.widget(i)
+                    old = editor._path_for(edit)
+                    if old and collision and (old == dst or (folder and old.is_relative_to(dst))):
+                        # Target tabs were checked for unsaved changes above.
+                        editor.close_document(edit)
+                        continue
+                    if old and (old == src or (folder and old.is_relative_to(src))):
+                        edit._thlp_path = dst / old.relative_to(src) if folder else dst
+                        editor._refresh_tab(edit)
+                        if editor.tabs.currentWidget() is edit:
+                            editor.source_path = edit._thlp_path
+            # If the old destination was the marked main file, keep the
+            # replacement as main instead of silently losing the entry point.
+            if replaced_main and not folder:
+                self._turbo_help_mark_main(item)
+            self._turbo_help_sync_editor()
+            self.set_project_modified(True)
+
+        def _turbo_help_remove_item(self, item):
+            if item is self.project_turbo_help_root or item is None:
+                return
+            parent = item.parent()
+            if parent is None:
+                return
+            # Only detach project nodes; never unlink/delete physical source files.
+            removed = getattr(self, "_turbo_help_removed_sources", None)
+            if removed is not None:
+                for node in [item, *list(self._turbo_help_tree_items(item))]:
+                    if self._project_item_kind(node) == PROJECT_NODE_TURBO_HELP_FILE:
+                        path = str(node.data(0, Qt.UserRole + 302) or "")
+                        if path:
+                            removed.add(str(Path(path).resolve()).casefold())
+            parent.takeChild(parent.indexOfChild(item))
+            self._turbo_help_sync_editor()
+            self.set_project_modified(True)
 
         def _project_turbo_help_context(self, item, position):
             kind = self._project_item_kind(item)
+            file = kind == PROJECT_NODE_TURBO_HELP_FILE
+            folder = kind == PROJECT_NODE_TURBO_HELP_FOLDER
+            root = kind == PROJECT_NODE_TURBO_HELP_ROOT
             menu = self._project_popup_menu()
-            new_action = menu.addAction("Neu:  Inhalt")
-            add_action = menu.addAction("Hinzufügen")
-            remove_action = menu.addAction("Entfernen") if kind == PROJECT_NODE_TURBO_HELP_FILE else None
-            action = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
-            if action is new_action:
-                self._project_turbo_help_new()
-            elif action is add_action:
-                self._project_turbo_help_add()
-            elif remove_action is not None and action is remove_action:
-                # Removing an entry does not delete its physical .thlp file.
-                root = item.parent()
-                if root is not None:
-                    editor = self._turbo_help_active_editor()
-                    target = str(item.data(0, Qt.UserRole + 302) or "")
-                    if editor is not None and target:
-                        for _idx in range(editor.tabs.count() - 1, -1, -1):
-                            _open_editor = editor.tabs.widget(_idx)
-                            _open_path = editor._path_for(_open_editor)
-                            if _open_path is not None and str(_open_path).casefold() == target.casefold():
-                                if not editor.close_document(_open_editor):
-                                    return
-                    for _edit, _leaf in list(getattr(self, "_turbo_help_pending_leaves", {}).items()):
-                        if _leaf is item:
-                            self.show_turbo_help_compiler_dock()
-                            editor = self._turbo_help_active_editor()
-                            if editor is None:
-                                self.show_error("Turbo Help", "Der Hilfecompiler-Editor ist nicht verfügbar.")
-                                return
-                            if not editor.close_document(_edit):
-                                return
-                            self._turbo_help_pending_leaves.pop(_edit, None)
-                            break
-                    root.takeChild(root.indexOfChild(item))
-                    editor = self._turbo_help_active_editor()
-                    if editor is not None:
-                        editor.project_sources = [
-                            Path(root.child(i).data(0, Qt.UserRole + 302))
-                            for i in range(root.childCount())
-                            if root.child(i).data(0, Qt.UserRole + 302)
-                        ]
-                    self.set_project_modified(True)
+            actions = {}
+            for title in ("Haupt-Eintrag", "Inhalt hinzufügen", "Datei hinzufügen",
+                          "Datei umbenennen", "Inhalt löschen", None,
+                          "Ordner umbenennen", "Ordner hinzufügen", "Ordner löschen"):
+                if title is None:
+                    menu.addSeparator()
+                else:
+                    action = menu.addAction(title)
+                    action.setEnabled(file if title in ("Haupt-Eintrag", "Datei umbenennen", "Inhalt löschen")
+                                      else folder if title in ("Ordner umbenennen", "Ordner löschen")
+                                      else True)
+                    actions[title] = action
+            choice = menu.exec_(self.project_tree.viewport().mapToGlobal(position))
+            if choice is actions["Haupt-Eintrag"]:
+                self._turbo_help_mark_main(item)
+            elif choice is actions["Inhalt hinzufügen"]:
+                self._project_turbo_help_new(item if not file else item.parent())
+            elif choice is actions["Datei hinzufügen"]:
+                self._project_turbo_help_add(item)
+            elif choice is actions["Datei umbenennen"]:
+                self._turbo_help_rename(item)
+            elif choice is actions["Inhalt löschen"]:
+                self._turbo_help_remove_item(item)
+            elif choice is actions["Ordner umbenennen"]:
+                self._turbo_help_rename(item)
+            elif choice is actions["Ordner hinzufügen"]:
+                self._turbo_help_add_folder(item if not file else item.parent())
+            elif choice is actions["Ordner löschen"]:
+                self._turbo_help_remove_item(item)
 
         def show_turbo_help_compiler_dock(self, _checked=False):
             """Hilfe-Dock oeffnen und immer einen gueltigen TurboHelpEditor liefern.
@@ -125693,17 +126372,18 @@ border-radius: 7px;}}"""
 
             # Read the *current* selected project/ABI on every F2 press.
             editor.resolve_output_executable = self._turbo_help_project_executable
-            root = getattr(self, "project_turbo_help_root", None)
-            if root is not None:
-                editor.use_project_list = bool(
-                    getattr(self, "current_project_path", None))
-                editor.project_sources = [
-                    Path(root.child(i).data(0, Qt.UserRole + 302))
-                    for i in range(root.childCount())
-                    if root.child(i).data(0, Qt.UserRole + 302)
-                ]
-                # Project sources are F2 compiler inputs, not implicit editor tabs.
-                # A tree-leaf click opens only the requested THLP document.
+            sync_help = getattr(self, "_turbo_help_sync_editor", None)
+            if callable(sync_help):
+                sync_help()
+            else:
+                # Compatibility for restored/help-only Qt workspaces.
+                root = getattr(self, "project_turbo_help_root", None)
+                if root is not None:
+                    editor.project_sources = [Path(root.child(i).data(0, Qt.UserRole + 302))
+                                              for i in range(root.childCount())
+                                              if root.child(i).data(0, Qt.UserRole + 302)]
+                    editor.use_project_list = bool(getattr(self, "current_project_path", None))
+            # F2 resolves the selected main entry and recursive project sources.
 
             self._activate_exclusive_tool_workspace(dock)
             dock.show()
@@ -125762,13 +126442,13 @@ border-radius: 7px;}}"""
                 output_dir = Path(self.current_directory).expanduser().resolve()
             return output_dir / (name + ".exe")
 
-        def _turbo_help_compiled(self, topics, po_path: str, mo_path: str) -> None:
+        def _turbo_help_compiled(self, topics, po_path: str, hlp_path: str) -> None:
             # Stage 653: Der Help Compiler laeuft ausschliesslich in dBase2Many.
             # Eine eigene turbo_help_host.exe ist weder fuer das Build noch fuer
             # die Vorschau vorgesehen. Die native Hilfe wird ausschliesslich in
             # der laufenden Turbo-Vision-Konsolenanwendung durch F1 geoeffnet.
             # Das Kompilat wird bei der EXE-Erzeugung als App.hlp bereitgestellt.
-            self._turbo_help_catalog_path = Path(mo_path).resolve()
+            self._turbo_help_catalog_path = Path(hlp_path).resolve()
             # F2 also deploys the runtime search paths, even before the EXE exists.
             from turbo_help_settings import write_application_help_manifest
             try:
@@ -125782,11 +126462,11 @@ border-radius: 7px;}}"""
                 if getattr(self, "current_project_path", None) else None
             )
             self.statusBar().showMessage(
-                f"Hilfe kompiliert: {Path(po_path).name}, {Path(mo_path).name} – "
+                f"Hilfe kompiliert: {Path(po_path).name}, {Path(hlp_path).name} – "
                 "in der Turbo-Vision-Anwendung mit F1 anzeigen", 8000
             )
             self.log(
-                f"HELP: {len(topics)} Themen | PO: {po_path} | HLP: {mo_path} | "
+                f"HELP: {len(topics)} Themen | PO: {po_path} | HLP: {hlp_path} | "
                 "F1 in der laufenden Qt5-Bridge; kein externer Help-Host"
             )
 
@@ -127055,6 +127735,10 @@ border-radius: 7px;}}"""
             self.project_settings_panel = panel
             self.project_settings_scroll_area = scroll
             self.project_settings_dock = dock
+            # Stage 684: tooltip width follows the visible right settings pane.
+            self.project_settings_tooltip_limiter = (
+                install_project_settings_tooltip_limiter(dock, panel, scroll)
+            )
             self._assign_widget_property_ids(dock)
             dock.visibilityChanged.connect(
                 self._project_settings_dock_visibility_changed
@@ -127204,6 +127888,9 @@ border-radius: 7px;}}"""
                 )
                 self.project_settings_panel.set_pe_compact_enabled(
                     _target, self.project_windows_compact_enabled.get(_target, False))
+                self.project_settings_panel.set_dbase_compress_meta_enabled(
+                    _target, self.project_windows_dbase_compress_meta.get(_target, False)
+                )
                 _ui_opt = self.project_windows_dbase_visual.get(_target, {})
                 self.project_settings_panel.set_dbase_visual_settings(
                     _target, bool(_ui_opt.get("external_ui_components", False)),
@@ -128406,6 +129093,32 @@ border-radius: 7px;}}"""
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_windows_dbase_compress_meta(
+            self, target: str, enabled: bool, *, mark_modified: bool = True,
+        ) -> None:
+            key = self._project_windows_target_key(target)
+            value = bool(enabled)
+            changed = self.project_windows_dbase_compress_meta.get(key, False) != value
+            self.project_windows_dbase_compress_meta[key] = value
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None and panel.dbase_compress_meta_enabled(key) != value:
+                panel.set_dbase_compress_meta_enabled(key, value)
+            if changed and mark_modified:
+                # The generated ASM stays valid, but previously generated .o
+                # files have the old compression representation.
+                for index in range(self.document_tabs.count()):
+                    document = self.document_tabs.widget(index)
+                    if (isinstance(document, DocumentEditor)
+                            and document.is_dbase_document
+                            and document.build_target == key):
+                        document._dbase_module_coff_digest = ""
+                        document._dbase_module_link_digest = ""
+                        document._dbase_module_link_path = None
+                        document.refresh_project_module_link_buttons()
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
         def set_project_windows_dbase_visual_settings(
             self, target: str, external: bool, compress: bool,
             *, store_binary: bool = False, mark_modified: bool = True,
@@ -128998,6 +129711,29 @@ border-radius: 7px;}}"""
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_turbo_help_search_paths(self, target, paths, *, mark_modified=True):
+            key = self._project_windows_target_key(target)
+            normalized = []
+            for raw in paths:
+                path = self._project_windows_absolute_directory(raw)
+                if path and str(path).casefold() not in {p.casefold() for p in normalized}:
+                    normalized.append(str(path))
+            changed = self.project_turbo_help_search_paths.get(key) != normalized
+            self.project_turbo_help_search_paths[key] = normalized
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
+        def set_project_turbo_help_relative(self, target, relative, *, mark_modified=True):
+            key = self._project_windows_target_key(target)
+            changed = self.project_turbo_help_relative.get(key) != bool(relative)
+            self.project_turbo_help_relative[key] = bool(relative)
+            if changed and mark_modified:
+                self.set_project_modified(True)
+                if self.current_project_path is not None:
+                    self.save_project()
+
         def set_project_windows_search_paths(
             self,
             target: str,
@@ -129360,6 +130096,10 @@ border-radius: 7px;}}"""
                 self.project_windows_language_assembler_cache[target][language],
                 self.project_windows_language_relative_paths[target][language],
             )
+            if language == "dbase":
+                language_page.turbo_help_group.set_values(
+                    self.project_turbo_help_search_paths.get(target, ()),
+                    self.project_turbo_help_relative.get(target, True))
 
         def _project_windows_language_output_path(
             self, target: str, language: str,
@@ -135358,7 +136098,7 @@ border: 2px solid #2a69aa;
                     str(language_name).startswith("dBase")) else "O1"
                 _peephole_options = normalize_peephole_options(
                     self.project_windows_dbase_peephole.get(document.build_target, {})
-                    if _dbase_level in {"O1", "O2"} else {})
+                    if _dbase_level in {"O1", "O2", "O3"} else {})
                 _peephole_result = optimize_windows_assembly(
                     generated.assembly, target=document.build_target,
                     options=_peephole_options,
@@ -136415,7 +137155,7 @@ border: 2px solid #2a69aa;
                     source,
                     peephole_options=self.project_windows_dbase_peephole.get(
                         document.build_target, {}) if self.project_windows_dbase_size_level.get(
-                            document.build_target, "O0") in {"O1", "O2"} else {},
+                            document.build_target, "O0") in {"O1", "O2", "O3"} else {},
                     filename=str(document.path),
                     target=document.build_target,
                     source_kind="library" if _dbase_library else "program",
@@ -136530,6 +137270,8 @@ border: 2px solid #2a69aa;
                     output_directory=_project_output_directory,
                     include_dirs=self._project_windows_asm_include_paths(document.build_target,
                         _project_document_compiler_language(document) or "dbase"),
+                    compress_metadata=(document.is_dbase_document and
+                        self.project_windows_dbase_compress_meta.get(document.build_target, False)),
                 )
                 if (
                     document.is_pascal_document
@@ -136712,7 +137454,8 @@ border: 2px solid #2a69aa;
                     )
                 compiled = namespace_module_object(
                     compiled, document.path, hide_tobject_exports=True)
-                self._write_assembled_program(object_path, writer(compiled))
+                self._write_assembled_program(object_path, writer(
+                    compiled, compress_metadata=self.project_windows_dbase_compress_meta.get(target, False)))
             except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError) as exc:
                 document.show_generated_assembly_error(
                     str(exc), getattr(exc, "line", 0) or 0, "COFF-Assemblerfehler")
@@ -136763,7 +137506,8 @@ border: 2px solid #2a69aa;
                     ),
                 )
                 # The Module owns _start / __d64_dll_entry.
-                self._write_assembled_program(object_path, writer(compiled))
+                self._write_assembled_program(object_path, writer(
+                    compiled, compress_metadata=self.project_windows_dbase_compress_meta.get(target, False)))
             except (OSError, ValueError, PE32AssemblerError, PE64AssemblerError) as exc:
                 document.show_generated_assembly_error(str(exc), getattr(exc, "line", 0) or 0,
                                                        "COFF-Assemblerfehler")
@@ -136882,6 +137626,12 @@ border: 2px solid #2a69aa;
                 ces_enabled = self._stage549_sync_debug_options_for_build(target)
                 linker = link_coff64_inputs if target == "pe64" else link_coff32_inputs
                 is_dll = scope_kind == "library"
+                for object_file in object_inputs:
+                    if b'libd64_runtime.dll' in Path(object_file).read_bytes().lower():
+                        raise ValueError(
+                            f"Veraltetes COFF-Objekt: {object_file} importiert noch "
+                            "libd64_runtime.dll. Bitte alle Projektdateien neu "
+                            "kompilieren und assemblieren (Stage 678).")
                 program = linker(
                     object_inputs,
                     entry_symbol="__d64_dll_entry" if is_dll else "_start",
@@ -136900,7 +137650,7 @@ border: 2px solid #2a69aa;
                     output_path, self.project_windows_manifests.get(target), project_base,
                     dll=is_dll,
                 )
-                if (b'libd64_runtime.dll' in program.executable.lower()
+                if (b'libd64_qt5.dll' in program.executable.lower()
                         or b'c64_dbase_runtime.dll' in program.executable.lower()):
                     if not self._prepare_dbase_console_runtime(output_path, target):
                         raise ValueError("Die passende dBASE Native-Runtime fehlt.")
@@ -136913,11 +137663,12 @@ border: 2px solid #2a69aa;
                 # independent Turbo-Vision help window.
                 from turbo_help_sidecar import compile_project_help
                 help_root = getattr(self, "project_turbo_help_root", None)
-                if not is_dll and help_root is not None and help_root.childCount():
-                    help_sources = [Path(help_root.child(i).data(0, Qt.UserRole + 302))
-                                    for i in range(help_root.childCount())]
+                if not is_dll and help_root is not None and any(self._turbo_help_file_items()):
                     try:
-                        compile_project_help(help_sources, output_path)
+                        help_sources, help_root_path, help_dirs = self._turbo_help_sources_for_compile(target)
+                        compile_project_help(help_sources, output_path,
+                                             root=help_root_path, include_paths=help_dirs,
+                                             **self._turbo_help_po_compiler_settings())
                     except (OSError, ValueError) as exc:
                         self.log(f"TURBO HELP HLP WARNING: {exc}")
                 from turbo_help_settings import write_application_help_manifest
@@ -137001,6 +137752,8 @@ border: 2px solid #2a69aa;
             machine = (IMAGE_FILE_MACHINE_AMD64 if target == "pe64"
                        else IMAGE_FILE_MACHINE_I386)
             required = set(required_exports)
+            from d64dbase.native_runtime_deploy import EXISTING_EXPORTS
+            required.update(EXISTING_EXPORTS)
             project_dir = (Path(self.current_project_path).parent
                            if getattr(self, "current_project_path", None)
                            else None)
@@ -137139,7 +137892,7 @@ border: 2px solid #2a69aa;
                     return False
                 _now = normalize_peephole_options(
                     self.project_windows_dbase_peephole.get(document.build_target, {})
-                    if _size_level_now in {"O1", "O2"} else {})
+                    if _size_level_now in {"O1", "O2", "O3"} else {})
                 _at_compile = getattr(document, "peephole_compile_snapshot", None)
                 if _at_compile is not None and _at_compile != _now:
                     self.show_error("Peephole-Einstellungen geaendert",
@@ -137321,6 +138074,8 @@ border: 2px solid #2a69aa;
                         output_directory=_project_output_directory,
                         include_dirs=self._project_windows_asm_include_paths(
                             document.build_target, _project_document_compiler_language(document) or "dbase"),
+                        compress_metadata=(document.is_dbase_document and
+                            self.project_windows_dbase_compress_meta.get(document.build_target, False)),
                         progress_callback=(
                             getattr(self, "_dbase_form_asm_progress_callback", None)
                             if is_form_build_progress else None
@@ -137386,7 +138141,7 @@ border: 2px solid #2a69aa;
                     is_library = source_kind == "library"
                     is_form = source_kind == "form"
                     # Stage 608: obtain the live GUI value for dBASE class DLLs;
-                    # it is a different binary from libd64_runtime.dll.
+                    # it is a different binary from libd64_qt5.dll.
                     _dbase_library_pack = (
                         self._dbase_class_library_packing_enabled(document.build_target)
                         if is_library and document.is_dbase_document else None
@@ -137528,15 +138283,16 @@ border: 2px solid #2a69aa;
                     # help catalog for this executable directly in its configured
                     # output directory even when F2 was not pressed in the IDE.
                     _help_root = getattr(self, "project_turbo_help_root", None)
-                    _help_sources = (
-                        [Path(_help_root.child(i).data(0, Qt.UserRole + 302))
-                         for i in range(_help_root.childCount())]
-                        if _help_root is not None else []
-                    )
+                    _has_help_sources = (_help_root is not None and any(self._turbo_help_file_items()))
                     _help_deployed = False
-                    if _help_sources:
+                    if _has_help_sources:
                         try:
-                            _deployed = compile_project_help(_help_sources, output_path)
+                            _help_sources, _help_root_path, _help_dirs = self._turbo_help_sources_for_compile(
+                                document.build_target)
+                            _deployed = compile_project_help(
+                                _help_sources, output_path,
+                                root=_help_root_path, include_paths=_help_dirs,
+                                **self._turbo_help_po_compiler_settings())
                             self.log(f"TURBO HELP HLP: {len(_help_sources)} Quellen -> {_deployed}")
                             _help_deployed = True
                         except (OSError, ValueError) as exc:
@@ -137564,7 +138320,7 @@ border: 2px solid #2a69aa;
                             if _candidate.is_file():
                                 _catalog = _candidate
                                 break
-                    if _catalog is not None and not _help_sources:
+                    if _catalog is not None and not _has_help_sources:
                         try:
                             _sidecar = install_help_catalog(output_path, _catalog)
                             self.log(f"TURBO HELP HLP: {_catalog} -> {_sidecar}")
@@ -137595,9 +138351,9 @@ border: 2px solid #2a69aa;
                     if _old_console_imports:
                         message = (
                             "Das Pascal-Projekt enthaelt noch Imports von "
-                            "libd64_console.dll (" + ", ".join(sorted(_old_console_imports))
+                            "veralteten Runtime-DLLs (" + ", ".join(sorted(_old_console_imports))
                             + "). Bitte betroffene Pascal-Objekte bzw. DLLs mit "
-                            "Stage 675 neu kompilieren/assemblieren und erneut linken."
+                            "Stage 678 neu kompilieren/assemblieren und erneut linken."
                         )
                         document.show_generated_assembly_error(
                             message, status_text="Veralteter Konsolenimport")
@@ -137676,10 +138432,10 @@ border: 2px solid #2a69aa;
                 if (document.is_dbase_document
                     and document.build_target in {"pe32", "pe64"}
                     and output_path.suffix.casefold() in {".exe", ".dll"}
-                    and (b'libd64_runtime.dll' in program.executable.lower()
+                    and (b'libd64_qt5.dll' in program.executable.lower()
                          or b'c64_dbase_runtime.dll' in program.executable.lower()
                          or _windows_asm_imports_dll(
-                             assembly_source, assembly_path, 'libd64_runtime.dll',
+                             assembly_source, assembly_path, 'libd64_qt5.dll',
                              self._project_windows_asm_include_paths(
                             document.build_target, _project_document_compiler_language(document) or "dbase")
                          ))):
@@ -138593,7 +139349,7 @@ border: 2px solid #2a69aa;
                 if (document.is_dbase_document
                     and document.build_target in {"pe32", "pe64"}
                     and output_path.suffix.casefold() in {".exe", ".dll"}
-                    and ('"libd64_runtime.dll"' in source
+                    and ('"libd64_qt5.dll"' in source
                          or '"c64_dbase_runtime.dll"' in source)):
                     if not self._prepare_dbase_console_runtime(output_path, document.build_target):
                         return False
@@ -139632,7 +140388,7 @@ border: 2px solid #2a69aa;
             """Stage 608: current visible PE packing checkbox wins over stale caches.
 
             Applies to dBASE RuntimeDB/class-library DLLs, not just the
-            merged libd64_runtime.dll (Stage 676).
+            merged libd64_qt5.dll (Stage 676).
             """
             key = self._project_windows_target_key(target)
             enabled = bool(self.project_windows_pe_packing_enabled.get(
@@ -139657,16 +140413,17 @@ border: 2px solid #2a69aa;
             return enabled or manual
 
         def _prepare_dbase_console_runtime(self, output_path: Path, target: str) -> bool:
-            """Stage 676: deploy the merged native libd64_runtime.dll.
+            """Stage 676: deploy the merged native libd64_qt5.dll.
 
             The old in-process assembler must never create a console-only DLL
             with this name: that would remove JitObject/Pascal exports.
             """
             try:
                 from d64dbase.native_runtime_deploy import deploy_runtime
-                if b'c64_dbase_runtime.dll' in Path(output_path).read_bytes().lower():
+                if (b'c64_dbase_runtime.dll' in Path(output_path).read_bytes().lower()
+                        or b'libd64_runtime.dll' in Path(output_path).read_bytes().lower()):
                     raise ValueError(
-                        'Veralteter Import c64_dbase_runtime.dll gefunden. '
+                        'Veralteter Import auf c64_dbase_runtime.dll bzw. libd64_runtime.dll gefunden. '
                         'Bitte das dBASE-Modul und alle zugeordneten Programme '
                         'mit Stage 676 neu kompilieren, assemblieren und linken.')
                 installed = deploy_runtime(
@@ -139676,10 +140433,10 @@ border: 2px solid #2a69aa;
             except (OSError, ValueError) as exc:
                 self.show_error(
                     "dBASE Native-Runtime fehlt oder ist inkompatibel",
-                    f"Die zusammengeführte libd64_runtime.dll konnte nicht "
+                    f"Die zusammengeführte libd64_qt5.dll konnte nicht "
                     f"bereitgestellt werden.\nZiel: {target}\n"
                     f"EXE/DLL: {output_path}\nFehler: {exc}\n\n"
-                    "Bitte die native Runtime neu kompilieren und das "
+                    "Bitte libd64_qt5.dll neu kompilieren und das "
                     "PE32-/PE32+-DLL-Binary im Runtime-Verzeichnis ablegen.",
                 )
                 return False
@@ -140541,7 +141298,7 @@ border: 2px solid #2a69aa;
                 # Check the *actual linked binary* (not a possibly stale editor).
                 if document.is_dbase_document and output_path.suffix.casefold() == ".exe":
                     try:
-                        needs_console = (b"libd64_runtime.dll" in output_path.read_bytes().lower()
+                        needs_console = (b"libd64_qt5.dll" in output_path.read_bytes().lower()
                                          or b"c64_dbase_runtime.dll" in output_path.read_bytes().lower())
                     except OSError:
                         needs_console = False
@@ -142138,6 +142895,16 @@ border: 2px solid #2a69aa;
                 return
             values = entries if entries is not None else empty_project_entries()
             self._project_named_restore(values)
+            for _target in ("pe32", "pe64"):
+                self.set_project_turbo_help_relative(
+                    _target, _project_bool_entry(
+                        values, PROJECT_TURBO_HELP_RELATIVE_KEYS[_target], True),
+                    mark_modified=False)
+                self.set_project_turbo_help_search_paths(
+                    _target, [r.get("path", "") for r in values.get(
+                        PROJECT_TURBO_HELP_PATH_KEYS[_target], ())],
+                    mark_modified=False)
+                self._sync_language_directories_page(_target, "dbase")
             for _target, _settings in PROJECT_WINDOWS_TARGET_SETTINGS.items():
                 _input_relative = _project_bool_entry(
                     values, _settings["input_relative_key"], True
@@ -142192,6 +142959,11 @@ border: 2px solid #2a69aa;
                     mark_modified=False,
                 )
                 _output_entries = values.get(_settings["output_key"], ())
+                self.set_project_windows_dbase_compress_meta(
+                    _target,
+                    _project_bool_entry(values, _settings["dbase_compress_meta_key"], False),
+                    mark_modified=False,
+                )
                 self.set_project_windows_dbase_visual_settings(
                     _target,
                     _project_bool_entry(values, _settings["dbase_external_ui_key"], False),
@@ -142553,16 +143325,12 @@ border: 2px solid #2a69aa;
             self._project_checkbox_guard = False
             folder_icon = self.style().standardIcon(QStyle.SP_DirClosedIcon)
             self._turbo_help_pending_leaves = {}
-            self.project_turbo_help_root = QTreeWidgetItem(self.project_tree, ["Turbo Help"])
+            self._turbo_help_removed_sources = set()
+            self.project_turbo_help_root = QTreeWidgetItem(self.project_tree, ["Turbo Hilfe"])
             self.project_turbo_help_root.setData(0, Qt.UserRole + 303, PROJECT_NODE_TURBO_HELP_ROOT)
             self.project_turbo_help_root.setIcon(0, folder_icon)
-            self.project_turbo_help_root.setToolTip(0, "Turbo Vision Hilfe (*.thlp); Rechtsklick für Neu/Hinzufügen")
-            for _entry in values.get(PROJECT_TURBO_HELP_ENTRY_KEY, ()):
-                _path = str(_entry.get("path", "")).strip()
-                if _path:
-                    self._add_project_turbo_help_file(Path(_path),
-                        title=str(_entry.get("title", "")), mark_modified=False)
-            self.project_turbo_help_root.setExpanded(True)
+            self.project_turbo_help_root.setToolTip(0, "Turbo Vision Hilfe (*.thlp); Rechtsklick für Inhalte und Ordner")
+            self._turbo_help_restore_tree(values.get(PROJECT_TURBO_HELP_ENTRY_KEY, ()))
 
 
             # Stage 246: exakt die beiden Debug-Navigationsbereiche stehen
@@ -143378,6 +144146,13 @@ border: 2px solid #2a69aa;
             if column != 0 or getattr(self, "_project_checkbox_guard", False):
                 return
             kind = self._project_item_kind(item)
+            if kind == PROJECT_NODE_TURBO_HELP_FILE:
+                if item.checkState(0) == Qt.Checked:
+                    self._turbo_help_mark_main(item)
+                else:
+                    self._turbo_help_sync_editor()
+                    self.set_project_modified(True)
+                return
             if kind not in {PROJECT_NODE_ARCHIVE, PROJECT_NODE_ARCHIVE_OBJECT}:
                 return
             self._project_checkbox_guard = True
@@ -143431,15 +144206,14 @@ border: 2px solid #2a69aa;
 
         def collect_project_entries(self) -> Dict[str, List[Dict[str, str]]]:
             entries = empty_project_entries()
+            for _target in ("pe32", "pe64"):
+                entries[PROJECT_TURBO_HELP_PATH_KEYS[_target]] = [
+                    {"path": value} for value in self.project_turbo_help_search_paths.get(_target, ())]
+                entries[PROJECT_TURBO_HELP_RELATIVE_KEYS[_target]] = [{
+                    "value": "true" if self.project_turbo_help_relative.get(_target, True) else "false"}]
             _help_root = getattr(self, "project_turbo_help_root", None)
             if _help_root is not None:
-                for _i in range(_help_root.childCount()):
-                    _item = _help_root.child(_i)
-                    _path = str(_item.data(0, Qt.UserRole + 302) or "")
-                    if _path:
-                        entries[PROJECT_TURBO_HELP_ENTRY_KEY].append({
-                            "path": _path, "title": _item.text(0),
-                        })
+                entries[PROJECT_TURBO_HELP_ENTRY_KEY] = self._turbo_help_collect_entries()
             for key, _title, _extensions in PROJECT_CATEGORIES:
                 root = self.project_root_items.get(key)
                 if root is None:
@@ -143691,6 +144465,9 @@ border: 2px solid #2a69aa;
                 }]
                 entries[_settings["compact_enabled_key"]] = [{
                     "value": "true" if self.project_windows_compact_enabled.get(_target, False) else "false"
+                }]
+                entries[_settings["dbase_compress_meta_key"]] = [{
+                    "value": "true" if self.project_windows_dbase_compress_meta.get(_target, False) else "false"
                 }]
                 _ui_settings = self.project_windows_dbase_visual.get(_target, {})
                 for _key, _name in (("dbase_external_ui_key", "external_ui_components"),
@@ -144086,6 +144863,9 @@ border: 2px solid #2a69aa;
             from turbo_help_settings import normalize_help_settings
             entries[PROJECT_HELP_SETTINGS_KEY] = [normalize_help_settings(
                 getattr(self, "project_help_settings", None))]
+            from turbo_help_po_metadata import normalize_po_settings
+            entries[PROJECT_TURBO_PO_SETTINGS_KEY] = [normalize_po_settings(
+                getattr(self, 'project_turbo_po_settings', None))]
 
             # Stage 530: all project-save routes persist BOTH ABI profiles.
             panel = getattr(self, "project_settings_panel", None)
@@ -144344,6 +145124,8 @@ border: 2px solid #2a69aa;
             self._project_editor_compiler_targets = {}
             from turbo_help_settings import default_help_settings
             self.project_help_settings = default_help_settings()
+            from turbo_help_po_metadata import default_po_settings
+            self.project_turbo_po_settings = default_po_settings(self.settings)
             self.project_debug_options = stage530_default_debug_options()
             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
@@ -144511,6 +145293,8 @@ border: 2px solid #2a69aa;
             self._project_editor_compiler_targets = {}
             from turbo_help_settings import default_help_settings
             self.project_help_settings = default_help_settings()
+            from turbo_help_po_metadata import default_po_settings
+            self.project_turbo_po_settings = default_po_settings(self.settings)
             self.project_debug_options = stage530_default_debug_options()
             self.project_windows_compiler_security_options = stage531_default_compiler_security_options()
             self.project_windows_pascal_parallel_options = stage536_default_parallel_options()
@@ -145161,6 +145945,10 @@ border: 2px solid #2a69aa;
             from turbo_help_settings import normalize_help_settings
             self.project_help_settings = normalize_help_settings(
                 (entries.get(PROJECT_HELP_SETTINGS_KEY) or [{}])[0])
+            from turbo_help_po_metadata import default_po_settings, normalize_po_settings
+            self.project_turbo_po_settings = normalize_po_settings(
+                (entries.get(PROJECT_TURBO_PO_SETTINGS_KEY) or [{}])[0],
+                defaults=default_po_settings(self.settings))
             self.project_debug_options = {
                 target: DebugOptions(**(entries.get(f"__stage530_debug_{target}__") or [{}])[0])
                 for target in ("pe32", "pe64")
@@ -148161,7 +148949,8 @@ QFileDialog QComboBox QAbstractItemView {
         def _hide_turbo_help_for_project_leaf(self, item) -> None:
             """Leaving Turbo Help for a different project leaf restores docks."""
             kind = self._project_item_kind(item)
-            if kind in (PROJECT_NODE_TURBO_HELP_ROOT, PROJECT_NODE_TURBO_HELP_FILE):
+            if kind in (PROJECT_NODE_TURBO_HELP_ROOT, PROJECT_NODE_TURBO_HELP_FILE,
+                        "turbo_help_folder"):
                 return True
             if item.parent() is None:
                 return True
@@ -148183,6 +148972,9 @@ QFileDialog QComboBox QAbstractItemView {
             if kind != PROJECT_NODE_TURBO_HELP_FILE:
                 if not self._hide_turbo_help_for_project_leaf(item):
                     return
+            if kind == PROJECT_NODE_TURBO_HELP_ROOT:
+                self._project_turbo_help_settings_open()
+                return
             if kind == PROJECT_NODE_TURBO_HELP_FILE:
                 self._project_turbo_help_open(item)
                 return
@@ -148217,10 +149009,14 @@ QFileDialog QComboBox QAbstractItemView {
         def _on_project_c64_leaf_clicked(self, item: QTreeWidgetItem, _column: int = 0) -> None:
             if QApplication.keyboardModifiers() & (Qt.ShiftModifier | Qt.ControlModifier):
                 return
-            if self._project_item_kind(item) == PROJECT_NODE_TURBO_HELP_FILE:
+            _turbo_kind = self._project_item_kind(item)
+            if _turbo_kind == PROJECT_NODE_TURBO_HELP_ROOT:
+                self._project_turbo_help_settings_open()
+                return
+            if _turbo_kind == PROJECT_NODE_TURBO_HELP_FILE:
                 self._project_turbo_help_open(item)
                 return
-                
+
             # Stage 663: switching to another tree leaf closes the Help dock,
             # but does not close the persistent Projekt-Informationen tree.
             if not self._hide_turbo_help_for_project_leaf(item):
@@ -148547,7 +149343,8 @@ QFileDialog QComboBox QAbstractItemView {
                 self.project_tree.clearSelection()
                 item.setSelected(True)
             kind = self._project_item_kind(item)
-            if kind in {PROJECT_NODE_TURBO_HELP_ROOT, PROJECT_NODE_TURBO_HELP_FILE}:
+            if kind in {PROJECT_NODE_TURBO_HELP_ROOT, PROJECT_NODE_TURBO_HELP_FOLDER,
+                        PROJECT_NODE_TURBO_HELP_FILE}:
                 self._project_turbo_help_context(item, position)
                 return
             if (not self._is_unsaved_dbase_module_leaf(item)
@@ -151729,6 +152526,14 @@ QFileDialog QComboBox QAbstractItemView {
                         dialog.open_chm(str(candidates[0]))
                     else:
                         QTimer.singleShot(0, dialog.choose_chm)
+            # Stage 687: The global F1 action uses the same loading prelude
+            # as table/dock openings.  CHM is modal, so hide the splash
+            # *after* loading the source but *before* its nested event loop.
+            # run_with_operation_prelude() still owns final cleanup.
+            prelude = getattr(self, "_operation_prelude", None)
+            if (prelude is not None
+                    and getattr(self, "_operation_prelude_executing", False)):
+                prelude.hide()
             dialog.exec_()
 
         def show_system_information_dialog(self) -> None:
@@ -154138,6 +154943,7 @@ def _write_pe32_generated_objects(
     output_directory: Optional[Path | str] = None,
     include_dirs=(),
     progress_callback=None,
+    compress_metadata: bool = False,
 ) -> List[Path]:
     """Assembliert Hauptmodul und PE32-Abhängigkeiten separat zu COFF32."""
     result: List[Path] = []
@@ -154151,6 +154957,7 @@ def _write_pe32_generated_objects(
         data = assemble_pe32_coff_object(
             assembly, filename=str(asm_name), include_dirs=include_dirs,
             progress_callback=(progress_callback if not result else None),
+            compress_metadata=compress_metadata,
         )
         _write_cli_file(resolved, data)
         seen.add(key)
@@ -154231,6 +155038,7 @@ def _write_pe64_generated_objects(
     output_directory: Optional[Path | str] = None,
     include_dirs=(),
     progress_callback=None,
+    compress_metadata: bool = False,
 ) -> List[Path]:
     """Assembliert Hauptmodul und PE64-Abhängigkeiten separat zu AMD64-COFF64."""
     result: List[Path] = []
@@ -154244,6 +155052,7 @@ def _write_pe64_generated_objects(
         data = assemble_pe64_coff_object(
             assembly, filename=str(asm_name), include_dirs=include_dirs,
             progress_callback=(progress_callback if not result else None),
+            compress_metadata=compress_metadata,
         )
         _write_cli_file(resolved, data)
         seen.add(key)

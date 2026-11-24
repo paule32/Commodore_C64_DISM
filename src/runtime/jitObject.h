@@ -29,10 +29,15 @@ typedef void (JIT_CDECL *JitObjectErrorHook)(int error_code, const char *message
 // +8   instance_size
 // +12  initialize_instance
 // +16  finalize_instance
-// +20  destroy
-// +24  first virtual method slot
+// +20  destroy (legacy) / shared method table pointer (compact)
+// +24  first virtual method slot (legacy only)
 //
-// Additional virtual slots are stored directly behind this header.
+// Stage 670 compact VMT: instance_size bit 31 marks the shared-table ABI.
+// Stage 679 O3: a null compact-table pointer selects the nine built-in
+// TObject method pointers contained in libd64_qt5.dll.
+// In that case the word at +20 is a pointer to a shared table containing
+// destroy at index 0 and virtual methods at indices 1..8.  All older VMTs
+// without the flag continue to use the original inline virtual method slots.
 // ---------------------------------------------------------------------------
 struct JitVmt {
     JitVmt           * parent;
@@ -61,7 +66,10 @@ enum {
     JIT_VMT_INITIALIZE_OFFSET   = 12,
     JIT_VMT_FINALIZE_OFFSET     = 16,
     JIT_VMT_DESTROY_OFFSET      = 20,
-    JIT_VMT_METHOD_BASE_OFFSET  = 24
+    JIT_VMT_METHOD_BASE_OFFSET  = 24,
+    JIT_VMT_SHARED_METHOD_FLAG = 0x80000000u,
+    JIT_VMT_INSTANCE_SIZE_MASK = 0x7fffffffu,
+    JIT_VMT_BASE_METHOD_COUNT = 8
 };
 
 // ---------------------------------------------------------------------------
@@ -78,6 +86,9 @@ DLL_API void         JIT_CDECL jit_object_error_clear       (void);
 // Allocation and destruction
 // ---------------------------------------------------------------------------
 DLL_API void * JIT_CDECL jit_object_new_instance(JitVmt *vmt);
+// ABI exports used by native dBASE code (existing Stage-600 names).
+DLL_API void * JIT_CDECL jit_object_instance_new(JitVmt *vmt);
+DLL_API void   JIT_CDECL jit_object_instance_free(void *instance);
 
 DLL_API void   JIT_CDECL jit_object_free_instance(void *instance);
 DLL_API void   JIT_CDECL jit_object_free         (void *instance);
@@ -92,6 +103,10 @@ DLL_API uint32_t     JIT_CDECL jit_class_instance_size (JitVmt *vmt);
 
 DLL_API int JIT_CDECL jit_inherits_from_class (JitVmt *current_class, JitVmt *expected_class);
 DLL_API int JIT_CDECL jit_inherits_from_object(void   *instance,      JitVmt *expected_class);
+
+// ---------------------------------------------------------------------------
+// Runtime capability probe: O3 default TObject method-table sentinel.
+DLL_API uint32_t JIT_CDECL jit_default_tobject_vmt_abi(void);
 
 // ---------------------------------------------------------------------------
 // Virtual method lookup

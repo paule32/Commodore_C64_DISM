@@ -34,8 +34,8 @@ __dbase_exception_cleanup_done:
 ; Stage 602: dBASE source methods / JitVmt C ABI
 __dbase_cls_tobject___ini__:
     ret
-__dbase_cls_tobject___del__:
-    ret
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
 __dbase_cls_tobject_free:
     push ebp
     mov ebp, esp
@@ -1137,6 +1137,12 @@ __dbase_cls_tobject_create:
     add esp, 4
     ret
 
+
+; Stage 679: O3 runtime ABI import guard
+__dbase_o3_abi_guard:
+    call __dbase_o3_default_vmt_abi
+    ret
+
 section .data
 ; Stage 600: JitVmt headers: parent, name, instance_size, init, finalize, destroy
 __dbase_cls_exception___ini___string_0:
@@ -1155,17 +1161,18 @@ __dbase_cls_win32exception___ini___string_8:
     db 84, 101, 120, 116, 58, 32, 0
 __dbase_cls_empty:
     db 0
+; Stage 679: TObject builtin virtual methods; DLL fallback safe
 ; Stage 670: shared VMT method tables
-__dbase_class_object:
-    dd __dbase_cls_tobject___del__
-    dd __dbase_cls_tobject_free
-    dd __dbase_cls_tobject_freeinstance
-    dd __dbase_cls_tobject_classtype
-    dd __dbase_cls_tobject_classparent
-    dd __dbase_cls_tobject_classnameaddress
-    dd __dbase_cls_tobject_classname
-    dd __dbase_cls_tobject_instancesize
-    dd __dbase_cls_tobject_inheritsfrom
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
 global __dbase_vmt_tobject
 __dbase_vmt_tobject:
     dd 0
@@ -1173,7 +1180,7 @@ __dbase_vmt_tobject:
     dd 0x80000004
     dd __dbase_cls_tobject___ini__
     dd 0
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_tobject_name:
     db 84, 79, 98, 106, 101, 99, 116, 0
 global __dbase_vmt_exception
@@ -1183,7 +1190,7 @@ __dbase_vmt_exception:
     dd 0x80000014
     dd __dbase_cls_exception_fields_init
     dd __dbase_cls_exception_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_exception_name:
     db 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
 global __dbase_vmt_dbexception
@@ -1193,7 +1200,7 @@ __dbase_vmt_dbexception:
     dd 0x80000014
     dd __dbase_cls_dbexception_fields_init
     dd __dbase_cls_dbexception_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_dbexception_name:
     db 68, 98, 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
 global __dbase_vmt_eabort
@@ -1203,7 +1210,7 @@ __dbase_vmt_eabort:
     dd 0x80000014
     dd __dbase_cls_eabort_fields_init
     dd __dbase_cls_eabort_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_eabort_name:
     db 69, 65, 98, 111, 114, 116, 0
 global __dbase_vmt_econverterror
@@ -1213,7 +1220,7 @@ __dbase_vmt_econverterror:
     dd 0x80000014
     dd __dbase_cls_econverterror_fields_init
     dd __dbase_cls_econverterror_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_econverterror_name:
     db 69, 67, 111, 110, 118, 101, 114, 116, 69, 114, 114, 111, 114, 0
 global __dbase_vmt_eoutofmemory
@@ -1223,7 +1230,7 @@ __dbase_vmt_eoutofmemory:
     dd 0x80000014
     dd __dbase_cls_eoutofmemory_fields_init
     dd __dbase_cls_eoutofmemory_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_eoutofmemory_name:
     db 69, 79, 117, 116, 79, 102, 77, 101, 109, 111, 114, 121, 0
 global __dbase_vmt_einouterror
@@ -1233,7 +1240,7 @@ __dbase_vmt_einouterror:
     dd 0x80000014
     dd __dbase_cls_einouterror_fields_init
     dd __dbase_cls_einouterror_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_einouterror_name:
     db 69, 73, 110, 79, 117, 116, 69, 114, 114, 111, 114, 0
 global __dbase_vmt_einvalidcast
@@ -1243,7 +1250,7 @@ __dbase_vmt_einvalidcast:
     dd 0x80000014
     dd __dbase_cls_einvalidcast_fields_init
     dd __dbase_cls_einvalidcast_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_einvalidcast_name:
     db 69, 73, 110, 118, 97, 108, 105, 100, 67, 97, 115, 116, 0
 global __dbase_vmt_einvalidpointer
@@ -1253,7 +1260,7 @@ __dbase_vmt_einvalidpointer:
     dd 0x80000014
     dd __dbase_cls_einvalidpointer_fields_init
     dd __dbase_cls_einvalidpointer_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_einvalidpointer_name:
     db 69, 73, 110, 118, 97, 108, 105, 100, 80, 111, 105, 110, 116, 101, 114, 0
 global __dbase_vmt_einterror
@@ -1263,7 +1270,7 @@ __dbase_vmt_einterror:
     dd 0x80000014
     dd __dbase_cls_einterror_fields_init
     dd __dbase_cls_einterror_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_einterror_name:
     db 69, 73, 110, 116, 69, 114, 114, 111, 114, 0
 global __dbase_vmt_edivbyzero
@@ -1273,7 +1280,7 @@ __dbase_vmt_edivbyzero:
     dd 0x80000014
     dd __dbase_cls_edivbyzero_fields_init
     dd __dbase_cls_edivbyzero_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_edivbyzero_name:
     db 69, 68, 105, 118, 66, 121, 90, 101, 114, 111, 0
 global __dbase_vmt_erangeerror
@@ -1283,7 +1290,7 @@ __dbase_vmt_erangeerror:
     dd 0x80000014
     dd __dbase_cls_erangeerror_fields_init
     dd __dbase_cls_erangeerror_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_erangeerror_name:
     db 69, 82, 97, 110, 103, 101, 69, 114, 114, 111, 114, 0
 global __dbase_vmt_eintoverflow
@@ -1293,7 +1300,7 @@ __dbase_vmt_eintoverflow:
     dd 0x80000014
     dd __dbase_cls_eintoverflow_fields_init
     dd __dbase_cls_eintoverflow_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_eintoverflow_name:
     db 69, 73, 110, 116, 79, 118, 101, 114, 102, 108, 111, 119, 0
 global __dbase_vmt_ematherror
@@ -1303,7 +1310,7 @@ __dbase_vmt_ematherror:
     dd 0x80000014
     dd __dbase_cls_ematherror_fields_init
     dd __dbase_cls_ematherror_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_ematherror_name:
     db 69, 77, 97, 116, 104, 69, 114, 114, 111, 114, 0
 global __dbase_vmt_win32exception
@@ -1313,7 +1320,7 @@ __dbase_vmt_win32exception:
     dd 0x80000014
     dd __dbase_cls_win32exception_fields_init
     dd __dbase_cls_win32exception_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_win32exception_name:
     db 87, 105, 110, 51, 50, 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
 global __dbase_vmt_win32fileexception
@@ -1323,7 +1330,7 @@ __dbase_vmt_win32fileexception:
     dd 0x80000014
     dd __dbase_cls_win32fileexception_fields_init
     dd __dbase_cls_win32fileexception_fields_done
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_win32fileexception_name:
     db 87, 105, 110, 51, 50, 70, 105, 108, 101, 69, 120, 99, 101, 112, 116, 105, 111, 110, 0
 

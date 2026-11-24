@@ -52,7 +52,12 @@ _jit_error_nil_pointer(const char* name)
 DLL_API void
 _jit_error_out_of_memory(const char* what)
 {
+#if defined(D64_QT5_EMBEDDED)
+    if (what) _jit_print_text(what);
+    _jit_print_newline();
+#else
     std::cout << what << std::endl;
+#endif
     _jit_raise(
         JIT_RUNTIME_ERROR,
         "Out of memory: "

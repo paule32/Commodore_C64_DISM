@@ -76,16 +76,30 @@ def test_bool_launcher_with_existing_pending_tab_activates_it(tmp_path, monkeypa
 
 
 def test_bool_launcher_without_editor_prevents_new_document_crash(tmp_path, monkeypatch):
+    """Stage 685 now creates a physical file before opening its tree leaf."""
     support._bind(monkeypatch)
     window = support.FakeMainWindow([tmp_path / "Temp.thlp"])
     window.show_turbo_help_compiler_dock = lambda: False
-    # Extract _project_turbo_help_new from production code.
+    window._project_item_kind = lambda item: None
+    window._turbo_help_root_directory = lambda **_kwargs: tmp_path
+    window._turbo_help_file_items = lambda: iter(())
+    window._add_project_turbo_help_file = lambda path, parent=None: support.FakeItem(path)
+    window.project_tree = type('FakeTree', (), {'setCurrentItem': lambda self, item: None})()
+
+    # Extract the real Stage-685+ creation method and supply Qt dialog fakes.
     import textwrap
+    from types import SimpleNamespace
     source = (Path(__file__).resolve().parent / 'd64_dism.py').read_text('utf-8')
     start = source.index('        def _project_turbo_help_new(')
     end = source.index('\n        def ', start + 16)
-    namespace = {}
+    namespace = {
+        'Path': Path,
+        'PROJECT_NODE_TURBO_HELP_ROOT': 'root',
+        'PROJECT_NODE_TURBO_HELP_FOLDER': 'folder',
+        'QInputDialog': SimpleNamespace(getText=lambda *_args, **_kw: ('Temp.thlp', True)),
+    }
     exec(compile(textwrap.dedent(source[start:end]), 'd64_dism.py', 'exec'), namespace)
     support.FakeMainWindow._project_turbo_help_new = namespace['_project_turbo_help_new']
     window._project_turbo_help_new()
+    assert (tmp_path / 'Temp.thlp').is_file()
     assert window.errors and 'Editor' in window.errors[0][1]

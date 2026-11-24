@@ -8,8 +8,8 @@ section .text
 ; Stage 602: dBASE source methods / JitVmt C ABI
 __dbase_cls_tobject___ini__:
     ret
-__dbase_cls_tobject___del__:
-    ret
+    ; O3: unreferenzierte TObject Standardmethode
+    ; O3: unreferenzierte TObject Standardmethode
 __dbase_cls_tobject_free:
     push ebp
     mov ebp, esp
@@ -174,19 +174,26 @@ __dbase_cls_twincontrol_create:
     add esp, 4
     ret
 
+
+; Stage 679: O3 runtime ABI import guard
+__dbase_o3_abi_guard:
+    call __dbase_o3_default_vmt_abi
+    ret
+
 section .data
 ; Stage 600: JitVmt headers: parent, name, instance_size, init, finalize, destroy
+; Stage 679: TObject builtin virtual methods; DLL fallback safe
 ; Stage 670: shared VMT method tables
-__dbase_class_object:
-    dd __dbase_cls_tobject___del__
-    dd __dbase_cls_tobject_free
-    dd __dbase_cls_tobject_freeinstance
-    dd __dbase_cls_tobject_classtype
-    dd __dbase_cls_tobject_classparent
-    dd __dbase_cls_tobject_classnameaddress
-    dd __dbase_cls_tobject_classname
-    dd __dbase_cls_tobject_instancesize
-    dd __dbase_cls_tobject_inheritsfrom
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
+    ; O3: TObject Standardtabelle liegt in libd64_qt5.dll
 global __dbase_vmt_tobject
 __dbase_vmt_tobject:
     dd 0
@@ -194,7 +201,7 @@ __dbase_vmt_tobject:
     dd 0x80000004
     dd __dbase_cls_tobject___ini__
     dd 0
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_tobject_name:
     db 84, 79, 98, 106, 101, 99, 116, 0
 global __dbase_vmt_tpersistent
@@ -204,7 +211,7 @@ __dbase_vmt_tpersistent:
     dd 0x80000004
     dd __dbase_cls_tobject___ini__
     dd 0
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_tpersistent_name:
     db 84, 80, 101, 114, 115, 105, 115, 116, 101, 110, 116, 0
 global __dbase_vmt_tcomponent
@@ -214,7 +221,7 @@ __dbase_vmt_tcomponent:
     dd 0x80000004
     dd __dbase_cls_tobject___ini__
     dd 0
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_tcomponent_name:
     db 84, 67, 111, 109, 112, 111, 110, 101, 110, 116, 0
 global __dbase_vmt_tcontrol
@@ -224,7 +231,7 @@ __dbase_vmt_tcontrol:
     dd 0x80000004
     dd __dbase_cls_tobject___ini__
     dd 0
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_tcontrol_name:
     db 84, 67, 111, 110, 116, 114, 111, 108, 0
 global __dbase_vmt_twincontrol
@@ -234,7 +241,7 @@ __dbase_vmt_twincontrol:
     dd 0x80000004
     dd __dbase_cls_tobject___ini__
     dd 0
-    dd __dbase_class_object
+    dd 0
 __dbase_vmt_twincontrol_name:
     db 84, 87, 105, 110, 67, 111, 110, 116, 114, 111, 108, 0
 
@@ -275,40 +282,4 @@ __dbase_exit_code:
 __dbase_output_debug_visible:
     resd 1
 __dbase_console_number_len:
-    resd 1
-__dbase_exception_id:
-    resd 1
-__dbase_exception_code:
-    resd 1
-__dbase_exception_message_type:
-    resd 1
-__dbase_exception_message_num:
-    resq 1
-__dbase_exception_message_ptr:
-    resd 1
-__dbase_exception_message_len:
-    resd 1
-__dbase_exception_class_type:
-    resd 1
-__dbase_exception_class_num:
-    resq 1
-__dbase_exception_class_ptr:
-    resd 1
-__dbase_exception_class_len:
-    resd 1
-__dbase_exception_object_type:
-    resd 1
-__dbase_exception_object_num:
-    resq 1
-__dbase_exception_object_ptr:
-    resd 1
-__dbase_exception_object_len:
-    resd 1
-__dbase_exception_cstr_type:
-    resd 1
-__dbase_exception_cstr_num:
-    resq 1
-__dbase_exception_cstr_ptr:
-    resd 1
-__dbase_exception_cstr_len:
     resd 1

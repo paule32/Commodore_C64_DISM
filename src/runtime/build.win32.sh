@@ -81,7 +81,7 @@ echo "123"
     -o win32/obj/memory.o
     
   ###args loader allocator diskio/diskio error exception iostream memory
-  RUNTIME_FILES=( jitObject
+  RUNTIME_FILES=( dbase_runtime_merged jitObject
     args loader allocator error exception iostream
     print string vector locale windows
     dllmain
@@ -171,6 +171,7 @@ echo "123"
      win32/obj/exception.o \
      win32/obj/iostream.o  \
      win32/obj/jitObject.o \
+     win32/obj/dbase_runtime_merged.o \
      win32/obj/loader.o    \
      win32/obj/locale.o    \
      win32/obj/memory.o    \
@@ -185,7 +186,7 @@ echo "123"
      \
      \
      win32/libd64_runtime.def    \
-     -lbcrypt -lkernel32 \
+     -lbcrypt -lkernel32 -luser32 -lmsvcrt \
      -Wl,--out-implib,win32/libd64_runtime.dll.a; then
      echo "relocation link error."
      exit 1

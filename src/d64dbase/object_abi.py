@@ -53,6 +53,42 @@ class NativeClassMethod:
     body: tuple[tuple[int, str], ...] = ()
 
 
+# Stage 681: System.Objects.prg supplies the very same methods that the
+# native Qt5 DLL already exposes.  Stage 679 treated any method *source* as
+# a custom override, which disabled O3 for every program including that unit.
+# Match the known default implementations by their complete statement bodies;
+# arbitrary user overrides must still use a local table.
+_NATIVE_TOBJECT_DEFAULT_BODIES = {
+    'free': (
+        'if Self <> NULL', 'jit_object_free(Self)', 'endif', 'return',
+    ),
+    'freeinstance': (
+        'if Self <> NULL', 'jit_object_instance_free(Self)', 'endif', 'return',
+    ),
+    'classtype': ('return jit_object_class_type(Self)',),
+    'classparent': ('return jit_class_parent(jit_object_class_type(Self))',),
+    'classnameaddress': ('return jit_class_name(jit_object_class_type(Self))',),
+    'classname': ('return ClassNameAddress()',),
+    'instancesize': ('return jit_class_instance_size(jit_object_class_type(Self))',),
+    'inheritsfrom': ('return jit_inherits_from_object(Self, TClass) <> 0',),
+}
+
+
+def _is_native_tobject_default_source(method: NativeClassMethod) -> bool:
+    """True only for a known, ABI-equivalent System.Objects method body.
+
+    Match entire statements and keep method signatures validated separately;
+    no heuristic based on class or file names is used. A modified Free,
+    destructor, or any other virtual method disables native table sharing.
+    """
+    name = method.name.casefold()
+    expected = _NATIVE_TOBJECT_DEFAULT_BODIES.get(name)
+    if expected is None or not method.body:
+        return False
+    canon = lambda line: re.sub(r'\s+', '', line).casefold()
+    return tuple(canon(statement) for _, statement in method.body) == tuple(
+        canon(statement) for statement in expected)
+
 def validate_methods(class_name: str, methods: tuple[NativeClassMethod, ...]) -> None:
     """Protect against emitting an unimplemented method body as a no-op."""
     names = set()
@@ -464,7 +500,7 @@ def emit_classes(classes, *, target: str, ffi_prototypes=(), filename="<dBase>",
         derived_text.extend(string_code)
         derived_data.extend(string_data)
 
-    imports = [f'import __dbase_obj_{name}, "libd64_runtime.dll", "{name}"' for name in RUNTIME_EXPORTS]
+    imports = [f'import __dbase_obj_{name}, "libd64_qt5.dll", "{name}"' for name in RUNTIME_EXPORTS]
     text = ['; Stage 602: dBASE source methods / JitVmt C ABI']
     data = ['; Stage 600: JitVmt headers: parent, name, instance_size, init, finalize, destroy']
 
@@ -548,7 +584,20 @@ def emit_classes(classes, *, target: str, ffi_prototypes=(), filename="<dBase>",
     base_methods = (method_label('TObject', '__del__'),) + tuple(
         method_label('TObject', method_name) for method_name, _, _, _ in METHODS)
     method_tables = {base_methods: '__dbase_class_object'}
-    data.extend(['; Stage 670: shared VMT method tables', '__dbase_class_object:'])
+    # Stage 681: the shipped System.Objects.prg contains explicit method
+    # bodies which are equivalent to the DLL's native default methods. O3 may
+    # share those too, but never silently discard a real user override.
+    native_tobject_overrides = any(
+        member.body and
+        (member.name.casefold() == '__del__' or
+         (member.name.casefold() in METHOD_BY_NAME and
+          not _is_native_tobject_default_source(member)))
+        for member in getattr(tobj, 'methods', ())
+    )
+    o3_marker = ('; Stage 679: TObject custom virtual methods; no DLL fallback'
+                 if native_tobject_overrides else
+                 '; Stage 679: TObject builtin virtual methods; DLL fallback safe')
+    data.extend([o3_marker, '; Stage 670: shared VMT method tables', '__dbase_class_object:'])
     data.extend(f'    {ptr} {name}' for name in base_methods)
 
     resolved = {}
@@ -617,7 +666,7 @@ def emit_classes(classes, *, target: str, ffi_prototypes=(), filename="<dBase>",
     for name in RUNTIME_EXPORTS:
         if any(line.strip() == f'call __dbase_obj_{name}' for line in text):
             used.add(name)
-    imports = [f'import __dbase_obj_{name}, "libd64_runtime.dll", "{name}"'
+    imports = [f'import __dbase_obj_{name}, "libd64_qt5.dll", "{name}"'
                for name in RUNTIME_EXPORTS if name in used] + derived_imports
     return imports, text, data
 

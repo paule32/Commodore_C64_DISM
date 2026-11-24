@@ -239,9 +239,13 @@ C(_jit_memcpy):
     jmp dispatch_crt
 
 global C(_jit_memset)
+%ifndef D64_QT5_EMBEDDED
 global C(memset)
+%endif
 C(_jit_memset):
+%ifndef D64_QT5_EMBEDDED
 C(memset):
+%endif
     mov eax, p_memset
     jmp dispatch_crt
 

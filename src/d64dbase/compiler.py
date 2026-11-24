@@ -7392,12 +7392,12 @@ class _DBaseCodeGenerator:
         if self._uses_win32_file_check:
             self.emit('import DBaseQtVfsCheckOpenRead, "libd64_qt5.dll", "DBaseQtVfsCheckOpenRead"')
         # Stage 446: Native dBASE console management is provided by the
-        # architecture-matched libd64_runtime.dll (no embedded Win32 API).
+        # architecture-matched libd64_qt5.dll (no embedded Win32 API).
         from .char_case_runtime import CASE_EXPORTS
         from .wfm_format_runtime import EXPORTS as WFM_EXPORTS
         for exported in ("DBaseConsoleEnsure", "DBaseConsoleWrite",
                          "DBaseConsoleShutdown", "DBaseConsoleSetTitle") + CASE_EXPORTS + WFM_EXPORTS:
-            self.emit(f'import {exported}, "libd64_runtime.dll", "{exported}"')
+            self.emit(f'import {exported}, "libd64_qt5.dll", "{exported}"')
         if any(isinstance(expr, DBaseCallExpression)
                and expr.name.casefold() == "ismouse"
                for expr in self.analysis.expression_info):
@@ -10833,7 +10833,7 @@ class _DBaseCodeGenerator(_Stage12CodeGenerator):
             marker = 'import __dbase_malloc, "msvcrt.dll", "malloc"\n'
             imports = ('import __dbase_exc_free, "msvcrt.dll", "free"\n'
                        'import __dbase_exc_strlenA, "kernel32.dll", "lstrlenA"\n'
-                       'import __dbase_exc_object_free, "libd64_runtime.dll", "jit_object_free"\n')
+                       'import __dbase_exc_object_free, "libd64_qt5.dll", "jit_object_free"\n')
             # The factory and setter use the C ABI, not the packed dBL slots.
             assembly = assembly.replace(marker, marker + imports, 1)
             # Emit the cleanup before the VMT-injection pass so object symbols
