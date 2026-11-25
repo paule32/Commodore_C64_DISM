@@ -6,7 +6,7 @@ from PyQt5.QtGui import QRegularExpressionValidator
 from PyQt5.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QRadioButton, QButtonGroup,
-    QPushButton, QFileDialog, QMessageBox,
+    QPushButton, QFileDialog, QMessageBox, QCheckBox,
 )
 from windows_manifest import (
     IDENTITY_DEFAULTS, SUPPORTED_OS, GUID_PATTERN,
@@ -40,6 +40,7 @@ class WindowsManifestSettingsPage(QScrollArea):
             self.identity_edits[key] = edit
             form.addRow(labels[key], edit)
             edit.textChanged.connect(self._identity_changed)
+
         self.identity_edits["type"].setValidator(QRegularExpressionValidator(QRegularExpression("[a-z0-9]*"), self))
         self.identity_edits["type"].setToolTip("Nur Kleinbuchstaben und Ziffern; Windows-Manifeste verwenden win32.")
         self.identity_edits["version"].setPlaceholderText("mmmmm.nnnnn.ooooo.ppppp")
@@ -48,6 +49,7 @@ class WindowsManifestSettingsPage(QScrollArea):
         self.identity_edits["publicKeyToken"].setValidator(QRegularExpressionValidator(QRegularExpression("[0-9a-fA-F]{0,16}"), self))
         self.identity_edits["language"].setToolTip("* = sprachneutral; beim Export der Anwendungsidentität wird language dann weggelassen.")
         self.identity_edits["name"].setPlaceholderText("MyOrganization.MyDivision.MySampleApp")
+
         layout.addWidget(self.identity_group)
 
         self.compatibility_group = QGroupBox("Kompatibel mit:", body)
@@ -86,7 +88,45 @@ class WindowsManifestSettingsPage(QScrollArea):
         radio_layout.addStretch(1)
         general_layout.addLayout(radio_layout)
         self.long_path_true.setChecked(True)
+        self.description_edit = QLineEdit(self.general_group)
+        self.description_edit.setPlaceholderText("Optionale Anwendungsbeschreibung")
+        general_layout.addWidget(QLabel("Beschreibung", self.general_group))
+        general_layout.addWidget(self.description_edit)
+        self.description_edit.textChanged.connect(lambda value: self._extra_manifest_changed("description", value))
+        self.dpi_checkbox = QCheckBox("Per-Monitor DPI Awareness (V2)", self.general_group)
+        self.dpi_checkbox.setToolTip("Nur aktivieren, wenn die Anwendung DPI-Wechsel selbst korrekt verarbeitet.")
+        general_layout.addWidget(self.dpi_checkbox)
+        self.dpi_checkbox.toggled.connect(lambda checked: self._extra_manifest_changed("dpiAware", checked))
         layout.addWidget(self.general_group)
+
+        self.link_group = QGroupBox("Manifest: ", body)
+        link_layout = QVBoxLayout(self.link_group)
+        self.link_enabled_checkbox = QCheckBox("Manifest in EXE Image linken", self.link_group)
+        self.link_enabled_checkbox.setObjectName("project_manifest_link_enabled")
+        link_layout.addWidget(self.link_enabled_checkbox)
+        self.admin_checkbox = QCheckBox("Administratormodus anfordern (UAC)", self.link_group)
+        self.admin_checkbox.setToolTip("Windows entscheidet über die UAC-Abfrage; kein Passwort wird gespeichert.")
+        link_layout.addWidget(self.admin_checkbox)
+        self.admin_checkbox.setEnabled(False)
+        self.admin_checkbox.toggled.connect(lambda checked: self._extra_manifest_changed("requireAdministrator", checked))
+        self.link_path_row = QWidget(self.link_group)
+        link_path_layout = QHBoxLayout(self.link_path_row)
+        link_path_layout.setContentsMargins(0, 0, 0, 0)
+        self.link_browse_button = QPushButton("…", self.link_path_row)
+        self.link_browse_button.setToolTip("Manifestdatei öffnen")
+        self.link_browse_button.setFixedWidth(36)
+        self.link_file_edit = QLineEdit(self.link_path_row)
+        self.link_file_edit.setObjectName("project_manifest_link_path")
+        self.link_file_edit.setPlaceholderText("Optional: externe Manifestdatei (leer = aus Einstellungen erzeugen)")
+        link_path_layout.addWidget(self.link_browse_button)
+        link_path_layout.addWidget(self.link_file_edit, 1)
+        link_layout.addWidget(self.link_path_row)
+        layout.insertWidget(0, self.link_group)
+        self.link_enabled_checkbox.toggled.connect(self._link_enabled_changed)
+        self.link_file_edit.textChanged.connect(self._link_file_changed)
+        self.link_browse_button.clicked.connect(self._choose_link_file)
+        self.link_path_row.setEnabled(False)
+
         self.export_button = QPushButton("Manifest speichern …", body)
         self.export_button.setToolTip("Als XML-Datei exportieren, z. B. MeineAnwendung.exe.manifest")
         layout.addWidget(self.export_button, 0, Qt.AlignLeft)
@@ -113,6 +153,13 @@ class WindowsManifestSettingsPage(QScrollArea):
                 item.setCheckState(Qt.Checked if self._data["compatibility"][item.text()]["checked"] else Qt.Unchecked)
             self.long_path_true.setChecked(self._data["longPathAware"])
             self.long_path_false.setChecked(not self._data["longPathAware"])
+            self.link_enabled_checkbox.setChecked(self._data["linkEnabled"])
+            self.admin_checkbox.setChecked(self._data["requireAdministrator"])
+            self.admin_checkbox.setEnabled(self._data["linkEnabled"])
+            self.description_edit.setText(self._data["description"])
+            self.dpi_checkbox.setChecked(self._data["dpiAware"])
+            self.link_file_edit.setText(self._data["linkFile"])
+            self.link_path_row.setEnabled(self._data["linkEnabled"])
             self._os_selected(self.os_list.currentItem(), None)
         finally:
             self._syncing = False
@@ -120,6 +167,31 @@ class WindowsManifestSettingsPage(QScrollArea):
     def _notify(self):
         if not self._syncing:
             self.settingsChanged.emit(self.settings())
+
+    def _extra_manifest_changed(self, key, value):
+        if not self._syncing:
+            self._data[key] = value
+            self._notify()
+
+    def _link_enabled_changed(self, enabled):
+        self.admin_checkbox.setEnabled(bool(enabled))
+        self.link_path_row.setEnabled(bool(enabled))
+        if not self._syncing:
+            self._data["linkEnabled"] = bool(enabled)
+            self._notify()
+
+    def _link_file_changed(self, value):
+        if not self._syncing:
+            self._data["linkFile"] = str(value)
+            self._notify()
+
+    def _choose_link_file(self):
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Manifestdatei öffnen", self.link_file_edit.text().strip(),
+            "Windows Manifest (*.manifest *.xml);;Alle Dateien (*)"
+        )
+        if filename:
+            self.link_file_edit.setText(filename)
 
     def _identity_changed(self, _text):
         if not self._syncing:
@@ -173,3 +245,4 @@ class WindowsManifestSettingsPage(QScrollArea):
             Path(filename).write_text(xml, encoding="utf-8")
         except OSError as exc:
             QMessageBox.warning(self, "Manifest speichern", str(exc))
+

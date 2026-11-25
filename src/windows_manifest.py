@@ -33,6 +33,12 @@ def normalize_manifest_settings(value=None):
         "identity": {key: str(identity.get(key, default)) for key, default in IDENTITY_DEFAULTS.items()},
         "compatibility": {},
         "longPathAware": str(value.get("longPathAware", True)).lower() in {"true", "1", "yes"},
+        # Stage 311: external manifest is linked as an RT_MANIFEST resource.
+        "linkEnabled": str(value.get("linkEnabled", False)).lower() in {"true", "1", "yes"},
+        "linkFile": str(value.get("linkFile", "") or ""),
+        "requireAdministrator": str(value.get("requireAdministrator", False)).lower() in {"true", "1", "yes"},
+        "description": str(value.get("description", "") or ""),
+        "dpiAware": str(value.get("dpiAware", False)).lower() in {"true", "1", "yes"},
     }
     for name, guid in SUPPORTED_OS:
         entry = compatibility.get(name, {})
@@ -65,6 +71,15 @@ def manifest_xml(value):
     # Application identity: omit a neutral language; '*' is the UI default.
     attrs = {key: text for key, text in identity.items() if text and not (key == "language" and text == "*")}
     ET.SubElement(root, "assemblyIdentity", attrs)
+    if data["description"].strip():
+        ET.SubElement(root, "description").text = data["description"].strip()
+    trust = ET.SubElement(root, "trustInfo", {"xmlns": "urn:schemas-microsoft-com:asm.v3"})
+    security = ET.SubElement(trust, "security")
+    privileges = ET.SubElement(security, "requestedPrivileges")
+    ET.SubElement(privileges, "requestedExecutionLevel", {
+        "level": "requireAdministrator" if data["requireAdministrator"] else "asInvoker",
+        "uiAccess": "false",
+    })
     ids = []
     for name, _ in SUPPORTED_OS:
         entry = data["compatibility"][name]
@@ -85,5 +100,9 @@ def manifest_xml(value):
     application = ET.SubElement(root, "application", {"xmlns": "urn:schemas-microsoft-com:asm.v3"})
     settings = ET.SubElement(application, "windowsSettings")
     ET.SubElement(settings, "longPathAware", {"xmlns": "http://schemas.microsoft.com/SMI/2016/WindowsSettings"}).text = "true" if data["longPathAware"] else "false"
+    if data["dpiAware"]:
+        ET.SubElement(settings, "dpiAware", {"xmlns": "http://schemas.microsoft.com/SMI/2005/WindowsSettings"}).text = "true/pm"
+        ET.SubElement(settings, "dpiAwareness", {"xmlns": "http://schemas.microsoft.com/SMI/2016/WindowsSettings"}).text = "PerMonitorV2, PerMonitor"
     ET.indent(root, space="   ")
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
+

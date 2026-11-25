@@ -1255,6 +1255,7 @@ SIGNING_DEFAULTS = {
     "description"           : "",
     "description_url"       : "",
     "signtool_path"         : "",
+    "publisher"             : "",
     "verify_after_sign"     : True,
     "fail_build_on_error"   : True,
 }
@@ -10672,6 +10673,8 @@ def pack_c64_program(
 # ---------------------------------------------------------------------------
 # Code signing ...
 # ---------------------------------------------------------------------------
+from windows_version_settings import normalize_version_settings, version_payload
+
 def normalize_signing_settings(value=None) -> dict:
     src = value if isinstance(value, Mapping) else {}
     out = dict(SIGNING_DEFAULTS)
@@ -10692,7 +10695,7 @@ def normalize_signing_settings(value=None) -> dict:
     out["store_name"] = str(out["store_name"] or "My").strip() or "My"
     for key in (
         "openssl_certificate", "openssl_private_key", "pfx_file", "thumbprint",
-        "timestamp_url", "description", "description_url", "signtool_path",
+        "timestamp_url", "description", "description_url", "signtool_path", "publisher",
     ):
         out[key] = str(out[key] or "").strip()
     for key in ("file_digest", "timestamp_digest"):
@@ -10706,8 +10709,8 @@ def normalize_signing_settings(value=None) -> dict:
 
 def find_signtool(configured: str = "") -> str:
     configured = str(configured or "").strip()
-    if configured and Path(configured).is_file():
-        return str(Path(configured))
+    if configured:
+        return str(Path(configured)) if Path(configured).is_file() else ""
     found = shutil.which("signtool.exe") or shutil.which("signtool")
     if found:
         return found
@@ -10735,7 +10738,7 @@ def build_sign_command(settings: Mapping, target: str, *, pfx_password: str = ""
     cfg = normalize_signing_settings(settings)
     tool = find_signtool(cfg["signtool_path"])
     if not tool:
-        raise RuntimeError("signtool.exe wurde nicht gefunden. Bitte im Linker->Signierung Panel einstellen.")
+        raise RuntimeError("signtool.exe wurde nicht gefunden. Bitte im Linker->Authenticode Panel einstellen.")
     target_path = Path(target)
     if not target_path.is_file():
         raise RuntimeError(f"Zu signierende Datei wurde nicht gefunden: {target_path}")
@@ -11155,9 +11158,10 @@ def project_manifest_payload(manifest_settings, project_directory):
         return None
     value = str(cfg["linkFile"] or "").strip()
     if not value:
-        raise ResourceCompilerError(
-            "Mit Manifest Linken ist aktiviert, aber keine Manifestdatei ausgewählt."
-        )
+        try:
+            return manifest_xml(cfg).encode("utf-8")
+        except ValueError as exc:
+            raise ResourceCompilerError(str(exc)) from exc
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = Path(project_directory) / path
@@ -11171,6 +11175,14 @@ def project_manifest_payload(manifest_settings, project_directory):
         raise ResourceCompilerError(f"Ungültige Manifest-XML-Datei {path}: {exc}") from exc
     if root.tag.rsplit("}", 1)[-1].lower() != "assembly":
         raise ResourceCompilerError("Das Manifest benötigt ein assembly-Wurzelelement.")
+    # An external file remains authoritative for other XML settings.
+    # Do not silently override its privilege declaration: report a conflict.
+    if cfg["requireAdministrator"]:
+        levels = [node for node in root.iter()
+                  if node.tag.rsplit("}", 1)[-1] == "requestedExecutionLevel"]
+        if len(levels) != 1 or levels[0].get("level") != "requireAdministrator":
+            raise ResourceCompilerError("Externes Manifest: requireAdministrator fehlt. "
+                                        "Bitte Manifest anpassen oder Dateipfad leeren.")
     return raw
 
 
@@ -11185,8 +11197,12 @@ def embed_project_manifest_resource(executable, manifest_settings, project_direc
     payload = project_manifest_payload(manifest_settings, project_directory)
     if payload is None:
         return False
+    return update_project_pe_resource(executable, RT_MANIFEST, 2 if dll else 1, 0x0409, payload)
+
+
+def update_project_pe_resource(executable, resource_type, resource_id, language, payload):
     if os.name != "nt":
-        raise ResourceCompilerError("Manifest-Linken benötigt Windows (UpdateResourceW).")
+        raise ResourceCompilerError("PE-Ressourcen benötigen Windows (UpdateResourceW).")
     from ctypes import wintypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     begin = kernel32.BeginUpdateResourceW
@@ -11205,10 +11221,10 @@ def embed_project_manifest_resource(executable, manifest_settings, project_direc
     committed = False
     try:
         buffer = ctypes.create_string_buffer(payload)
-        if not update(handle, ctypes.c_void_p(RT_MANIFEST),
-                      ctypes.c_void_p(2 if dll else 1), 0x0409,
+        if not update(handle, ctypes.c_void_p(resource_type),
+                      ctypes.c_void_p(resource_id), language,
                       ctypes.cast(buffer, ctypes.c_void_p), len(payload)):
-            raise OSError(ctypes.get_last_error(), "UpdateResourceW: RT_MANIFEST fehlgeschlagen")
+            raise OSError(ctypes.get_last_error(), f"UpdateResourceW: Ressource {resource_type} fehlgeschlagen")
         if not end(handle, False):
             raise OSError(ctypes.get_last_error(), "EndUpdateResourceW fehlgeschlagen")
         committed = True
@@ -51333,6 +51349,8 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "options_section": "Settings.Windows.32Bit.Linker.Optionen",
         "optimization_section": "Settings.Windows.32Bit.Linker.Optimierung",
         "manifest_key": "__windows_pe32_manifest__",
+        "version_key": "__windows_pe32_version__",
+        "version_section": "Settings.Windows.32Bit.Linker.VersionInfo",
         "manifest_section": "Settings.Windows.32Bit.Linker.Manifest",
         "signing_section": "Settings.Windows.32Bit.Linker.Signierung",
         "title": "32-Bit",
@@ -51395,6 +51413,8 @@ PROJECT_WINDOWS_TARGET_SETTINGS = {
         "options_section": "Settings.Windows.64Bit.Linker.Optionen",
         "optimization_section": "Settings.Windows.64Bit.Linker.Optimierung",
         "manifest_key": "__windows_pe64_manifest__",
+        "version_key": "__windows_pe64_version__",
+        "version_section": "Settings.Windows.64Bit.Linker.VersionInfo",
         "manifest_section": "Settings.Windows.64Bit.Linker.Manifest",
         "signing_section": "Settings.Windows.64Bit.Linker.Signierung",
         "title": "64-Bit",
@@ -51704,6 +51724,9 @@ def normalize_manifest_settings(value=None):
         # Stage 311: external manifest is linked as an RT_MANIFEST resource.
         "linkEnabled": str(value.get("linkEnabled", False)).lower() in {"true", "1", "yes"},
         "linkFile": str(value.get("linkFile", "") or ""),
+        "requireAdministrator": str(value.get("requireAdministrator", False)).lower() in {"true", "1", "yes"},
+        "description": str(value.get("description", "") or ""),
+        "dpiAware": str(value.get("dpiAware", False)).lower() in {"true", "1", "yes"},
     }
     for name, guid in SUPPORTED_OS:
         entry = compatibility.get(name, {})
@@ -51736,6 +51759,15 @@ def manifest_xml(value):
     # Application identity: omit a neutral language; '*' is the UI default.
     attrs = {key: text for key, text in identity.items() if text and not (key == "language" and text == "*")}
     ET.SubElement(root, "assemblyIdentity", attrs)
+    if data["description"].strip():
+        ET.SubElement(root, "description").text = data["description"].strip()
+    trust = ET.SubElement(root, "trustInfo", {"xmlns": "urn:schemas-microsoft-com:asm.v3"})
+    security = ET.SubElement(trust, "security")
+    privileges = ET.SubElement(security, "requestedPrivileges")
+    ET.SubElement(privileges, "requestedExecutionLevel", {
+        "level": "requireAdministrator" if data["requireAdministrator"] else "asInvoker",
+        "uiAccess": "false",
+    })
     ids = []
     for name, _ in SUPPORTED_OS:
         entry = data["compatibility"][name]
@@ -51756,6 +51788,9 @@ def manifest_xml(value):
     application = ET.SubElement(root, "application", {"xmlns": "urn:schemas-microsoft-com:asm.v3"})
     settings = ET.SubElement(application, "windowsSettings")
     ET.SubElement(settings, "longPathAware", {"xmlns": "http://schemas.microsoft.com/SMI/2016/WindowsSettings"}).text = "true" if data["longPathAware"] else "false"
+    if data["dpiAware"]:
+        ET.SubElement(settings, "dpiAware", {"xmlns": "http://schemas.microsoft.com/SMI/2005/WindowsSettings"}).text = "true/pm"
+        ET.SubElement(settings, "dpiAwareness", {"xmlns": "http://schemas.microsoft.com/SMI/2016/WindowsSettings"}).text = "PerMonitorV2, PerMonitor"
     ET.indent(root, space="   ")
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
 
@@ -51892,6 +51927,7 @@ def empty_project_entries() -> Dict[str, List[Dict[str, str]]]:
         entries[_settings["dbase_peephole_processor_flags_key"]] = [{"value": "false"}]
         entries[_settings["dbase_peephole_stack_state_key"]] = [{"value": "false"}]
         entries[_settings["dbase_size_level_key"]] = [{"value": "O0"}]
+        entries[_settings["version_key"]] = [normalize_version_settings()]
         entries[_settings["manifest_key"]] = [normalize_manifest_settings()]
     entries[PROJECT_WINDOWS_EDITOR_FONT_FAMILY_KEY] = [{"value": ""}]
     entries[PROJECT_WINDOWS_EDITOR_FONT_SIZE_KEY] = [{"value": "9"}]
@@ -52738,6 +52774,8 @@ def format_project_ini(
                 _manifest_entries[0] if _manifest_entries else None
             ), ensure_ascii=False),
         }
+        _version_entries = entries.get(_settings["version_key"], ())
+        parser[_settings["version_section"]] = {"Data": json.dumps(normalize_version_settings(_version_entries[0] if _version_entries else None), ensure_ascii=False)}
         _signing_entries = entries.get(_settings["signing_key"], ())
         parser[_settings["signing_section"]] = {
             "Data": json.dumps(normalize_signing_settings(
@@ -53803,6 +53841,11 @@ def parse_project_ini(text: str, project_path: Path) -> Dict[str, List[Dict[str,
         except (ValueError, TypeError):
             _manifest_data = {}
         entries[_settings["manifest_key"]] = [normalize_manifest_settings(_manifest_data)]
+        try:
+            _version_data = json.loads(parser.get(_settings["version_section"], "Data", fallback="{}"))
+        except (ValueError, TypeError):
+            _version_data = {}
+        entries[_settings["version_key"]] = [normalize_version_settings(_version_data)]
         _signing_json = parser.get(_settings["signing_section"], "Data", fallback="{}")
         try:
             _signing_data = json.loads(_signing_json)
@@ -107045,13 +107088,27 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             radio_layout.addStretch(1)
             general_layout.addLayout(radio_layout)
             self.long_path_true.setChecked(True)
+            self.description_edit = QLineEdit(self.general_group)
+            self.description_edit.setPlaceholderText("Optionale Anwendungsbeschreibung")
+            general_layout.addWidget(QLabel("Beschreibung", self.general_group))
+            general_layout.addWidget(self.description_edit)
+            self.description_edit.textChanged.connect(lambda value: self._extra_manifest_changed("description", value))
+            self.dpi_checkbox = QCheckBox("Per-Monitor DPI Awareness (V2)", self.general_group)
+            self.dpi_checkbox.setToolTip("Nur aktivieren, wenn die Anwendung DPI-Wechsel selbst korrekt verarbeitet.")
+            general_layout.addWidget(self.dpi_checkbox)
+            self.dpi_checkbox.toggled.connect(lambda checked: self._extra_manifest_changed("dpiAware", checked))
             layout.addWidget(self.general_group)
 
-            self.link_group = QGroupBox("Manifest einbetten", body)
+            self.link_group = QGroupBox("Manifest: ", body)
             link_layout = QVBoxLayout(self.link_group)
-            self.link_enabled_checkbox = QCheckBox("Mit Manifest Linken", self.link_group)
+            self.link_enabled_checkbox = QCheckBox("Manifest in EXE Image linken", self.link_group)
             self.link_enabled_checkbox.setObjectName("project_manifest_link_enabled")
             link_layout.addWidget(self.link_enabled_checkbox)
+            self.admin_checkbox = QCheckBox("Administratormodus anfordern (UAC)", self.link_group)
+            self.admin_checkbox.setToolTip("Windows entscheidet über die UAC-Abfrage; kein Passwort wird gespeichert.")
+            link_layout.addWidget(self.admin_checkbox)
+            self.admin_checkbox.setEnabled(False)
+            self.admin_checkbox.toggled.connect(lambda checked: self._extra_manifest_changed("requireAdministrator", checked))
             self.link_path_row = QWidget(self.link_group)
             link_path_layout = QHBoxLayout(self.link_path_row)
             link_path_layout.setContentsMargins(0, 0, 0, 0)
@@ -107060,11 +107117,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.link_browse_button.setFixedWidth(36)
             self.link_file_edit = QLineEdit(self.link_path_row)
             self.link_file_edit.setObjectName("project_manifest_link_path")
-            self.link_file_edit.setPlaceholderText("Pfad zu einer vorhandenen .manifest-Datei")
+            self.link_file_edit.setPlaceholderText("Optional: externe Manifestdatei (leer = aus Einstellungen erzeugen)")
             link_path_layout.addWidget(self.link_browse_button)
             link_path_layout.addWidget(self.link_file_edit, 1)
             link_layout.addWidget(self.link_path_row)
-            layout.addWidget(self.link_group)
+            layout.insertWidget(0, self.link_group)
             self.link_enabled_checkbox.toggled.connect(self._link_enabled_changed)
             self.link_file_edit.textChanged.connect(self._link_file_changed)
             self.link_browse_button.clicked.connect(self._choose_link_file)
@@ -107097,6 +107154,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 self.long_path_true.setChecked(self._data["longPathAware"])
                 self.long_path_false.setChecked(not self._data["longPathAware"])
                 self.link_enabled_checkbox.setChecked(self._data["linkEnabled"])
+                self.admin_checkbox.setChecked(self._data["requireAdministrator"])
+                self.admin_checkbox.setEnabled(self._data["linkEnabled"])
+                self.description_edit.setText(self._data["description"])
+                self.dpi_checkbox.setChecked(self._data["dpiAware"])
                 self.link_file_edit.setText(self._data["linkFile"])
                 self.link_path_row.setEnabled(self._data["linkEnabled"])
                 self._os_selected(self.os_list.currentItem(), None)
@@ -107107,7 +107168,13 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             if not self._syncing:
                 self.settingsChanged.emit(self.settings())
 
+        def _extra_manifest_changed(self, key, value):
+            if not self._syncing:
+                self._data[key] = value
+                self._notify()
+
         def _link_enabled_changed(self, enabled):
+            self.admin_checkbox.setEnabled(bool(enabled))
             self.link_path_row.setEnabled(bool(enabled))
             if not self._syncing:
                 self._data["linkEnabled"] = bool(enabled)
@@ -107179,6 +107246,54 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             except OSError as exc:
                 QMessageBox.warning(self, "Manifest speichern", str(exc))
 
+    class WindowsVersionSettingsPage(QScrollArea):
+        settingsChanged = pyqtSignal(dict)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setWidgetResizable(True)
+            self.setFrameShape(QFrame.NoFrame)
+            body = QWidget(self)
+            self.setWidget(body)
+            layout = QVBoxLayout(body)
+            group = QGroupBox("Versionsinformationen (VS_VERSION_INFO)", body)
+            form = QFormLayout(group)
+            self.enabled = QCheckBox("Versionsinformationen in EXE/DLL linken", group)
+            form.addRow(self.enabled)
+            self.fields = {}
+            for key, value in normalize_version_settings().items():
+                if key == "enabled":
+                    continue
+                edit = QLineEdit(group)
+                edit.setMaxLength(1024)
+                if key in ("FileVersion", "ProductVersion"):
+                    edit.setPlaceholderText("1.0.0.0 (vier Zahlen 0–65535)")
+                self.fields[key] = edit
+                form.addRow(key, edit)
+                edit.textChanged.connect(self._changed)
+            self.enabled.toggled.connect(self._changed)
+            layout.addWidget(group)
+            layout.addStretch(1)
+            self.set_settings(None)
+
+        def settings(self):
+            return normalize_version_settings(dict(enabled=self.enabled.isChecked(), **{key: edit.text() for key, edit in self.fields.items()}))
+
+        def set_settings(self, value):
+            cfg = normalize_version_settings(value)
+            controls = [self.enabled, *self.fields.values()]
+            states = [control.blockSignals(True) for control in controls]
+            try:
+                self.enabled.setChecked(cfg["enabled"])
+                for key, edit in self.fields.items():
+                    edit.setText(cfg[key])
+            finally:
+                for control, state in zip(controls, states):
+                    control.blockSignals(state)
+
+        def _changed(self, *_args):
+            self.settingsChanged.emit(self.settings())
+
     class WindowsSigningSettingsPage(QScrollArea):
         """Stage 227: project-controlled Authenticode configuration."""
         settingsChanged = pyqtSignal(dict)
@@ -107220,6 +107335,14 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.source.addItem("PFX / PKCS#12-Datei", "pfx")
             self.source.addItem("Windows-Zertifikatsspeicher", "store")
             form.addRow("Quelle", self.source)
+            publisher_row = QWidget(cert_group)
+            pub_layout = QHBoxLayout(publisher_row); pub_layout.setContentsMargins(0,0,0,0)
+            self.publisher = QLineEdit(publisher_row); self.publisher.setReadOnly(True)
+            self.publisher.setPlaceholderText("Aus dem Zertifikat ermitteln")
+            self.publisher_check = QPushButton("Zertifikat prüfen", publisher_row)
+            pub_layout.addWidget(self.publisher, 1); pub_layout.addWidget(self.publisher_check)
+            form.addRow("Herausgeber (Publisher)", publisher_row)
+            self.publisher_check.clicked.connect(self._check_publisher)
 
             openssl_row = QWidget(cert_group); orow = QHBoxLayout(openssl_row); orow.setContentsMargins(0,0,0,0)
             self.openssl_cert_combo = QComboBox(openssl_row)
@@ -107271,13 +107394,15 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             tool_group = QGroupBox("SignTool / Prüfung", body)
             t = QFormLayout(tool_group)
             tool_row = QWidget(tool_group); tl = QHBoxLayout(tool_row); tl.setContentsMargins(0,0,0,0)
-            self.signtool = QLineEdit(tool_row); self.signtool_button = QPushButton("…", tool_row); self.signtool_auto = QPushButton("Auto", tool_row)
+            self.signtool = QLineEdit(tool_row); self.signtool_button = QPushButton(tool_row); self.signtool_auto = QPushButton("Auto", tool_row)
+            self.signtool_button.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+            self.signtool_button.setToolTip("signtool.exe auswählen")
             self.signtool_button.setFixedWidth(34)
-            tl.addWidget(self.signtool,1); tl.addWidget(self.signtool_button); tl.addWidget(self.signtool_auto)
+            tl.addWidget(self.signtool_button); tl.addWidget(self.signtool,1); tl.addWidget(self.signtool_auto)
             self.verify = QCheckBox("Signatur nach dem Signieren mit /pa /v prüfen", tool_group)
             self.fail_build = QCheckBox("Build bei Signier-/Prüffehler abbrechen", tool_group)
             t.addRow("signtool.exe", tool_row); t.addRow(self.verify); t.addRow(self.fail_build)
-            layout.addWidget(tool_group)
+            layout.insertWidget(1, tool_group)
             layout.addStretch(1)
 
             self.pfx_button.clicked.connect(self._choose_pfx)
@@ -107291,7 +107416,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             for w in (self.source, self.store_location, self.file_digest, self.timestamp_digest):
                 w.currentIndexChanged.connect(self._controls_changed)
             for w in (self.pfx_path, self.store_name, self.thumbprint, self.timestamp_url, self.description, self.description_url, self.signtool):
-                w.editingFinished.connect(self._controls_changed)
+                w.textChanged.connect(self._controls_changed)
             self.refresh_openssl_certificates()
             self.set_settings(self._data)
 
@@ -107345,6 +107470,27 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 self.pfx_path   .setText(str(record.get("pfx",     "")     or ""))
             self._controls_changed()
 
+        def _check_publisher(self):
+            from windows_version_settings import inspect_signing_certificate
+            cfg = self.settings()
+            password = ""
+            if cfg["certificate_source"] != "store":
+                password, ok = self.owner._windows_signing_password(cfg["pfx_file"])
+                if not ok:
+                    return
+            try:
+                publisher = inspect_signing_certificate(cfg, password)
+            except Exception as exc:
+                self.publisher.clear()
+                if cfg["pfx_file"]:
+                    self.owner._signing_session_passwords.pop(str(Path(cfg["pfx_file"]).expanduser()), None)
+                self._controls_changed()
+                QMessageBox.warning(self, "Zertifikat", str(exc))
+                return
+            self.publisher.setText(publisher)
+            self._controls_changed()
+            QMessageBox.information(self, "Zertifikat", "Zertifikatinhaber: " + publisher + "\nDie Windows-Vertrauensprüfung erfolgt nach der Signierung.")
+
         def _choose_pfx(self):
             filename, _ = QFileDialog.getOpenFileName(self, "PFX/PKCS#12 auswählen", self.pfx_path.text().strip(), "PKCS#12 (*.pfx *.p12);;Alle Dateien (*)")
             if filename:
@@ -107356,7 +107502,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 self.signtool.setText(filename); self._controls_changed()
 
         def _auto_signtool(self):
-            found = find_signtool(self.signtool.text().strip())
+            found = find_signtool()
             if found:
                 self.signtool.setText(found); self._controls_changed()
             else:
@@ -107378,6 +107524,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "certificate_source": self.source.currentData           (), "openssl_certificate"   : self.cert_path.text               (), "openssl_private_key"   : self.key_path.text        (),
                 "pfx_file"          : self.pfx_path.text                (), "store_location"        : self.store_location.currentData   (), "store_name"            : self.store_name.text      (),
                 "thumbprint"        : self.thumbprint.text(),
+                "publisher"         : self.publisher.text(),
                 "file_digest"       : self.file_digest.currentText      (), "timestamp_enabled"     : self.timestamp_enabled.isChecked  (), "timestamp_url"         : self.timestamp_url.text   (),
                 "timestamp_digest"  : self.timestamp_digest.currentText (), "description"           : self.description.text             (), "description_url"       : self.description_url.text (),
                 "signtool_path"     : self.signtool.text                (), "verify_after_sign"     : self.verify.isChecked             (), "fail_build_on_error"   : self.fail_build.isChecked (),
@@ -107394,6 +107541,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 idx=self.store_location.findData(cfg["store_location"]); self.store_location.setCurrentIndex(max(0,idx)); self.store_name.setText(cfg["store_name"]); self.thumbprint.setText(cfg["thumbprint"])
                 self.file_digest.setCurrentText(cfg["file_digest"]); self.timestamp_enabled.setChecked(cfg["timestamp_enabled"]); self.timestamp_url.setText(cfg["timestamp_url"]); self.timestamp_digest.setCurrentText(cfg["timestamp_digest"])
                 self.description.setText(cfg["description"]); self.description_url.setText(cfg["description_url"]); self.signtool.setText(cfg["signtool_path"])
+                self.publisher.setText(cfg["publisher"])
                 self.verify.setChecked(cfg["verify_after_sign"]); self.fail_build.setChecked(cfg["fail_build_on_error"])
                 self.refresh_openssl_certificates()
                 self._source_changed()
@@ -107402,7 +107550,11 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
 
         def _controls_changed(self, *_args):
             if not self._syncing:
-                self._data = self.settings()
+                current = self.settings()
+                if any(current.get(key) != self._data.get(key) for key in ("certificate_source", "pfx_file", "store_location", "store_name", "thumbprint", "openssl_certificate")):
+                    self.publisher.clear()
+                    current["publisher"] = ""
+                self._data = current
                 self.settingsChanged.emit(dict(self._data))
 
 
@@ -108076,10 +108228,12 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.linker_optimization_item.setData(
                 0, Qt.UserRole, "linker.optimization"
             )
-            self.linker_signing_item = QTreeWidgetItem(self.nodes["linker"], ["Signierung"])
-            self.linker_signing_item.setData(0, Qt.UserRole, "linker.signing")
             self.manifest_item = QTreeWidgetItem(self.nodes["linker"], ["Manifest"])
             self.manifest_item.setData(0, Qt.UserRole, "linker.manifest")
+            self.version_item = QTreeWidgetItem(self.nodes["linker"], ["Versionsinformationen"])
+            self.version_item.setData(0, Qt.UserRole, "linker.version")
+            self.linker_signing_item = QTreeWidgetItem(self.nodes["linker"], ["Authenticode"])
+            self.linker_signing_item.setData(0, Qt.UserRole, "linker.signing")
             self.nodes["linker"].setExpanded(True)
             self.compiler_directories_item = self.compiler_input_directories_item
             self.nodes["compiler"].setExpanded(True)
@@ -109419,6 +109573,10 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
             self.manifest_page.setObjectName(f"project_windows_{target_tag}_manifest")
             self.manifest_page.settingsChanged.connect(self._manifest_changed)
             self.stack.addWidget(self.manifest_page)
+            self.version_page = WindowsVersionSettingsPage(self.stack)
+            self.version_page.setObjectName(f"project_windows_{target_tag}_version")
+            self.version_page.settingsChanged.connect(lambda value: self.owner.set_project_windows_version(self.target, value))
+            self.stack.addWidget(self.version_page)
 
             # Stage 312: echte, bidirektional synchronisierte Steuerelement-Kopien.
             # Die Originalseiten verbleiben IMMER im Stack; kein reparenting von
@@ -109443,8 +109601,9 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "linker": (
                     ("Optionen", self.linker_options_scroll),
                     ("Optimierung", self.linker_optimization_scroll),
-                    ("Signierung", self.signing_page),
                     ("Manifest", self.manifest_page),
+                    ("Versionsinformationen", self.version_page),
+                    ("Authenticode", self.signing_page),
                 ),
             }
             self._overview_widgets = {}
@@ -110076,6 +110235,8 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 page = self.signing_page
             elif key == "linker.manifest":
                 page = self.manifest_page
+            elif key == "linker.version":
+                page = self.version_page
             elif key == "debug":
                 page = self.debug_page
             elif key == "hilfe.entwicklung":
@@ -114265,6 +114426,7 @@ QLabel#instrument_status {{ color: {accent}; font-weight: bold; }}
                 "pe64": False,
             }
             self.project_assembler_tooltips_enabled = True
+            self.project_windows_versions = {target: normalize_version_settings() for target in ("pe32", "pe64")}
             self.project_windows_manifests = {
                 "pe32": normalize_manifest_settings(),
                 "pe64": normalize_manifest_settings(),
@@ -114892,8 +115054,11 @@ border-radius: 7px;}}"""
                 # Ein minimiertes Fenster blendet unter Qt/Win32 Docks temporär
                 # aus, ohne sie zu schliessen. Nach der Wiederherstellung nur
                 # den weiterhin aktiven Installer-Workspace sichtbar machen.
-                QTimer.singleShot(0, self._ensure_installer_workspace_after_restore)
-                QTimer.singleShot(0, self._ensure_math_multiplication_workspace_after_restore)
+                if getattr(self, "_project_settings_workspace_active", False):
+                    QTimer.singleShot(0, self._ensure_project_settings_workspace_after_restore)
+                else:
+                    QTimer.singleShot(0, self._ensure_installer_workspace_after_restore)
+                    QTimer.singleShot(0, self._ensure_math_multiplication_workspace_after_restore)
             elif event.type() == QEvent.WindowStateChange and self.isMinimized():
                 # Stage 570: ein temporär unsichtbarer Qt-Dock ist nicht
                 # dasselbe wie ein vom Benutzer geschlossenes Dock.
@@ -117480,9 +117645,10 @@ border-radius: 7px;}}"""
                         f"{_report.get('before_size', len(program.executable))} -> "
                         f"{_report.get('after_size', len(program.executable))} Bytes "
                         f"(-{_report.get('saved_bytes', 0)} Bytes)")
+                self._embed_project_version(target, "pe32")
                 if not self._sign_windows_output_if_enabled(target, "pe32"):
                     return
-            except (OSError, PE32AssemblerError) as exc:
+            except (OSError, PE32AssemblerError, ResourceCompilerError, ValueError) as exc:
                 self.show_error("PE32-Linkerfehler", str(exc))
                 return
             self.log(
@@ -117555,9 +117721,10 @@ border-radius: 7px;}}"""
                         f"{_report.get('before_size', len(program.executable))} -> "
                         f"{_report.get('after_size', len(program.executable))} Bytes "
                         f"(-{_report.get('saved_bytes', 0)} Bytes)")
+                self._embed_project_version(target, "pe64")
                 if not self._sign_windows_output_if_enabled(target, "pe64"):
                     return
-            except (OSError,PE64AssemblerError) as exc:
+            except (OSError,PE64AssemblerError, ResourceCompilerError, ValueError) as exc:
                 self.show_error("PE64-Linkerfehler",str(exc)); return
             self.log(f"PE64 LINK: {len(filenames)} Eingabe(n) -> {target}, {len(program.executable)} Bytes")
             self.statusBar().showMessage(f"PE64-Programm gelinkt: {target.name}")
@@ -127624,6 +127791,8 @@ border-radius: 7px;}}"""
                 )
                 panel.set_pe_compact_enabled(
                     _target, self.project_windows_compact_enabled.get(_target, False))
+                panel.page_for_target(_target).version_page.set_settings(self.project_windows_versions.get(_target))
+                panel.page_for_target(_target)._overview_refresh_later()
                 panel.set_signing_settings(
                     _target,
                     self.project_windows_signing.get(_target, normalize_signing_settings()),
@@ -127806,7 +127975,33 @@ border-radius: 7px;}}"""
                 except RuntimeError:
                     pass
 
+        def _ensure_project_settings_workspace_after_restore(self):
+            if self.isMinimized() or not self._project_settings_workspace_active:
+                return
+            keep = self.project_settings_dock
+            if keep is None:
+                return
+            central = self.centralWidget()
+            if central is not None:
+                central.hide()
+            for dock in self.findChildren(QDockWidget):
+                if dock is not keep:
+                    blocked = dock.blockSignals(True)
+                    try:
+                        dock.hide()
+                    finally:
+                        dock.blockSignals(blocked)
+            keep.show()
+            keep.raise_()
+
+        def _finish_project_settings_hide(self):
+            dock = self.project_settings_dock
+            if not self.isMinimized() and dock is not None and dock.isHidden():
+                self._restore_project_settings_workspace()
+
         def _project_settings_dock_visibility_changed(self, visible: bool) -> None:
+            if self.isMinimized():
+                return
             # Stage ASM 133: auch das Schliessen/Ausblenden der Projekteinstellungen
             # ist ein Persistenzpunkt. Laufende Aenderungen speichern ohnehin sofort.
             if not bool(visible) and self.current_project_path is not None:
@@ -127815,7 +128010,7 @@ border-radius: 7px;}}"""
                 except Exception as exc:
                     self.log(f"Projekt-Einstellungen konnten beim Schließen nicht gespeichert werden: {exc}")
             if self._project_settings_workspace_active and not bool(visible):
-                QTimer.singleShot(0, self._restore_project_settings_workspace)
+                QTimer.singleShot(0, self._finish_project_settings_hide)
 
         def show_project_settings_dock(self, _checked: bool = False) -> None:
             """Stage 325: Vorspann vor dem Aufbau der Projekt-Einstellungen.
@@ -127911,6 +128106,8 @@ border-radius: 7px;}}"""
                     _target,
                     self.project_windows_prolog_with_descriptors.get(_target, False),
                 )
+                self.project_settings_panel.page_for_target(_target).version_page.set_settings(self.project_windows_versions.get(_target))
+                self.project_settings_panel.page_for_target(_target)._overview_refresh_later()
                 self.project_settings_panel.set_signing_settings(
                     _target,
                     self.project_windows_signing.get(_target, normalize_signing_settings()),
@@ -129443,8 +129640,6 @@ border-radius: 7px;}}"""
                     pass
             if changed and mark_modified:
                 self.set_project_modified(True)
-                if self.current_project_path is not None:
-                    self.save_project()
 
         def _windows_signing_password(self, pfx_path: str) -> tuple[str, bool]:
             key = str(Path(pfx_path).expanduser()) if pfx_path else ""
@@ -129456,6 +129651,16 @@ border-radius: 7px;}}"""
             if ok and key:
                 self._signing_session_passwords[key] = password
             return password, bool(ok)
+
+        def _embed_project_version(self, output_path, target):
+            cfg = self.project_windows_versions.get(self._project_windows_target_key(target))
+            try:
+                payload = version_payload(cfg, output_path, _pack_version_info)
+            except (ValueError, OverflowError, struct.error) as exc:
+                raise ResourceCompilerError(str(exc)) from exc
+            if payload is not None:
+                update_project_pe_resource(output_path, RT_VERSION, 1, 0x0409, payload)
+                self.log(f"VERSIONINFO: {Path(output_path).name}")
 
         def _sign_windows_output_if_enabled(self, output_path: Path | str, target: str) -> bool:
             target_key = self._project_windows_target_key(target)
@@ -129481,10 +129686,23 @@ border-radius: 7px;}}"""
                         self.show_error("Signierung abgebrochen", message)
                         return False
                     return True
-            ok, output = sign_file(cfg, str(path), pfx_password=password)
+            try:
+                ok, output = sign_file(cfg, str(path), pfx_password=password)
+            except Exception as exc:
+                ok, output = False, str(exc)
+            if password:
+                output = str(output or "").replace(password, "***")
+            if not ok and cfg["pfx_file"]:
+                self._signing_session_passwords.pop(str(Path(cfg["pfx_file"]).expanduser()), None)
             for line in str(output or "").splitlines():
                 self.log("SIGN: " + line)
             if ok:
+                try:
+                    from windows_version_settings import inspect_signed_publisher
+                    cfg["publisher"] = inspect_signed_publisher(path)
+                    self.set_project_windows_signing(target_key, cfg)
+                except Exception:
+                    self.log("SIGN: Herausgeber konnte nicht zusätzlich ausgelesen werden.")
                 self.log(f"AUTHENTICODE: {path.name} erfolgreich signiert")
                 self.statusBar().showMessage(f"Signiert: {path.name}")
                 return True
@@ -129633,6 +129851,20 @@ border-radius: 7px;}}"""
                 if self.current_project_path is not None:
                     self.save_project()
 
+        def set_project_windows_version(self, target, value, *, mark_modified=True):
+            target_key = self._project_windows_target_key(target)
+            data = normalize_version_settings(value)
+            changed = self.project_windows_versions.get(target_key) != data
+            self.project_windows_versions[target_key] = data
+            panel = getattr(self, "project_settings_panel", None)
+            if panel is not None:
+                page = panel.page_for_target(target_key).version_page
+                if page.settings() != data:
+                    page.set_settings(data)
+                    panel.page_for_target(target_key)._overview_refresh_later()
+            if changed and mark_modified:
+                self.set_project_modified(True)
+
         def set_project_windows_manifest(self, target, value, *, mark_modified=True):
             target_key = self._project_windows_target_key(target)
             data = normalize_manifest_settings(value)
@@ -129645,8 +129877,6 @@ border-radius: 7px;}}"""
                     page.set_settings(data)
             if changed and mark_modified:
                 self.set_project_modified(True)
-                if self.current_project_path is not None:
-                    self.save_project()
 
         def set_project_windows_debug_theme(
             self,
@@ -137650,6 +137880,7 @@ border: 2px solid #2a69aa;
                     output_path, self.project_windows_manifests.get(target), project_base,
                     dll=is_dll,
                 )
+                self._embed_project_version(output_path, target)
                 if (b'libd64_qt5.dll' in program.executable.lower()
                         or b'c64_dbase_runtime.dll' in program.executable.lower()):
                     if not self._prepare_dbase_console_runtime(output_path, target):
@@ -138466,6 +138697,7 @@ border: 2px solid #2a69aa;
                                f"{_saved_pack_info['compressed_bytes']} Bytes"
                                if _saved_pack_info['packed'] else "ungepackt (Option OFF)")
                         )
+                    self._embed_project_version(output_path, document.build_target)
                     # Stage 610: resources/manifest have already been written.
                     # Compact the on-disk PE before Authenticode signing.
                     _compact_enabled = bool(self.project_windows_compact_enabled.get(
@@ -139365,6 +139597,7 @@ border: 2px solid #2a69aa;
                         project_base,
                         dll=(str(getattr(document, "generated_source_kind", "program")).casefold() == "library"),
                     )
+                    self._embed_project_version(output_path, document.build_target)
                     # Stage 610: resources/manifest have already been written.
                     # Compact the on-disk PE before Authenticode signing.
                     _compact_enabled = bool(self.project_windows_compact_enabled.get(
@@ -143132,6 +143365,8 @@ border: 2px solid #2a69aa;
                     ),
                     mark_modified=False,
                 )
+                _version_entries = values.get(_settings["version_key"], ())
+                self.set_project_windows_version(_target, _version_entries[0] if _version_entries else None, mark_modified=False)
                 _manifest_entries = values.get(_settings["manifest_key"], ())
                 self.set_project_windows_manifest(
                     _target, _manifest_entries[0] if _manifest_entries else None,
@@ -144583,6 +144818,7 @@ border: 2px solid #2a69aa;
                         _debug_themes.get("workstation", "default")
                     )
                 }]
+                entries[_settings["version_key"]] = [normalize_version_settings(self.project_windows_versions.get(_target))]
                 entries[_settings["manifest_key"]] = [normalize_manifest_settings(
                     self.project_windows_manifests.get(_target)
                 )]
